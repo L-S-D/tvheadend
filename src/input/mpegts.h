@@ -411,8 +411,11 @@ enum mpegts_mux_enable
 
 enum mpegts_mux_type
 {
-  MM_TYPE_TS   = 0,  /* Standard transport stream (default) */
-  MM_TYPE_T2MI = 1,  /* T2MI encapsulated stream */
+  MM_TYPE_TS       = 0,  /* Standard transport stream (default) */
+  MM_TYPE_T2MI     = 1,  /* T2MI encapsulated stream */
+  MM_TYPE_DAB_MPE  = 2,  /* DAB via MPE (IP multicast in MPE sections) */
+  MM_TYPE_DAB_ETI  = 3,  /* DAB via ETI-NA (direct ETI encapsulation) */
+  MM_TYPE_DAB_GSE  = 4,  /* DAB via GSE (IP multicast in GSE) */
 };
 
 enum mpegts_mux_epg_flag
