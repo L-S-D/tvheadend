@@ -152,6 +152,9 @@ struct mpegts_table_mux_cb
               const uint8_t dtag, const uint8_t *dptr, int dlen );
 };
 
+/* Raw packet callback for PID subscriptions (e.g., DAB probe) */
+typedef void (*mpegts_raw_callback_t)(void *opaque, const uint8_t *tsb, int len);
+
 typedef struct mpegts_pid_sub
 {
   RB_ENTRY(mpegts_pid_sub) mps_link;
@@ -194,6 +197,8 @@ typedef struct mpegts_pid_sub
 #define MPS_WEIGHT_HBBTV_SCAN 100
   int   mps_weight;
   void *mps_owner;
+  mpegts_raw_callback_t mps_raw_cb;    /* Optional callback for raw packets */
+  void *mps_raw_opaque;                /* Opaque data for callback */
 } mpegts_pid_sub_t;
 
 typedef struct mpegts_pid
@@ -543,6 +548,14 @@ struct mpegts_mux
   char    *mm_crid_authority;
   int      mm_enabled;
   int      mm_type;       /* mpegts_mux_type: TS, T2MI, DAB */
+
+  /*
+   * DAB probe (after SI scan complete, before tuner release)
+   */
+  int                        mm_dab_probe_pending;  ///< DAB probe in progress
+  void                      *mm_dab_probe_ctx;      ///< DAB probe context
+  int                        mm_dab_scan_result;    ///< Saved result for continuation
+  int                        mm_dab_scan_weight;    ///< Saved weight for continuation
   int      mm_epg;
   char    *mm_epg_module_id;
   char    *mm_charset;
@@ -881,7 +894,12 @@ void mpegts_network_delete ( mpegts_network_t *mn, int delconf );
 int mpegts_network_set_nid          ( mpegts_network_t *mn, uint16_t nid );
 int mpegts_network_set_network_name ( mpegts_network_t *mn, const char *name );
 void mpegts_network_scan ( mpegts_network_t *mn );
+void mpegts_network_scan_mux_done_continue ( mpegts_mux_t *mm );
 void mpegts_network_get_type_str( mpegts_network_t *mn, char *buf, size_t buflen );
+
+/* DAB probe functions */
+void mpegts_dab_probe_start ( mpegts_mux_t *mm );
+void mpegts_dab_probe_complete ( mpegts_mux_t *mm );
 
 void mpegts_network_bouquet_trigger0(mpegts_network_t *mn, int timeout);
 static inline void mpegts_network_bouquet_trigger(mpegts_network_t *mn, int timeout)
@@ -978,6 +996,13 @@ void mpegts_mux_unsubscribe_linked(mpegts_input_t *mi, service_t *t);
 
 void mpegts_mux_scan_done ( mpegts_mux_t *mm, const char *buf, int res );
 
+/* DAB detection during PSI scan (mpegts_mux_dab.c) */
+void mpegts_mux_dab_scan_start ( mpegts_mux_t *mm );
+void mpegts_mux_dab_scan_stop ( mpegts_mux_t *mm );
+void mpegts_mux_dab_scan_feed ( mpegts_mux_t *mm, const uint8_t *data, size_t len );
+int  mpegts_mux_dab_scan_can_complete ( mpegts_mux_t *mm );
+void mpegts_mux_dab_scan_process_results ( mpegts_mux_t *mm );
+
 void mpegts_mux_bouquet_rescan ( const char *src, const char *extra );
 
 void mpegts_mux_nice_name( mpegts_mux_t *mm, char *buf, size_t len );
@@ -1024,6 +1049,10 @@ void mpegts_input_flush_mux ( mpegts_input_t *mi, mpegts_mux_t *mm );
 mpegts_pid_t * mpegts_input_open_pid
   ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight,
     void *owner, int reopen );
+
+mpegts_pid_t * mpegts_input_open_pid_cb
+  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight,
+    void *owner, mpegts_raw_callback_t cb, void *opaque );
 
 int mpegts_input_close_pid
   ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner );

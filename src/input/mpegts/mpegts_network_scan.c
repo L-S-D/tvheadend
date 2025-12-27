@@ -180,20 +180,17 @@ mpegts_network_scan_idle_mux_add ( mpegts_network_t *mn, mpegts_mux_t *mm )
                  mn, sec2mono(10));
 }
 
-/* Finished */
-static inline void
-mpegts_network_scan_mux_done0
-  ( mpegts_mux_t *mm, mpegts_mux_scan_result_t result, int weight )
+/* Continuation after DAB probe (or immediate if no DAB candidates) */
+void
+mpegts_network_scan_mux_done_continue ( mpegts_mux_t *mm )
 {
   mpegts_network_t *mn = mm->mm_network;
   mpegts_mux_scan_state_t state = mm->mm_scan_state;
+  mpegts_mux_scan_result_t result = mm->mm_dab_scan_result;
+  int weight = mm->mm_dab_scan_weight;
 
-  if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {
-    mm->mm_scan_last_seen = gclk();
-    if (mm->mm_scan_first == 0)
-      mm->mm_scan_first = mm->mm_scan_last_seen;
-    idnode_changed(&mm->mm_id);
-  }
+  /* Clear DAB probe pending flag */
+  mm->mm_dab_probe_pending = 0;
 
   /* prevent double del: */
   /*   mpegts_mux_stop -> mpegts_network_scan_mux_cancel */
@@ -226,6 +223,37 @@ mpegts_network_scan_mux_done0
   /* Re-enable? */
   if (weight > 0)
     mpegts_network_scan_queue_add(mm, weight, mm->mm_scan_flags, 10);
+}
+
+/* Finished */
+static inline void
+mpegts_network_scan_mux_done0
+  ( mpegts_mux_t *mm, mpegts_mux_scan_result_t result, int weight )
+{
+  /* Already waiting for DAB probe - don't process again */
+  if (mm->mm_dab_probe_pending)
+    return;
+
+  if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {
+    mm->mm_scan_last_seen = gclk();
+    if (mm->mm_scan_first == 0)
+      mm->mm_scan_first = mm->mm_scan_last_seen;
+    idnode_changed(&mm->mm_id);
+  }
+
+  /* DAB probe runs in parallel - check if still active */
+  mm->mm_dab_scan_result = result;
+  mm->mm_dab_scan_weight = weight;
+
+  if (mm->mm_dab_probe_ctx) {
+    /* DAB probe still running - it will call done_continue when complete */
+    mm->mm_dab_probe_pending = 1;
+    tvhdebug(LS_MPEGTS, "mux %p: SI scan done, waiting for DAB probe", mm);
+    return;
+  }
+
+  /* DAB probe already done or not running - continue immediately */
+  mpegts_network_scan_mux_done_continue(mm);
 }
 
 /* Failed - couldn't start */
@@ -279,6 +307,9 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
   mm->mm_scan_state = MM_SCAN_STATE_ACTIVE;
   mm->mm_scan_init  = 0;
   TAILQ_INSERT_TAIL(&mn->mn_scan_active, mm, mm_scan_link);
+
+  /* Start DAB probe in parallel with SI scan */
+  mpegts_dab_probe_start(mm);
 }
 
 /* Mux has been reactivated */

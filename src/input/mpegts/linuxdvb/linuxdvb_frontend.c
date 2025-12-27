@@ -42,6 +42,8 @@ static void *
 linuxdvb_frontend_input_thread ( void *aux );
 static void
 linuxdvb_t2mi_done ( linuxdvb_frontend_t *lfe );
+static void
+linuxdvb_dab_done ( linuxdvb_frontend_t *lfe );
 
 /*
  *
@@ -689,10 +691,7 @@ linuxdvb_frontend_stop_mux
   mi->mi_display_name(mi, buf1, sizeof(buf1));
   tvhdebug(LS_LINUXDVB, "%s - stopping %s", buf1, mmi->mmi_mux->mm_nicename);
 
-  /* Cleanup T2MI if active */
-  linuxdvb_t2mi_done(lfe);
-
-  /* Stop thread */
+  /* Stop thread FIRST (it uses T2MI/DAB contexts) */
   if (lfe->lfe_dvr_pipe.wr > 0) {
     tvh_write(lfe->lfe_dvr_pipe.wr, "", 1);
     tvhtrace(LS_LINUXDVB, "%s - waiting for dvr thread", buf1);
@@ -700,6 +699,12 @@ linuxdvb_frontend_stop_mux
     tvh_pipe_close(&lfe->lfe_dvr_pipe);
     tvhdebug(LS_LINUXDVB, "%s - stopped dvr thread", buf1);
   }
+
+  /* Cleanup T2MI if active (after thread stopped) */
+  linuxdvb_t2mi_done(lfe);
+
+  /* Cleanup DAB if active (after thread stopped) */
+  linuxdvb_dab_done(lfe);
 
   /* Not locked */
   lfe->lfe_ready   = 0;
@@ -861,6 +866,131 @@ linuxdvb_t2mi_process ( linuxdvb_frontend_t *lfe, mpegts_mux_instance_t *mmi,
 }
 
 /* **************************************************************************
+ * DAB decapsulation (for DAB-MPE/ETI/GSE type muxes)
+ * *************************************************************************/
+
+/*
+ * Output callback for DAB decapsulated TS packets
+ */
+static void
+linuxdvb_dab_output_cb ( void *opaque, const uint8_t *pkt, size_t len )
+{
+  linuxdvb_frontend_t *lfe = opaque;
+
+  /* Append to output buffer */
+  sbuf_append(&lfe->lfe_dab_buffer, pkt, len);
+}
+
+/*
+ * Initialize DAB streaming for DAB type mux
+ */
+static int
+linuxdvb_dab_init ( linuxdvb_frontend_t *lfe, dvb_mux_t *dm )
+{
+  dvb_mux_conf_t *dmc = &dm->lm_tuning;
+  dvbdab_streamer_config_t config;
+  uint16_t dab_pid = dmc->dmc_fe_pid;
+
+  if (dab_pid == 0) {
+    tvherror(LS_LINUXDVB, "DAB mux has no PID configured");
+    return -1;
+  }
+
+  /* Configure based on DAB type */
+  memset(&config, 0, sizeof(config));
+  config.pid = dab_pid;
+
+  if (dm->mm_type == MM_TYPE_DAB_MPE) {
+    config.format = DVBDAB_FORMAT_MPE;
+    config.filter_ip = dmc->dmc_dab_ip;
+    config.filter_port = dmc->dmc_dab_port;
+    tvhinfo(LS_LINUXDVB, "DAB-MPE streaming init: PID=0x%04X IP=%08X port=%d",
+            dab_pid, dmc->dmc_dab_ip, dmc->dmc_dab_port);
+  } else if (dm->mm_type == MM_TYPE_DAB_ETI) {
+    config.format = DVBDAB_FORMAT_ETI_NA;
+    config.eti_padding = dmc->dmc_dab_eti_padding;
+    config.eti_bit_offset = dmc->dmc_dab_eti_bit_offset;
+    config.eti_inverted = dmc->dmc_dab_eti_inverted;
+    tvhinfo(LS_LINUXDVB, "DAB-ETI streaming init: PID=0x%04X padding=%d offset=%d inv=%d",
+            dab_pid, dmc->dmc_dab_eti_padding, dmc->dmc_dab_eti_bit_offset,
+            dmc->dmc_dab_eti_inverted);
+  } else if (dm->mm_type == MM_TYPE_DAB_GSE) {
+    config.format = DVBDAB_FORMAT_GSE;
+    config.filter_ip = dmc->dmc_dab_ip;
+    config.filter_port = dmc->dmc_dab_port;
+    tvhinfo(LS_LINUXDVB, "DAB-GSE streaming init: PID=0x%04X IP=%08X port=%d",
+            dab_pid, dmc->dmc_dab_ip, dmc->dmc_dab_port);
+  } else {
+    tvherror(LS_LINUXDVB, "Unknown DAB mux type %d", dm->mm_type);
+    return -1;
+  }
+
+  /* Create streamer context */
+  lfe->lfe_dab_ctx = dvbdab_streamer_create(&config);
+  if (!lfe->lfe_dab_ctx) {
+    tvherror(LS_LINUXDVB, "Failed to create DAB streaming context");
+    return -1;
+  }
+
+  /* Set output callback */
+  dvbdab_streamer_set_output(lfe->lfe_dab_ctx, linuxdvb_dab_output_cb, lfe);
+
+  /* Start all services (library will queue until ensemble discovery completes) */
+  dvbdab_streamer_start_all(lfe->lfe_dab_ctx);
+
+  /* Initialize output buffer */
+  sbuf_init(&lfe->lfe_dab_buffer);
+  lfe->lfe_dab_pid = dab_pid;
+  lfe->lfe_dab_type = dm->mm_type;
+
+  tvhinfo(LS_LINUXDVB, "DAB streaming initialized for PID 0x%04X", dab_pid);
+  return 0;
+}
+
+/*
+ * Cleanup DAB streaming
+ */
+static void
+linuxdvb_dab_done ( linuxdvb_frontend_t *lfe )
+{
+  if (lfe->lfe_dab_ctx) {
+    dvbdab_streamer_destroy(lfe->lfe_dab_ctx);
+    lfe->lfe_dab_ctx = NULL;
+  }
+  sbuf_free(&lfe->lfe_dab_buffer);
+  lfe->lfe_dab_pid = 0;
+  lfe->lfe_dab_type = 0;
+}
+
+/*
+ * Process DAB packets from raw TS buffer
+ * Filters DAB PID, feeds to streamer, outputs decoded TS
+ */
+static void
+linuxdvb_dab_process ( linuxdvb_frontend_t *lfe, mpegts_mux_instance_t *mmi,
+                       sbuf_t *sb )
+{
+  uint8_t *data = sb->sb_data;
+  size_t len = sb->sb_ptr;
+
+  /* Ensure aligned to packet boundary */
+  len = len - (len % 188);
+
+  /* Feed raw TS to DAB streamer (it filters the configured PID internally) */
+  if (len > 0) {
+    dvbdab_streamer_feed(lfe->lfe_dab_ctx, data, len);
+  }
+
+  /* Clear input buffer */
+  sbuf_cut(sb, len);
+
+  /* If we have decoded TS packets, send them */
+  if (lfe->lfe_dab_buffer.sb_ptr > 0) {
+    mpegts_input_recv_packets(mmi, &lfe->lfe_dab_buffer, 0, NULL);
+  }
+}
+
+/* **************************************************************************
  * Mux start/stop
  * *************************************************************************/
 
@@ -878,6 +1008,15 @@ linuxdvb_frontend_start_mux
   if (mm->mm_type == MM_TYPE_T2MI) {
     dvb_mux_t *dm = (dvb_mux_t *)mm;
     if (linuxdvb_t2mi_init(lfe, dm) < 0)
+      return SM_CODE_TUNING_FAILED;
+  }
+
+  /* Check for DAB mux (MPE, ETI, or GSE) */
+  if (mm->mm_type == MM_TYPE_DAB_MPE ||
+      mm->mm_type == MM_TYPE_DAB_ETI ||
+      mm->mm_type == MM_TYPE_DAB_GSE) {
+    dvb_mux_t *dm = (dvb_mux_t *)mm;
+    if (linuxdvb_dab_init(lfe, dm) < 0)
       return SM_CODE_TUNING_FAILED;
   }
 
@@ -934,6 +1073,11 @@ linuxdvb_frontend_update_pids
   /* For T2MI mux, always include the T2MI PID */
   if (lfe->lfe_t2mi_ctx && lfe->lfe_t2mi_pid > 0) {
     mpegts_pid_add(&lfe->lfe_pids, lfe->lfe_t2mi_pid, 10);
+  }
+
+  /* For DAB mux, always include the DAB PID */
+  if (lfe->lfe_dab_ctx && lfe->lfe_dab_pid > 0) {
+    mpegts_pid_add(&lfe->lfe_pids, lfe->lfe_dab_pid, 10);
   }
 
   RB_FOREACH(mp, &mm->mm_pids, mp_link) {
@@ -1556,9 +1700,11 @@ linuxdvb_frontend_input_thread ( void *aux )
       }
     }
 
-    /* Process - T2MI decapsulation or normal */
+    /* Process - T2MI, DAB, or normal */
     if (lfe->lfe_t2mi_ctx) {
       linuxdvb_t2mi_process(lfe, mmi, &sb);
+    } else if (lfe->lfe_dab_ctx) {
+      linuxdvb_dab_process(lfe, mmi, &sb);
     } else {
       mpegts_input_recv_packets(mmi, &sb, 0, NULL);
     }
