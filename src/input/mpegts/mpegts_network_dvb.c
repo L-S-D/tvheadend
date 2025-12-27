@@ -635,6 +635,55 @@ dvb_network_find_mux_t2mi
   return NULL;
 }
 
+dvb_mux_t *
+dvb_network_find_mux_dab_mpe
+  ( dvb_network_t *ln, dvb_mux_conf_t *dmc )
+{
+  mpegts_mux_t *mm;
+
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    if (mm->mm_type != MM_TYPE_DAB_MPE) continue;
+
+    dvb_mux_t *lm = (dvb_mux_t*)mm;
+
+    /* Must match: FE type, frequency, polarisation, PID, IP, port */
+    if (lm->lm_tuning.dmc_fe_type != dmc->dmc_fe_type) continue;
+    if (deltaU32(lm->lm_tuning.dmc_fe_freq, dmc->dmc_fe_freq) > 2000) continue;
+    if (lm->lm_tuning.u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation) continue;
+    if (lm->lm_tuning.dmc_fe_pid != dmc->dmc_fe_pid) continue;
+    if (lm->lm_tuning.dmc_dab_ip != dmc->dmc_dab_ip) continue;
+    if (lm->lm_tuning.dmc_dab_port != dmc->dmc_dab_port) continue;
+
+    return lm;
+  }
+  return NULL;
+}
+
+dvb_mux_t *
+dvb_network_find_mux_dab_eti
+  ( dvb_network_t *ln, dvb_mux_conf_t *dmc )
+{
+  mpegts_mux_t *mm;
+
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    if (mm->mm_type != MM_TYPE_DAB_ETI) continue;
+
+    dvb_mux_t *lm = (dvb_mux_t*)mm;
+
+    /* Must match: FE type, frequency, polarisation, PID, ETI params */
+    if (lm->lm_tuning.dmc_fe_type != dmc->dmc_fe_type) continue;
+    if (deltaU32(lm->lm_tuning.dmc_fe_freq, dmc->dmc_fe_freq) > 2000) continue;
+    if (lm->lm_tuning.u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation) continue;
+    if (lm->lm_tuning.dmc_fe_pid != dmc->dmc_fe_pid) continue;
+    if (lm->lm_tuning.dmc_dab_eti_padding != dmc->dmc_dab_eti_padding) continue;
+    if (lm->lm_tuning.dmc_dab_eti_bit_offset != dmc->dmc_dab_eti_bit_offset) continue;
+    if (lm->lm_tuning.dmc_dab_eti_inverted != dmc->dmc_dab_eti_inverted) continue;
+
+    return lm;
+  }
+  return NULL;
+}
+
 static htsmsg_t *
 dvb_network_config_save ( mpegts_network_t *mn, char *filename, size_t fsize )
 {

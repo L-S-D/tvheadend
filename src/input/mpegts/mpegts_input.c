@@ -560,6 +560,67 @@ mpegts_input_open_pid
   return mp;
 }
 
+/* Open PID with callback for raw packet delivery (used by DAB probe) */
+mpegts_pid_t *
+mpegts_input_open_pid_cb
+  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight,
+    void *owner, mpegts_raw_callback_t cb, void *opaque )
+{
+  mpegts_pid_t *mp;
+  mpegts_pid_sub_t *mps, *mps2;
+
+  assert(owner != NULL);
+  assert((type & (MPS_STREAM|MPS_SERVICE|MPS_RAW)) == 0 ||
+         (((type & MPS_STREAM) ? 1 : 0) +
+          ((type & MPS_SERVICE) ? 1 : 0) +
+          ((type & MPS_RAW) ? 1 : 0)) == 1);
+  lock_assert(&mi->mi_output_lock);
+
+  if (pid == MPEGTS_FULLMUX_PID)
+    mpegts_input_close_pids(mi, mm, owner, 1);
+
+  if ((mp = mpegts_mux_find_pid(mm, pid, 1))) {
+    mps = calloc(1, sizeof(*mps));
+    mps->mps_type   = type;
+    mps->mps_weight = weight;
+    mps->mps_owner  = owner;
+    mps->mps_raw_cb = cb;
+    mps->mps_raw_opaque = opaque;
+    if (pid == MPEGTS_FULLMUX_PID || pid == MPEGTS_TABLES_PID) {
+      mp->mp_type |= type;
+      LIST_FOREACH(mps2, &mm->mm_all_subs, mps_svcraw_link)
+        if (mps2->mps_owner == owner) break;
+      if (mps2 == NULL) {
+        LIST_INSERT_HEAD(&mm->mm_all_subs, mps, mps_svcraw_link);
+        tvhdebug(LS_MPEGTS, "%s - open PID %s subscription with callback [%04x/%p]",
+                 mm->mm_nicename, (type & MPS_TABLES) ? "tables" : "fullmux", type, owner);
+        mm->mm_update_pids_flag = 1;
+      } else {
+        tvherror(LS_MPEGTS,
+                 "%s - open PID %04x (%d) failed, dupe sub (owner %p)",
+                 mm->mm_nicename, mp->mp_pid, mp->mp_pid, owner);
+        free(mps);
+        mp = NULL;
+      }
+    } else if (!RB_INSERT_SORTED(&mp->mp_subs, mps, mps_link, mpegts_mps_cmp)) {
+      mp->mp_type |= type;
+      if (type & MPS_RAW)
+        LIST_INSERT_HEAD(&mp->mp_raw_subs, mps, mps_raw_link);
+      if (type & MPS_SERVICE)
+        LIST_INSERT_HEAD(&mp->mp_svc_subs, mps, mps_svcraw_link);
+      tvhdebug(LS_MPEGTS, "%s - open PID %04X (%d) with callback [%d/%p]",
+               mm->mm_nicename, mp->mp_pid, mp->mp_pid, type, owner);
+      mm->mm_update_pids_flag = 1;
+    } else {
+      tvherror(LS_MPEGTS, "%s - open PID %04x (%d) failed, dupe sub (owner %p)",
+               mm->mm_nicename, mp->mp_pid, mp->mp_pid, owner);
+      free(mps);
+      mp = NULL;
+    }
+  }
+  return mp;
+}
+
 int
 mpegts_input_close_pid
   ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner )
@@ -1457,6 +1518,7 @@ mpegts_input_process
   /* Process */
   tspos = mm->mm_input_pos;
   assert((len % 188) == 0);
+
   while (len > 0) {
 
     /*
@@ -1507,14 +1569,23 @@ mpegts_input_process
       type = mp->mp_type;
       
       /* Stream all PIDs */
-      LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link)
-        if ((mps->mps_type & MPS_ALL) || (type & (MPS_TABLE|MPS_FTABLE)))
-          ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+      LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link) {
+        if ((mps->mps_type & MPS_ALL) || (type & (MPS_TABLE|MPS_FTABLE))) {
+          if (mps->mps_raw_cb)
+            mps->mps_raw_cb(mps->mps_raw_opaque, tsb, llen);
+          else
+            ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+        }
+      }
 
       /* Stream raw PIDs */
       if (type & MPS_RAW) {
-        LIST_FOREACH(mps, &mp->mp_raw_subs, mps_raw_link)
-          ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+        LIST_FOREACH(mps, &mp->mp_raw_subs, mps_raw_link) {
+          if (mps->mps_raw_cb)
+            mps->mps_raw_cb(mps->mps_raw_opaque, tsb, llen);
+          else
+            ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+        }
       }
 
       /* Stream service data */
@@ -1579,8 +1650,12 @@ mpegts_input_process
     } else {
 
       /* Stream to all fullmux subscribers */
-      LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link)
-        ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+      LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link) {
+        if (mps->mps_raw_cb)
+          mps->mps_raw_cb(mps->mps_raw_opaque, tsb, llen);
+        else
+          ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+      }
 
     }
 

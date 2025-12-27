@@ -84,6 +84,10 @@ CFLAGS += -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-buil
 LDFLAGS += -lprofiler -ltcmalloc
 endif
 
+# libdvbdab for DAB detection
+CFLAGS  += -I/usr/src/libdvbdab/include
+LDFLAGS += -L/usr/src/libdvbdab/build -ldvbdab -lstdc++
+
 ifeq ($(COMPILER), clang)
 CFLAGS  += -Wno-microsoft -Qunused-arguments -Wno-unused-function
 CFLAGS  += -Wno-unused-value -Wno-tautological-constant-out-of-range-compare
@@ -393,6 +397,7 @@ SRCS-MPEGTS = \
 	src/input/mpegts/dvb_psi_lib.c \
 	src/input/mpegts/mpegts_network.c \
 	src/input/mpegts/mpegts_mux.c \
+	src/input/mpegts/dab/dab_probe.c \
 	src/input/mpegts/mpegts_service.c \
 	src/input/mpegts/mpegts_table.c \
 	src/input/mpegts/dvb_support.c \

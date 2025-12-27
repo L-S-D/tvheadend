@@ -22,6 +22,7 @@
 
 #include "input.h"
 #include "../t2mi/t2mi_decap.h"
+#include <dvbdab/dvbdab_c.h>
 
 #if ENABLE_LINUXDVB
 #include <linux/dvb/version.h>
@@ -186,6 +187,14 @@ struct linuxdvb_frontend
   t2mi_ctx_t               *lfe_t2mi_ctx;    /* Decapsulation context */
   sbuf_t                    lfe_t2mi_buffer; /* Output buffer for inner TS */
   uint16_t                  lfe_t2mi_pid;    /* T2MI PID being filtered */
+
+  /*
+   * DAB streaming (for DAB-MPE/ETI/GSE type muxes)
+   */
+  dvbdab_streamer_t        *lfe_dab_ctx;     /* libdvbdab streamer context */
+  sbuf_t                    lfe_dab_buffer;  /* Output buffer for decoded TS */
+  uint16_t                  lfe_dab_pid;     /* PID containing DAB data */
+  int                       lfe_dab_type;    /* MM_TYPE_DAB_MPE/ETI/GSE */
 };
 
 #if ENABLE_LINUXDVB_CA
