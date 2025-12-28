@@ -1187,6 +1187,21 @@ mpegts_mux_scan_timeout ( void *aux )
   mpegts_mux_t *mm = aux;
   mpegts_table_t *mt;
 
+  /* GSE muxes have no SI tables - keep waiting for ensemble discovery */
+  if (mm->mm_type == MM_TYPE_DAB_GSE) {
+    if (!mm->mm_scan_init) {
+      mm->mm_scan_init = 1;
+      /* Re-arm for longer timeout - GSE ensemble discovery takes time */
+      mtimer_arm_rel(&mm->mm_scan_timeout, mpegts_mux_scan_timeout, mm, sec2mono(30));
+      return;
+    }
+    /* Final timeout - mark as failed if still not complete */
+    /* Check state - GSE thread may have already completed the scan */
+    if (mm->mm_scan_state == MM_SCAN_STATE_ACTIVE)
+      mpegts_mux_scan_done(mm, mm->mm_nicename, -1);
+    return;
+  }
+
   /* Timeout */
   if (mm->mm_scan_init) {
     mpegts_mux_scan_done(mm, mm->mm_nicename, -1);

@@ -195,6 +195,17 @@ struct linuxdvb_frontend
   sbuf_t                    lfe_dab_buffer;  /* Output buffer for decoded TS */
   uint16_t                  lfe_dab_pid;     /* PID containing DAB data */
   int                       lfe_dab_type;    /* MM_TYPE_DAB_MPE/ETI/GSE */
+
+  /*
+   * GSE/BBFrame streaming (for DAB-GSE type muxes using DMX_SET_FE_STREAM)
+   * This uses a separate demux FD and thread because GSE requires
+   * raw frontend stream mode which is incompatible with normal PID filtering.
+   */
+  int                       lfe_gse_dmx_fd;  /* Demux FD for GSE (DMX_SET_FE_STREAM) */
+  pthread_t                 lfe_gse_thread;  /* GSE reading thread */
+  th_pipe_t                 lfe_gse_pipe;    /* Thread control pipe */
+  int                       lfe_gse_running; /* 1 if GSE thread is active */
+  int                       lfe_gse_discovery_done; /* 1 if ensemble extracted */
 };
 
 #if ENABLE_LINUXDVB_CA

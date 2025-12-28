@@ -40,10 +40,14 @@ static void
 linuxdvb_frontend_monitor ( void *aux );
 static void *
 linuxdvb_frontend_input_thread ( void *aux );
+static void *
+linuxdvb_gse_input_thread ( void *aux );
 static void
 linuxdvb_t2mi_done ( linuxdvb_frontend_t *lfe );
 static void
 linuxdvb_dab_done ( linuxdvb_frontend_t *lfe );
+static void
+linuxdvb_gse_done ( linuxdvb_frontend_t *lfe );
 
 /*
  *
@@ -691,13 +695,18 @@ linuxdvb_frontend_stop_mux
   mi->mi_display_name(mi, buf1, sizeof(buf1));
   tvhdebug(LS_LINUXDVB, "%s - stopping %s", buf1, mmi->mmi_mux->mm_nicename);
 
-  /* Stop thread FIRST (it uses T2MI/DAB contexts) */
+  /* Stop DVR thread FIRST (it uses T2MI/DAB contexts) */
   if (lfe->lfe_dvr_pipe.wr > 0) {
     tvh_write(lfe->lfe_dvr_pipe.wr, "", 1);
     tvhtrace(LS_LINUXDVB, "%s - waiting for dvr thread", buf1);
     pthread_join(lfe->lfe_dvr_thread, NULL);
     tvh_pipe_close(&lfe->lfe_dvr_pipe);
     tvhdebug(LS_LINUXDVB, "%s - stopped dvr thread", buf1);
+  }
+
+  /* Cleanup GSE if active (has its own thread) */
+  if (lfe->lfe_gse_running || lfe->lfe_gse_dmx_fd >= 0) {
+    linuxdvb_gse_done(lfe);
   }
 
   /* Cleanup T2MI if active (after thread stopped) */
@@ -991,6 +1000,446 @@ linuxdvb_dab_process ( linuxdvb_frontend_t *lfe, mpegts_mux_instance_t *mmi,
 }
 
 /* **************************************************************************
+ * GSE/BBFrame streaming (for DAB-GSE type muxes using DMX_SET_FE_STREAM)
+ *
+ * GSE (Generic Stream Encapsulation) carries IP packets directly in DVB-S2
+ * BBFrames. Unlike normal TS streams, GSE has no PAT/PMT/SDT tables.
+ * The demux must be configured with DMX_SET_FE_STREAM to receive raw
+ * frontend stream data (BBFrame-in-PseudoTS format).
+ *
+ * Data format: [47 PP PP CC] [00 80 00 LL] [B8|NN] [payload...]
+ * where 0xB8 sync byte at offset 8 indicates BBFrame start.
+ * *************************************************************************/
+
+/*
+ * GSE input thread - reads from demux FD with DMX_SET_FE_STREAM mode
+ * This is separate from the normal DVR thread because GSE uses a different
+ * demux mode that's incompatible with normal PID filtering.
+ */
+static void *
+linuxdvb_gse_input_thread ( void *aux )
+{
+  linuxdvb_frontend_t *lfe = aux;
+  mpegts_mux_instance_t *mmi;
+  char name[256], b;
+  tvhpoll_event_t ev[2];
+  tvhpoll_t *efd;
+  ssize_t n;
+  sbuf_t sb;
+  int nfds, nodata = 4;
+
+  /* Get MMI */
+  tvh_mutex_lock(&lfe->lfe_dvr_lock);
+  lfe->mi_display_name((mpegts_input_t*)lfe, name, sizeof(name));
+  mmi = LIST_FIRST(&lfe->mi_mux_active);
+  tvh_cond_signal(&lfe->lfe_dvr_cond, 0);
+  tvh_mutex_unlock(&lfe->lfe_dvr_lock);
+  if (mmi == NULL) return NULL;
+
+  tvhdebug(LS_LINUXDVB, "%s - GSE thread starting, dmx_fd=%d",
+           name, lfe->lfe_gse_dmx_fd);
+
+  /* Setup poll on GSE demux FD */
+  efd = tvhpoll_create(2);
+  memset(ev, 0, sizeof(ev));
+  ev[0].events = TVHPOLL_IN;
+  ev[0].fd     = lfe->lfe_gse_dmx_fd;
+  ev[0].ptr    = lfe;
+  ev[1].events = TVHPOLL_IN;
+  ev[1].fd     = lfe->lfe_gse_pipe.rd;
+  ev[1].ptr    = &lfe->lfe_gse_pipe;
+  tvhpoll_add(efd, ev, 2);
+
+  /* Allocate read buffer - GSE can be high bandwidth */
+  sbuf_init_fixed(&sb, 128 * 1024);  /* 128KB buffer */
+
+  /* Read loop */
+  while (tvheadend_is_running()) {
+    nfds = tvhpoll_wait(efd, ev, 1, 150);
+    if (nfds == 0) { /* timeout */
+      if (nodata == 0) {
+        tvhwarn(LS_LINUXDVB, "%s - GSE poll timeout", name);
+        nodata = 50;
+        lfe->lfe_nodata = 1;
+      } else {
+        nodata--;
+      }
+    }
+    if (nfds < 1) continue;
+
+    /* Check for pipe signal (stop request) */
+    if (ev[0].ptr == &lfe->lfe_gse_pipe) {
+      if (read(lfe->lfe_gse_pipe.rd, &b, 1) > 0) {
+        if (b != 'c')
+          break;
+      }
+      continue;
+    }
+    if (ev[0].ptr != lfe) break;
+
+    nodata = 50;
+    lfe->lfe_nodata = 0;
+
+    /* Read from GSE demux FD */
+    if ((n = sbuf_read(&sb, lfe->lfe_gse_dmx_fd)) < 0) {
+      if (ERRNO_AGAIN(errno))
+        continue;
+      if (errno == EOVERFLOW) {
+        tvhwarn(LS_LINUXDVB, "%s - GSE read() EOVERFLOW", name);
+        continue;
+      }
+      tvherror(LS_LINUXDVB, "%s - GSE read() error %d (%s)",
+               name, errno, strerror(errno));
+      break;
+    }
+
+    /* Process GSE/BBFrame data through DAB streamer */
+    if (lfe->lfe_dab_ctx) {
+      linuxdvb_dab_process(lfe, mmi, &sb);
+
+      /* Check if ensemble discovery complete */
+      mpegts_mux_t *mm = mmi->mmi_mux;
+      dvb_mux_t *dm = (dvb_mux_t *)mm;
+      int is_ready = dvbdab_streamer_is_basic_ready(lfe->lfe_dab_ctx);
+
+      if (is_ready && !lfe->lfe_gse_discovery_done) {
+        lfe->lfe_gse_discovery_done = 1;
+        dvb_network_t *ln = (dvb_network_t *)mm->mm_network;
+
+        if (dm->lm_tuning.dmc_dab_ip == 0) {
+          /* Discovery mode (IP=0): create child muxes for all ensembles */
+          int ens_count = 0;
+          dvbdab_ensemble_t *ensembles = dvbdab_streamer_get_all_ensembles(lfe->lfe_dab_ctx, &ens_count);
+
+          tvhinfo(LS_LINUXDVB, "%s - GSE discovered %d ensemble(s)", name, ens_count);
+
+          if (ensembles && ens_count > 0) {
+            /* Need global lock for mux creation and scan queue */
+            tvh_mutex_lock(&global_lock);
+
+            for (int i = 0; i < ens_count; i++) {
+              dvbdab_ensemble_t *ens = &ensembles[i];
+              char ip_str[20];
+              dvb_mux_conf_t dmc;
+              dvb_mux_t *child_mux;
+
+              snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d",
+                       (ens->source_ip >> 24) & 0xFF,
+                       (ens->source_ip >> 16) & 0xFF,
+                       (ens->source_ip >> 8) & 0xFF,
+                       ens->source_ip & 0xFF);
+
+              tvhinfo(LS_LINUXDVB, "%s - GSE ensemble EID=0x%04X \"%s\" at %s:%d with %d services",
+                      name, ens->eid, ens->label, ip_str, ens->source_port, ens->service_count);
+
+              /* Copy outer mux tuning parameters, add ensemble IP/port */
+              dmc = dm->lm_tuning;
+              dmc.dmc_dab_ip = ens->source_ip;
+              dmc.dmc_dab_port = ens->source_port;
+
+              /* Check if child mux already exists */
+              child_mux = dvb_network_find_mux_dab_gse(ln, &dmc);
+              if (!child_mux) {
+                /* Create new child GSE mux */
+                child_mux = dvb_mux_create0(ln, MPEGTS_ONID_NONE, ens->eid,
+                                            &dmc, NULL, NULL);
+                if (child_mux) {
+                  char label_buf[32];
+                  child_mux->mm_type = MM_TYPE_DAB_GSE;
+
+                  /* Set provider network name - use label if available, else EID */
+                  free(child_mux->mm_provider_network_name);
+                  if (ens->label[0]) {
+                    child_mux->mm_provider_network_name = strdup(ens->label);
+                  } else {
+                    snprintf(label_buf, sizeof(label_buf), "DAB EID 0x%04X", ens->eid);
+                    child_mux->mm_provider_network_name = strdup(label_buf);
+                  }
+
+                  tvhinfo(LS_LINUXDVB, "%s - created GSE child mux \"%s\" (EID=0x%04X) at %s:%d",
+                          name, ens->label, ens->eid, ip_str, ens->source_port);
+
+                  child_mux->mm_scan_first = gclk();
+                  child_mux->mm_scan_last_seen = child_mux->mm_scan_first;
+                  idnode_changed(&child_mux->mm_id);
+
+                  /* Queue child mux for scanning - will stream and discover services */
+                  mpegts_network_scan_queue_add((mpegts_mux_t *)child_mux,
+                                                SUBSCRIPTION_PRIO_SCAN_INIT,
+                                                SUBSCRIPTION_INITSCAN, 10);
+                }
+              } else {
+                child_mux->mm_scan_last_seen = gclk();
+                idnode_changed(&child_mux->mm_id);
+                tvhdebug(LS_LINUXDVB, "%s - GSE mux already exists for EID=0x%04X at %s:%d",
+                         name, ens->eid, ip_str, ens->source_port);
+              }
+            }
+
+            if (mm->mm_scan_state == MM_SCAN_STATE_ACTIVE) {
+              tvhinfo(LS_LINUXDVB, "%s - GSE discovery complete", name);
+              mpegts_mux_scan_done(mm, name, 1);
+            }
+
+            tvh_mutex_unlock(&global_lock);
+            dvbdab_streamer_free_all_ensembles(ensembles, ens_count);
+          } else {
+            /* No ensembles found - still complete the scan */
+            if (mm->mm_scan_state == MM_SCAN_STATE_ACTIVE) {
+              tvh_mutex_lock(&global_lock);
+              tvhinfo(LS_LINUXDVB, "%s - GSE discovery complete (no ensembles)", name);
+              mpegts_mux_scan_done(mm, name, 1);
+              tvh_mutex_unlock(&global_lock);
+            }
+          }
+        } else {
+          /* Streaming mode (specific IP): create services from FIC data */
+          dvbdab_ensemble_t *ens = dvbdab_streamer_get_ensemble(lfe->lfe_dab_ctx);
+          if (ens) {
+            tvhinfo(LS_LINUXDVB, "%s - GSE streaming ensemble EID=0x%04X \"%s\" with %d services",
+                    name, ens->eid, ens->label, ens->service_count);
+
+            tvh_mutex_lock(&global_lock);
+
+            /* Update mux provider name if we have a label now */
+            if (ens->label[0] && (!mm->mm_provider_network_name ||
+                strncmp(mm->mm_provider_network_name, "DAB EID", 7) == 0)) {
+              free(mm->mm_provider_network_name);
+              mm->mm_provider_network_name = strdup(ens->label);
+              idnode_changed(&mm->mm_id);
+            }
+
+            /* Create services from FIC data (check for duplicates first) */
+            for (int j = 0; j < ens->service_count; j++) {
+              dvbdab_service_t *svc = &ens->services[j];
+              mpegts_service_t *s;
+
+              /* Check if service already exists */
+              s = mpegts_mux_find_service(mm, svc->sid);
+              if (!s) {
+                s = mpegts_service_create1(NULL, mm, svc->sid, svc->subchannel_id, NULL);
+                if (s) {
+                  tvhdebug(LS_LINUXDVB, "%s - created service SID=0x%08X \"%s\"",
+                           name, svc->sid, svc->label);
+                }
+              }
+              if (s) {
+                if (svc->label[0]) {
+                  free(s->s_dvb_svcname);
+                  s->s_dvb_svcname = strdup(svc->label);
+                }
+                if (ens->label[0]) {
+                  free(s->s_dvb_provider);
+                  s->s_dvb_provider = strdup(ens->label);
+                }
+                s->s_dvb_servicetype = 0x02; /* Digital Radio */
+                s->s_verified = 1;
+                idnode_changed(&s->s_id);
+              }
+            }
+
+            if (mm->mm_scan_state == MM_SCAN_STATE_ACTIVE) {
+              tvhinfo(LS_LINUXDVB, "%s - GSE streaming scan complete, %d services",
+                      name, ens->service_count);
+              mpegts_mux_scan_done(mm, name, 1);
+            }
+
+            tvh_mutex_unlock(&global_lock);
+            dvbdab_streamer_free_ensemble(ens);
+          }
+        }
+      }
+    }
+  }
+
+  tvhdebug(LS_LINUXDVB, "%s - GSE thread stopping", name);
+  sbuf_free(&sb);
+  tvhpoll_destroy(efd);
+  return NULL;
+}
+
+/*
+ * Initialize GSE streaming with DMX_SET_FE_STREAM mode
+ * This configures the demux for raw frontend stream access (BBFrame-in-PseudoTS)
+ */
+static int
+linuxdvb_gse_init ( linuxdvb_frontend_t *lfe, dvb_mux_t *dm )
+{
+  dvb_mux_conf_t *dmc = &dm->lm_tuning;
+  dvbdab_streamer_config_t config;
+  struct dmx_pes_filter_params pes_filter;
+  uint32_t buffer_size = 32 * 1024 * 1024;  /* 32MB like lsdvb/neumo */
+  char name[256];
+
+  lfe->mi_display_name((mpegts_input_t*)lfe, name, sizeof(name));
+
+  /* Reset discovery flag for new scan */
+  lfe->lfe_gse_discovery_done = 0;
+
+  /* GSE requires Neumo DVB driver (stid135) for DMX_SET_FE_STREAM */
+  if (!lfe->lfe_neumo_supported) {
+    tvherror(LS_LINUXDVB, "%s - GSE: requires Neumo DVB driver (stid135) support",
+             name);
+    return -1;
+  }
+
+  /* Step 1: Open demux for GSE */
+  lfe->lfe_gse_dmx_fd = tvh_open(lfe->lfe_dmx_path, O_RDONLY | O_NONBLOCK, 0);
+  if (lfe->lfe_gse_dmx_fd < 0) {
+    tvherror(LS_LINUXDVB, "%s - GSE: failed to open demux %s: %s",
+             name, lfe->lfe_dmx_path, strerror(errno));
+    return -1;
+  }
+
+  /* Step 2: Set large buffer (GSE streams can be high bandwidth) */
+  if (ioctl(lfe->lfe_gse_dmx_fd, DMX_SET_BUFFER_SIZE, buffer_size) < 0) {
+    tvhwarn(LS_LINUXDVB, "%s - GSE: failed to set DMX buffer size: %s",
+            name, strerror(errno));
+    /* Non-fatal, continue */
+  }
+
+  /* Step 3: DMX_SET_FE_STREAM mode - raw frontend stream access */
+  if (ioctl(lfe->lfe_gse_dmx_fd, DMX_SET_FE_STREAM) < 0) {
+    tvherror(LS_LINUXDVB, "%s - GSE: DMX_SET_FE_STREAM failed: %s",
+             name, strerror(errno));
+    close(lfe->lfe_gse_dmx_fd);
+    lfe->lfe_gse_dmx_fd = -1;
+    return -1;
+  }
+  tvhinfo(LS_LINUXDVB, "%s - GSE: DMX_SET_FE_STREAM enabled", name);
+
+  /* Step 4: Set PES filter with PID 0x2000 (full TS) */
+  memset(&pes_filter, 0, sizeof(pes_filter));
+  pes_filter.pid = 0x2000;  /* Full TS wildcard */
+  pes_filter.input = DMX_IN_FRONTEND;
+  pes_filter.output = DMX_OUT_TSDEMUX_TAP;  /* TSDEMUX_TAP, not TS_TAP */
+  pes_filter.pes_type = DMX_PES_OTHER;
+  pes_filter.flags = 0;  /* NO DMX_IMMEDIATE_START */
+
+  if (ioctl(lfe->lfe_gse_dmx_fd, DMX_SET_PES_FILTER, &pes_filter) < 0) {
+    tvherror(LS_LINUXDVB, "%s - GSE: DMX_SET_PES_FILTER failed: %s",
+             name, strerror(errno));
+    close(lfe->lfe_gse_dmx_fd);
+    lfe->lfe_gse_dmx_fd = -1;
+    return -1;
+  }
+
+  /* Step 5: Explicit DMX_START */
+  if (ioctl(lfe->lfe_gse_dmx_fd, DMX_START) < 0) {
+    tvherror(LS_LINUXDVB, "%s - GSE: DMX_START failed: %s",
+             name, strerror(errno));
+    close(lfe->lfe_gse_dmx_fd);
+    lfe->lfe_gse_dmx_fd = -1;
+    return -1;
+  }
+  tvhinfo(LS_LINUXDVB, "%s - GSE: DMX_START successful", name);
+
+  /* Step 6: Create DAB streamer with BBF_TS format */
+  memset(&config, 0, sizeof(config));
+  config.format = DVBDAB_FORMAT_BBF_TS;  /* BBFrame-in-PseudoTS */
+  config.pid = 270;  /* BBF pseudo-TS is on PID 270 */
+  config.filter_ip = dmc->dmc_dab_ip;
+  config.filter_port = dmc->dmc_dab_port;
+
+  tvhinfo(LS_LINUXDVB, "%s - GSE discovery init: format=BBF_TS IP=%08X port=%d",
+          name, dmc->dmc_dab_ip, dmc->dmc_dab_port);
+
+  lfe->lfe_dab_ctx = dvbdab_streamer_create(&config);
+  if (!lfe->lfe_dab_ctx) {
+    tvherror(LS_LINUXDVB, "%s - GSE: failed to create DAB streaming context",
+             name);
+    ioctl(lfe->lfe_gse_dmx_fd, DMX_STOP);
+    close(lfe->lfe_gse_dmx_fd);
+    lfe->lfe_gse_dmx_fd = -1;
+    return -1;
+  }
+
+  lfe->lfe_dab_pid = 270;  /* BBF pseudo-TS is on PID 270 */
+  lfe->lfe_dab_type = MM_TYPE_DAB_GSE;
+
+  /* Check if this is discovery mode (IP=0) or streaming mode (specific IP) */
+  if (dmc->dmc_dab_ip == 0) {
+    /* Discovery mode - just find ensembles/IPs, no audio streaming */
+    tvhinfo(LS_LINUXDVB, "%s - GSE discovery initialized", name);
+  } else {
+    /* Streaming mode - specific IP filter, set up audio output */
+    dvbdab_streamer_set_output(lfe->lfe_dab_ctx, linuxdvb_dab_output_cb, lfe);
+    dvbdab_streamer_start_all(lfe->lfe_dab_ctx);
+    sbuf_init(&lfe->lfe_dab_buffer);
+    tvhinfo(LS_LINUXDVB, "%s - GSE streaming initialized", name);
+  }
+  return 0;
+}
+
+/*
+ * Cleanup GSE streaming resources
+ */
+static void
+linuxdvb_gse_done ( linuxdvb_frontend_t *lfe )
+{
+  char name[256];
+
+  lfe->mi_display_name((mpegts_input_t*)lfe, name, sizeof(name));
+
+  /* Stop GSE thread if running */
+  if (lfe->lfe_gse_running && lfe->lfe_gse_pipe.wr > 0) {
+    tvh_write(lfe->lfe_gse_pipe.wr, "", 1);
+    tvhtrace(LS_LINUXDVB, "%s - waiting for GSE thread", name);
+    pthread_join(lfe->lfe_gse_thread, NULL);
+    tvh_pipe_close(&lfe->lfe_gse_pipe);
+    lfe->lfe_gse_running = 0;
+    tvhdebug(LS_LINUXDVB, "%s - stopped GSE thread", name);
+  }
+
+  /* Close GSE demux */
+  if (lfe->lfe_gse_dmx_fd >= 0) {
+    ioctl(lfe->lfe_gse_dmx_fd, DMX_STOP);
+    close(lfe->lfe_gse_dmx_fd);
+    lfe->lfe_gse_dmx_fd = -1;
+  }
+
+  /* Clean up DAB context (shared with DAB-MPE/ETI) */
+  if (lfe->lfe_dab_ctx) {
+    dvbdab_streamer_destroy(lfe->lfe_dab_ctx);
+    lfe->lfe_dab_ctx = NULL;
+  }
+  sbuf_free(&lfe->lfe_dab_buffer);
+  lfe->lfe_dab_pid = 0;
+  lfe->lfe_dab_type = 0;
+}
+
+/*
+ * Start GSE thread after tuner lock
+ */
+static void
+linuxdvb_gse_start_thread ( linuxdvb_frontend_t *lfe )
+{
+  char name[256];
+  int e;
+
+  lfe->mi_display_name((mpegts_input_t*)lfe, name, sizeof(name));
+
+  if (lfe->lfe_gse_running) {
+    tvhwarn(LS_LINUXDVB, "%s - GSE thread already running", name);
+    return;
+  }
+
+  tvh_pipe(O_NONBLOCK, &lfe->lfe_gse_pipe);
+  tvh_mutex_lock(&lfe->lfe_dvr_lock);
+  tvh_thread_create(&lfe->lfe_gse_thread, NULL,
+                    linuxdvb_gse_input_thread, lfe, "lnxdvb-gse");
+  do {
+    e = tvh_cond_wait(&lfe->lfe_dvr_cond, &lfe->lfe_dvr_lock);
+    if (e == ETIMEDOUT)
+      break;
+  } while (ERRNO_AGAIN(e));
+  tvh_mutex_unlock(&lfe->lfe_dvr_lock);
+
+  lfe->lfe_gse_running = 1;
+  tvhinfo(LS_LINUXDVB, "%s - GSE thread started", name);
+}
+
+/* **************************************************************************
  * Mux start/stop
  * *************************************************************************/
 
@@ -1011,14 +1460,15 @@ linuxdvb_frontend_start_mux
       return SM_CODE_TUNING_FAILED;
   }
 
-  /* Check for DAB mux (MPE, ETI, or GSE) */
+  /* Check for DAB mux (MPE or ETI - normal TS path) */
   if (mm->mm_type == MM_TYPE_DAB_MPE ||
-      mm->mm_type == MM_TYPE_DAB_ETI ||
-      mm->mm_type == MM_TYPE_DAB_GSE) {
+      mm->mm_type == MM_TYPE_DAB_ETI) {
     dvb_mux_t *dm = (dvb_mux_t *)mm;
     if (linuxdvb_dab_init(lfe, dm) < 0)
       return SM_CODE_TUNING_FAILED;
   }
+
+  /* GSE mux setup happens after lock in monitor - just mark for later */
 
   lfe->lfe_refcount++;
   lfe->lfe_in_setup = 1;
@@ -1075,8 +1525,8 @@ linuxdvb_frontend_update_pids
     mpegts_pid_add(&lfe->lfe_pids, lfe->lfe_t2mi_pid, 10);
   }
 
-  /* For DAB mux, always include the DAB PID */
-  if (lfe->lfe_dab_ctx && lfe->lfe_dab_pid > 0) {
+  /* For DAB mux, always include the DAB PID (but not for GSE which uses DMX_SET_FE_STREAM) */
+  if (lfe->lfe_dab_ctx && lfe->lfe_dab_pid > 0 && lfe->lfe_dab_pid < 8192) {
     mpegts_pid_add(&lfe->lfe_pids, lfe->lfe_dab_pid, 10);
   }
 
@@ -1250,22 +1700,37 @@ linuxdvb_frontend_monitor ( void *aux )
     if (status == SIGNAL_GOOD) {
       tvhdebug(LS_LINUXDVB, "%s - locked", buf);
       lfe->lfe_locked = 1;
-  
-      /* Start input */
-      tvh_pipe(O_NONBLOCK, &lfe->lfe_dvr_pipe);
-      tvh_mutex_lock(&lfe->lfe_dvr_lock);
-      tvh_thread_create(&lfe->lfe_dvr_thread, NULL,
-                        linuxdvb_frontend_input_thread, lfe, "lnxdvb-front");
-      do {
-        e = tvh_cond_wait(&lfe->lfe_dvr_cond, &lfe->lfe_dvr_lock);
-        if (e == ETIMEDOUT)
-          break;
-      } while (ERRNO_AGAIN(e));
-      tvh_mutex_unlock(&lfe->lfe_dvr_lock);
 
-      /* Table handlers */
-      psi_tables_install((mpegts_input_t *)lfe, mm,
-                         ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys);
+      /* GSE uses special DMX_SET_FE_STREAM mode with its own thread */
+      if (mm->mm_type == MM_TYPE_DAB_GSE) {
+        dvb_mux_t *dm = (dvb_mux_t *)mm;
+        tvhinfo(LS_LINUXDVB, "%s - initializing GSE after lock", buf);
+        if (linuxdvb_gse_init(lfe, dm) < 0) {
+          tvherror(LS_LINUXDVB, "%s - GSE init failed", buf);
+          /* Let scan timeout handle failure */
+        } else {
+          tvhinfo(LS_LINUXDVB, "%s - starting GSE input thread", buf);
+          linuxdvb_gse_start_thread(lfe);
+          /* Scan stays active - ensemble discovery callback will mark complete */
+        }
+        /* GSE has no PAT/PMT/SDT, skip table handlers */
+      } else {
+        /* Start normal DVR input thread */
+        tvh_pipe(O_NONBLOCK, &lfe->lfe_dvr_pipe);
+        tvh_mutex_lock(&lfe->lfe_dvr_lock);
+        tvh_thread_create(&lfe->lfe_dvr_thread, NULL,
+                          linuxdvb_frontend_input_thread, lfe, "lnxdvb-front");
+        do {
+          e = tvh_cond_wait(&lfe->lfe_dvr_cond, &lfe->lfe_dvr_lock);
+          if (e == ETIMEDOUT)
+            break;
+        } while (ERRNO_AGAIN(e));
+        tvh_mutex_unlock(&lfe->lfe_dvr_lock);
+
+        /* Table handlers (not for GSE - no PAT/PMT) */
+        psi_tables_install((mpegts_input_t *)lfe, mm,
+                           ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys);
+      }
 
     /* Re-arm (quick) */
     } else {

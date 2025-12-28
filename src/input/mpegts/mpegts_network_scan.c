@@ -91,6 +91,9 @@ mpegts_network_scan_do_mux ( mpegts_mux_queue_t *q, mpegts_mux_t *mm )
          state == MM_SCAN_STATE_IPEND ||
          state == MM_SCAN_STATE_ACTIVE);
 
+  tvhdebug(LS_MPEGTS, "scan_do_mux: %s type=%d state=%d active=%p",
+           mm->mm_nicename, mm->mm_type, state, mm->mm_active);
+
   /* Don't try to subscribe already tuned muxes */
   if (mm->mm_active) return 0;
 
@@ -99,6 +102,8 @@ mpegts_network_scan_do_mux ( mpegts_mux_queue_t *q, mpegts_mux_t *mm )
                            mm->mm_scan_flags |
                            SUBSCRIPTION_ONESHOT |
                            SUBSCRIPTION_TABLES);
+
+  tvhdebug(LS_MPEGTS, "scan_do_mux: %s subscribe returned %d", mm->mm_nicename, r);
 
   /* Started */
   state = mm->mm_scan_state;
@@ -308,8 +313,10 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
   mm->mm_scan_init  = 0;
   TAILQ_INSERT_TAIL(&mn->mn_scan_active, mm, mm_scan_link);
 
-  /* Start DAB probe in parallel with SI scan */
-  mpegts_dab_probe_start(mm);
+  /* Start DAB probe in parallel with SI scan
+   * Skip for GSE muxes - GSE discovery uses BBF-TS data in linuxdvb_gse_thread */
+  if (mm->mm_type != MM_TYPE_DAB_GSE)
+    mpegts_dab_probe_start(mm);
 }
 
 /* Mux has been reactivated */
@@ -352,6 +359,9 @@ mpegts_network_scan_queue_add
   if (!mm->mm_is_enabled(mm)) return;
 
   if (weight <= 0) return;
+
+  /* GSE muxes proceed normally but will complete after lock
+   * (no SI tables - completion triggered in linuxdvb_frontend_monitor) */
 
   if (weight > mm->mm_scan_weight) {
     mm->mm_scan_weight = weight;
