@@ -136,6 +136,7 @@ JAVASCRIPT += $(ROOTPATH)/app/caclient.js
 endif
 
 JAVASCRIPT += $(ROOTPATH)/app/tvadapters.js
+JAVASCRIPT += $(ROOTPATH)/app/blindscan.js
 JAVASCRIPT += $(ROOTPATH)/app/idnode.js
 JAVASCRIPT += $(ROOTPATH)/app/profile.js
 ifeq ($(CONFIG_LIBAV), yes)

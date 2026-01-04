@@ -325,7 +325,8 @@ SRCS-2 = \
 	src/api/api_language.c \
 	src/api/api_satip.c \
 	src/api/api_timeshift.c \
-	src/api/api_wizard.c
+	src/api/api_wizard.c \
+	src/api/api_blindscan.c
 
 SRCS-2 += \
         src/parsers/message.c \
@@ -435,7 +436,8 @@ SRCS-LINUXDVB = \
 	src/input/mpegts/linuxdvb/linuxdvb_lnb.c \
 	src/input/mpegts/linuxdvb/linuxdvb_switch.c \
 	src/input/mpegts/linuxdvb/linuxdvb_rotor.c \
-	src/input/mpegts/linuxdvb/linuxdvb_en50494.c
+	src/input/mpegts/linuxdvb/linuxdvb_en50494.c \
+	src/input/mpegts/linuxdvb/linuxdvb_blindscan.c
 SRCS-${CONFIG_LINUXDVB} += $(SRCS-LINUXDVB)
 I18N-C += $(SRCS-LINUXDVB)
 

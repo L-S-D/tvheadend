@@ -47,7 +47,7 @@ tvheadend.networks = function(panel, index)
                     url: 'api/mpegts/network/scan',
                     params: {
                         uuid: Ext.encode(uuids)
-                    },    
+                    },
                     success: function(d) {
                         store.reload();
                     }
@@ -56,8 +56,32 @@ tvheadend.networks = function(panel, index)
         }
     };
 
+    var blindscanButton = {
+        name: 'blindscan',
+        builder: function() {
+            return new Ext.Toolbar.Button({
+                tooltip: _('Blindscan selected DVB-S/S2 network'),
+                iconCls: 'find',
+                text: _('Blindscan'),
+                disabled: true
+            });
+        },
+        callback: function(conf, e, store, select) {
+            var r = select.getSelections();
+            if (r && r.length === 1) {
+                var rec = r[0];
+                if (tvheadend.blindscan) {
+                    tvheadend.blindscan.openModal(rec.id, rec.data.networkname || rec.id);
+                }
+            }
+        }
+    };
+
     function selected(s, abuttons) {
-        abuttons.scan.setDisabled(!s || s.length <= 0);
+        var r = s.getSelections();
+        abuttons.scan.setDisabled(!r || r.length <= 0);
+        if (abuttons.blindscan)
+            abuttons.blindscan.setDisabled(!r || r.length !== 1);
     }
 
     tvheadend.idnode_grid(panel, {
@@ -67,7 +91,7 @@ tvheadend.networks = function(panel, index)
         titleP: _('Networks'),
         iconCls: 'networks',
         tabIndex: index,
-        tbar: [scanButton],
+        tbar: [scanButton, blindscanButton],
         add: {
             titleS: _('Network'),
             select: {
