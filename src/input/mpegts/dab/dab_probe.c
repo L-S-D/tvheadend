@@ -72,11 +72,15 @@ init_new_dab_mux(dvb_mux_t *dab_mux, const char *label)
 }
 
 /*
- * Update existing mux timestamp
+ * Update existing mux timestamp and optionally provider network name
  */
 static void
-update_existing_mux(dvb_mux_t *dab_mux)
+update_existing_mux(dvb_mux_t *dab_mux, const char *label)
 {
+  if (label && label[0]) {
+    free(dab_mux->mm_provider_network_name);
+    dab_mux->mm_provider_network_name = strdup(label);
+  }
   dab_mux->mm_scan_last_seen = gclk();
   idnode_changed(&dab_mux->mm_id);
 }
@@ -134,9 +138,9 @@ process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln,
     dab_mux = dvb_network_find_mux_dab_mpe(ln, &dmc);
   }
 
-  /* Existing mux found - just update timestamp */
+  /* Existing mux found - update timestamp and label */
   if (dab_mux) {
-    update_existing_mux(dab_mux);
+    update_existing_mux(dab_mux, ens->label);
     return 1;
   }
 
@@ -180,9 +184,9 @@ process_etina_stream(mpegts_mux_t *mm, dvb_network_t *ln,
 
   dab_mux = dvb_network_find_mux_dab_eti(ln, &dmc);
 
-  /* Existing mux found - just update timestamp */
+  /* Existing mux found - update timestamp and label */
   if (dab_mux) {
-    update_existing_mux(dab_mux);
+    update_existing_mux(dab_mux, "ETI-NA");
     return 1;
   }
 

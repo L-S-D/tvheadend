@@ -141,6 +141,10 @@ gse_process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln, dvb_mux_t *outer_dm,
   if (dab_mux) {
     tvhdebug(LS_MPEGTS, "mux %s: DAB-GSE mux already exists for %s:%d",
              mm->mm_nicename, ip_str, ens->source_port);
+    if (ens->label[0]) {
+      free(dab_mux->mm_provider_network_name);
+      dab_mux->mm_provider_network_name = strdup(ens->label);
+    }
     dab_mux->mm_scan_last_seen = gclk();
     idnode_changed(&dab_mux->mm_id);
     return 1;
