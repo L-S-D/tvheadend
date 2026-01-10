@@ -182,11 +182,16 @@ struct linuxdvb_frontend
   linuxdvb_satconf_t       *lfe_satconf;
 
   /*
+   * Sub-mux encapsulation PID (T2MI, DAB-ETI, DAB-MPE, DAB-TSNI)
+   * Used for PID filtering in linuxdvb_frontend_update_pids()
+   */
+  uint16_t                  lfe_stream_pid;  /* Encapsulation PID for sub-mux */
+
+  /*
    * T2MI decapsulation (for T2MI type muxes)
    */
   t2mi_ctx_t               *lfe_t2mi_ctx;    /* Decapsulation context */
   sbuf_t                    lfe_t2mi_buffer; /* Output buffer for inner TS */
-  uint16_t                  lfe_t2mi_pid;    /* T2MI PID being filtered */
 
   /*
    * DAB streaming (for DAB-MPE/ETI type muxes)

@@ -819,7 +819,7 @@ linuxdvb_t2mi_init ( linuxdvb_frontend_t *lfe, dvb_mux_t *dm )
 
   /* Initialize output buffer */
   sbuf_init(&lfe->lfe_t2mi_buffer);
-  lfe->lfe_t2mi_pid = t2mi_pid;
+  lfe->lfe_stream_pid = t2mi_pid;
 
   tvhinfo(LS_LINUXDVB, "T2MI decapsulation initialized for PID 0x%04X", t2mi_pid);
   return 0;
@@ -836,7 +836,7 @@ linuxdvb_t2mi_done ( linuxdvb_frontend_t *lfe )
     lfe->lfe_t2mi_ctx = NULL;
   }
   sbuf_free(&lfe->lfe_t2mi_buffer);
-  lfe->lfe_t2mi_pid = 0;
+  lfe->lfe_stream_pid = 0;
 }
 
 /*
@@ -937,6 +937,7 @@ linuxdvb_dab_init ( linuxdvb_frontend_t *lfe, dvb_mux_t *dm, int format )
 
   /* Initialize output buffer */
   sbuf_init(&lfe->lfe_dab_buffer);
+  lfe->lfe_stream_pid = cfg.pid;
 
   return 0;
 }
@@ -952,6 +953,7 @@ linuxdvb_dab_done ( linuxdvb_frontend_t *lfe )
     lfe->lfe_dab_ctx = NULL;
   }
   sbuf_free(&lfe->lfe_dab_buffer);
+  lfe->lfe_stream_pid = 0;
 }
 
 /* **************************************************************************
@@ -1336,17 +1338,19 @@ linuxdvb_frontend_update_pids
   tvh_mutex_lock(&lfe->lfe_dvr_lock);
   mpegts_pid_done(&lfe->lfe_pids);
 
-  /* For T2MI mux, always include the T2MI PID */
-  if (lfe->lfe_t2mi_ctx && lfe->lfe_t2mi_pid > 0) {
-    mpegts_pid_add(&lfe->lfe_pids, lfe->lfe_t2mi_pid, 10);
-  }
-
-  RB_FOREACH(mp, &mm->mm_pids, mp_link) {
-    if (mp->mp_pid == MPEGTS_FULLMUX_PID)
-      lfe->lfe_pids.all = 1;
-    else if (mp->mp_pid < MPEGTS_FULLMUX_PID) {
-      RB_FOREACH(mps, &mp->mp_subs, mps_link)
-        mpegts_pid_add(&lfe->lfe_pids, mp->mp_pid, mps->mps_weight);
+  /* For sub-mux (T2MI/DAB), only use the encapsulation PID for hardware
+   * filtering. The mm->mm_pids contains inner TS PIDs which don't exist
+   * in the outer TS - they're created by the decapsulator. */
+  if (lfe->lfe_stream_pid > 0) {
+    mpegts_pid_add(&lfe->lfe_pids, lfe->lfe_stream_pid, 10);
+  } else {
+    RB_FOREACH(mp, &mm->mm_pids, mp_link) {
+      if (mp->mp_pid == MPEGTS_FULLMUX_PID)
+        lfe->lfe_pids.all = 1;
+      else if (mp->mp_pid < MPEGTS_FULLMUX_PID) {
+        RB_FOREACH(mps, &mp->mp_subs, mps_link)
+          mpegts_pid_add(&lfe->lfe_pids, mp->mp_pid, mps->mps_weight);
+      }
     }
   }
   tvh_mutex_unlock(&lfe->lfe_dvr_lock);
