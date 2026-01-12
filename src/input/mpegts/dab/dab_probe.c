@@ -285,6 +285,10 @@ mpegts_dab_probe_start(mpegts_mux_t *mm)
   mm->mm_secondary_cb = dab_probe_packet_cb;
 
   tvhdebug(LS_MPEGTS, "mux %s: DAB probe started", mm->mm_nicename);
+
+  /* Trigger PID update to enable fullmux for DAB probe */
+  mm->mm_update_pids_flag = 1;
+  mpegts_mux_update_pids(mm);
 }
 
 /*
@@ -319,7 +323,8 @@ mpegts_dab_probe_complete(mpegts_mux_t *mm)
 
   free(ctx);
 
-  tvhinfo(LS_MPEGTS, "mux %s: DAB probe complete, found=%d", mm->mm_nicename, found);
+  if (found > 0)
+    tvhinfo(LS_MPEGTS, "mux %s: DAB probe complete, found=%d", mm->mm_nicename, found);
   return found;
 }
 

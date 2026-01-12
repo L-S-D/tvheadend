@@ -1080,7 +1080,9 @@ linuxdvb_gse_input_thread ( void *aux )
       int started;
       dvbdab_streamer_feed(lfe->lfe_gse_ctx, sb.sb_data, sb.sb_ptr);
 
-      if (!services_started && dvbdab_streamer_is_basic_ready(lfe->lfe_gse_ctx)) {
+      /* Don't start audio services during scan - only need discovery */
+      if (!services_started && dvbdab_streamer_is_basic_ready(lfe->lfe_gse_ctx) &&
+          mmi->mmi_mux->mm_scan_state != MM_SCAN_STATE_ACTIVE) {
         started = dvbdab_streamer_start_all(lfe->lfe_gse_ctx);
         if (started > 0) {
           tvhinfo(LS_LINUXDVB, "%s - GSE: started %d DAB services", name, started);
@@ -1353,6 +1355,13 @@ linuxdvb_frontend_update_pids
       }
     }
   }
+
+  /* Enable fullmux for DAB probe - needs all PIDs to scan for DAB content */
+  if (mm->mm_dab_probe_ctx && !lfe->lfe_pids.all) {
+    lfe->lfe_pids.all = 1;
+    tvhdebug(LS_LINUXDVB, "%s: FULLMUX enabled for DAB probe", mm->mm_nicename);
+  }
+
   tvh_mutex_unlock(&lfe->lfe_dvr_lock);
 
   if (lfe->lfe_dvr_pipe.wr > 0)
