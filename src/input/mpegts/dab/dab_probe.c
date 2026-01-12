@@ -184,9 +184,9 @@ process_etina_stream(mpegts_mux_t *mm, dvb_network_t *ln,
 
   dab_mux = dvb_network_find_mux_dab_eti(ln, &dmc);
 
-  /* Existing mux found - update timestamp and label */
+  /* Existing mux found - update timestamp only (keep existing label) */
   if (dab_mux) {
-    update_existing_mux(dab_mux, "ETI-NA");
+    update_existing_mux(dab_mux, NULL);
     return 1;
   }
 
