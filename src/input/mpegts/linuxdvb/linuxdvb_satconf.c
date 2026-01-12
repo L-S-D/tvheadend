@@ -1075,6 +1075,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     (linuxdvb_diseqc_t*)lse->lse_lnb
   };
 
+#if ENABLE_LINUXDVB_NEUMO
   /*
    * RF Input selection (Neumo DVB driver)
    * Use frontend's bound RF input if set, otherwise use satconf element's setting
@@ -1147,6 +1148,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
       /* Don't fail tune - graceful degradation */
     }
   }
+#endif
 
   if (lse->lse_lnb) {
     pol  = lse->lse_lnb->lnb_pol (lse->lse_lnb, lm) & 0x1;

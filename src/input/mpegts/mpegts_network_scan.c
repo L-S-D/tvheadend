@@ -187,15 +187,22 @@ mpegts_network_scan_mux_done0
 {
   mpegts_network_t *mn = mm->mm_network;
   mpegts_mux_scan_state_t state = mm->mm_scan_state;
+  int dab_found = 0;
 
   /* Complete DAB probe before finishing scan */
-  mpegts_dab_probe_complete(mm);
+  dab_found = mpegts_dab_probe_complete(mm);
 
   /* Complete ISI probe */
   mpegts_isi_probe_complete(mm);
 
   /* Complete GSE-DAB probe */
-  mpegts_gse_dab_probe_complete(mm);
+  dab_found += mpegts_gse_dab_probe_complete(mm);
+
+  /* Override result if DAB probe found content */
+  if (dab_found > 0 && result == MM_SCAN_FAIL) {
+    result = MM_SCAN_OK;
+    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB found)", mm->mm_nicename);
+  }
 
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {
     mm->mm_scan_last_seen = gclk();

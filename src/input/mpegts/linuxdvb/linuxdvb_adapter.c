@@ -413,6 +413,7 @@ linuxdvb_adapter_add ( const char *path )
 #endif
     r = ioctl(fd, FE_GET_INFO, &dfi);
 
+#if ENABLE_LINUXDVB_NEUMO
     /* Neumo capability detection - do this before closing fd */
     int neumo_supported = 0;
     uint8_t num_rf_inputs = 0;
@@ -428,6 +429,7 @@ linuxdvb_adapter_add ( const char *path )
         }
       }
     }
+#endif
 
     close(fd);
     if(r) {
@@ -486,6 +488,7 @@ linuxdvb_adapter_add ( const char *path )
       if (fetypes[type5])
         continue;
 
+#if ENABLE_LINUXDVB_NEUMO
       /* Create - for DVB-S with Neumo multi-RF, create virtual frontends */
       if (type5 == DVB_TYPE_S && neumo_supported && num_rf_inputs > 1) {
         int rf;
@@ -493,7 +496,9 @@ linuxdvb_adapter_add ( const char *path )
           linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
                                    type5, name, rf);
         }
-      } else {
+      } else
+#endif
+      {
         linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
                                  type5, name, -1);
       }

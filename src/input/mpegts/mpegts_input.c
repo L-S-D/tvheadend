@@ -848,6 +848,7 @@ mpegts_input_open_service
   }
   /* Register PIDs */
   tvh_mutex_lock(&s->s_stream_mutex);
+
   if (s->s_type == STYPE_STD) {
 
     if (s->s_components.set_pmt_pid == SERVICE_PMT_AUTO)
@@ -1900,13 +1901,23 @@ mpegts_input_stream_status
   st->max_weight  = w;
 
   st->pids = mpegts_pid_alloc();
-  RB_FOREACH(mp, &mm->mm_pids, mp_link) {
-    if (mp->mp_pid == MPEGTS_TABLES_PID)
-      continue;
-    if (mp->mp_pid == MPEGTS_FULLMUX_PID)
-      st->pids->all = 1;
-    else
-      mpegts_pid_add(st->pids, mp->mp_pid, 0);
+  /* For sub-mux types, show encapsulation PID instead of inner TS PIDs */
+  if (mm->mm_type == MM_TYPE_T2MI ||
+      mm->mm_type == MM_TYPE_DAB_ETI ||
+      mm->mm_type == MM_TYPE_DAB_MPE ||
+      mm->mm_type == MM_TYPE_DAB_TSNI) {
+    dvb_mux_t *dm = (dvb_mux_t *)mm;
+    if (dm->lm_tuning.dmc_fe_pid > 0)
+      mpegts_pid_add(st->pids, dm->lm_tuning.dmc_fe_pid, 0);
+  } else {
+    RB_FOREACH(mp, &mm->mm_pids, mp_link) {
+      if (mp->mp_pid == MPEGTS_TABLES_PID)
+        continue;
+      if (mp->mp_pid == MPEGTS_FULLMUX_PID)
+        st->pids->all = 1;
+      else
+        mpegts_pid_add(st->pids, mp->mp_pid, 0);
+    }
   }
 
   tvh_mutex_lock(&mmi->tii_stats_mutex);
