@@ -2499,12 +2499,14 @@ linuxdvb_frontend_tune0
 #endif /* 5.0+ */
   }
 
+#if ENABLE_LINUXDVB_NEUMO
   /* Neumo DVB: Include DTV_SET_SEC_CONFIGURED in same ioctl as DTV_TUNE
    * Only sent when FE_SET_RF_INPUT was successfully called */
   if (lfe->lfe_sec_configured) {
     S2CMD(DTV_SET_SEC_CONFIGURED, 1);
     lfe->lfe_sec_configured = 0;  /* Clear after use */
   }
+#endif
 
   /* Tune */
   S2CMD(DTV_TUNE, 0);
@@ -2766,6 +2768,7 @@ linuxdvb_frontend_create
   lfe->lfe_dmx_path = strdup(dmx_path);
   lfe->lfe_dvr_path = strdup(dvr_path);
 
+#if ENABLE_LINUXDVB_NEUMO
   /* Neumo capability detection via FE_GET_EXTENDED_INFO */
   lfe->lfe_neumo_detected = 0;
   lfe->lfe_neumo_supported = 0;
@@ -2791,6 +2794,7 @@ linuxdvb_frontend_create
     }
     close(fd);
   }
+#endif
 
   /* Input callbacks */
   lfe->ti_wizard_get          = linuxdvb_frontend_wizard_get;

@@ -470,6 +470,18 @@ else
 fi
 
 #
+# Neumo DVB driver extensions (multi-RF input support)
+#
+if enabled linuxdvb; then
+  if ! check_cc_snippet linuxdvb_neumo '#include <linux/dvb/frontend.h>
+#include <sys/ioctl.h>
+struct dvb_frontend_extended_info info;
+int x = FE_GET_EXTENDED_INFO;'; then
+    disable linuxdvb_neumo
+  fi
+fi
+
+#
 # HDHomeRun - libhdhomerun
 #
 if enabled hdhomerun_static; then
