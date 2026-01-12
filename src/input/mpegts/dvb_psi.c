@@ -1734,6 +1734,14 @@ dvb_sdt_mux
       }
     }
 
+    /* Update mux provider network name from SDT provider */
+    if (*sprov && master && strcmp(mm->mm_provider_network_name ?: "", sprov)) {
+      free(mm->mm_provider_network_name);
+      mm->mm_provider_network_name = strdup(sprov);
+      idnode_changed(&mm->mm_id);
+      tvhtrace(mt->mt_subsys, "%s:    mux provider network name changed to [%s]", mt->mt_name, sprov);
+    }
+
     /* Update nice name */
     if (save2) {
       tvh_mutex_lock(&s->s_stream_mutex);
