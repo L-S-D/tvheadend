@@ -254,8 +254,12 @@ mpegts_dab_probe_start(mpegts_mux_t *mm)
 {
   dab_probe_ctx_t *ctx;
 
-  /* Skip for GSE muxes - they use GSE-DAB probe instead */
-  if (mm->mm_type == MM_TYPE_GSE)
+  /* Skip for muxes that are already DAB - no need to probe for DAB content */
+  if (mm->mm_type == MM_TYPE_GSE ||
+      mm->mm_type == MM_TYPE_DAB_ETI ||
+      mm->mm_type == MM_TYPE_DAB_MPE ||
+      mm->mm_type == MM_TYPE_DAB_GSE ||
+      mm->mm_type == MM_TYPE_DAB_TSNI)
     return;
 
   /* Already probing? */
