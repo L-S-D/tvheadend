@@ -431,55 +431,9 @@ blindscan_acquire_spectrum_neumo(int fd, blindscan_session_t *bs,
     return NULL;
   }
 
-  /* Wait for acquisition using epoll */
-  int efd = epoll_create1(0);
-  if (efd < 0) {
-    tvherror(LS_BLINDSCAN, "epoll_create1 failed: %s", strerror(errno));
-    return NULL;
-  }
-
-  struct epoll_event ep;
-  ep.data.fd = fd;
-  ep.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET;
-  epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ep);
-
-  struct epoll_event events[1];
-  int found = 0;
-  int timeout_ms = 60000;  /* 60 seconds */
-
-  for (int count = 0; count < 10 && !found; count++) {
-    if (bs->bs_should_stop) {
-      close(efd);
-      return NULL;
-    }
-
-    int s = epoll_wait(efd, events, 1, timeout_ms);
-    if (s < 0) {
-      if (errno == EINTR) continue;
-      tvherror(LS_BLINDSCAN, "epoll_wait failed: %s", strerror(errno));
-      break;
-    }
-    if (s == 0) {
-      tvherror(LS_BLINDSCAN, "Spectrum acquisition timeout");
-      break;
-    }
-
-    struct dvb_frontend_event event;
-    if (ioctl(fd, FE_GET_EVENT, &event) < 0) {
-      tvherror(LS_BLINDSCAN, "FE_GET_EVENT failed: %s", strerror(errno));
-      continue;
-    }
-
-    if (event.status & FE_HAS_SYNC) {
-      found = 1;
-      tvhdebug(LS_BLINDSCAN, "Spectrum acquisition complete, status=%d", event.status);
-    }
-  }
-
-  close(efd);
-
-  if (!found) {
-    tvherror(LS_BLINDSCAN, "Failed to acquire spectrum");
+  /* The FE_SET_PROPERTY with DTV_SPECTRUM should block until acquisition is complete
+   * on the Neumo driver. If not, a brief delay allows the driver to finish. */
+  if (bs->bs_should_stop) {
     return NULL;
   }
 
@@ -604,37 +558,6 @@ blindscan_acquire_spectrum_neumo(int fd, blindscan_session_t *bs,
 }
 
 /**
- * Send unicable command using the existing TVHeadend EN50494/EN50607 tune function
- */
-static int
-blindscan_send_unicable_command(linuxdvb_satconf_ele_t *lse,
-                                uint32_t center_freq, int pol_is_v, int band)
-{
-  linuxdvb_diseqc_t *ld = lse->lse_en50494;
-  if (!ld || !ld->ld_tune)
-    return -1;
-
-  /*
-   * Convert transponder frequency (kHz) to IF frequency (kHz)
-   * center_freq is in kHz, LNB LO frequencies are in kHz
-   * Universal LNB: low band LO = 9750 MHz, high band LO = 10600 MHz
-   */
-  uint32_t lnb_lo = (band == 0) ? 9750000 : 10600000;  /* kHz */
-  uint32_t if_freq = (center_freq > lnb_lo) ? (center_freq - lnb_lo) : (lnb_lo - center_freq);
-
-  tvhtrace(LS_BLINDSCAN, "Unicable command: tp_freq=%u kHz, band=%d, lnb_lo=%u kHz, if_freq=%u kHz",
-           center_freq, band, lnb_lo, if_freq);
-
-  /* Call the existing unicable tune function
-   * Parameters: ld, lm (NULL ok), lsp, sc, vol, pol, band, freq (kHz) */
-  return ld->ld_tune(ld, NULL, lse->lse_parent, lse,
-                     0,  /* vol: 0=13V for unicable */
-                     pol_is_v ? 0 : 1,  /* pol: 0=V, 1=H */
-                     band,
-                     if_freq);  /* IF frequency in kHz */
-}
-
-/**
  * Acquire a single spectrum slice for unicable at the fixed SCR frequency
  *
  * @param fd          Frontend file descriptor
@@ -710,44 +633,9 @@ blindscan_acquire_unicable_slice(int fd, blindscan_session_t *bs,
     return NULL;
   }
 
-  /* Wait for acquisition using epoll */
-  int efd = epoll_create1(0);
-  if (efd < 0) {
-    tvherror(LS_BLINDSCAN, "epoll_create1 failed: %s", strerror(errno));
-    return NULL;
-  }
-
-  struct epoll_event ep;
-  ep.data.fd = fd;
-  ep.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET;
-  epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ep);
-
-  struct epoll_event events[1];
-  int found = 0;
-  int timeout_ms = 10000;
-
-  for (int count = 0; count < 5 && !found; count++) {
-    int s = epoll_wait(efd, events, 1, timeout_ms);
-    if (s < 0) {
-      if (errno == EINTR) continue;
-      break;
-    }
-    if (s == 0) break;  /* Timeout */
-
-    struct dvb_frontend_event event;
-    if (ioctl(fd, FE_GET_EVENT, &event) >= 0) {
-      if (event.status & FE_HAS_SYNC) {
-        found = 1;
-      }
-    }
-  }
-
-  close(efd);
-
-  if (!found) {
-    tvhdebug(LS_BLINDSCAN, "Unicable slice: no sync");
-    return NULL;
-  }
+  /* Allow driver time to complete spectrum acquisition
+   * The FE_SET_PROPERTY with DTV_SPECTRUM may return before acquisition is complete */
+  usleep(100000);  /* 100ms */
 
   /* Allocate buffers and read results (same structure as neumo function) */
   size_t max_freq = 65536;
@@ -869,103 +757,6 @@ blindscan_acquire_unicable_slice(int fd, blindscan_session_t *bs,
 }
 
 /**
- * Configure LNB for spectrum acquisition using standard TVH diseqc chain
- */
-static int
-blindscan_configure_lnb(int fd, linuxdvb_satconf_ele_t *lse,
-                        int band, int pol_is_v,
-                        blindscan_session_t *bs)
-{
-  linuxdvb_satconf_t *ls = lse->lse_parent;
-  int pol = pol_is_v ? 1 : 0;
-  int vol = pol;  /* voltage: 0=18V (H), 1=13V (V) */
-  int i, r;
-
-  /* Debug: log what diseqc devices are configured */
-  tvhdebug(LS_BLINDSCAN, "Diseqc config: switch=%p, rotor=%p, ls_switch_rotor=%d",
-           lse->lse_switch, lse->lse_rotor, ls->ls_switch_rotor);
-
-  if (lse->lse_switch) {
-    tvhdebug(LS_BLINDSCAN, "Switch found: type=%s",
-             ((linuxdvb_diseqc_t*)lse->lse_switch)->ld_type);
-  }
-
-  /* Build diseqc device chain - same order as standard tune path */
-  linuxdvb_diseqc_t *lds[] = {
-    ls->ls_switch_rotor ? (linuxdvb_diseqc_t*)lse->lse_switch :
-                          (linuxdvb_diseqc_t*)lse->lse_rotor,
-    ls->ls_switch_rotor ? (linuxdvb_diseqc_t*)lse->lse_rotor  :
-                          (linuxdvb_diseqc_t*)lse->lse_switch,
-    NULL,  /* Skip en50494 for spectrum - handled separately */
-    NULL   /* Skip LNB tune - we set voltage/tone directly */
-  };
-
-  /* Turn off tone before sending DiSEqC commands */
-  if (ioctl(fd, FE_SET_TONE, SEC_TONE_OFF) < 0)
-    tvhwarn(LS_BLINDSCAN, "FE_SET_TONE OFF failed: %s", strerror(errno));
-  usleep(15000);
-
-  /* Set initial voltage for DiSEqC */
-  if (linuxdvb_diseqc_set_volt(ls, vol) < 0) {
-    tvherror(LS_BLINDSCAN, "Failed to set initial voltage");
-    return -1;
-  }
-
-  /* Force full diseqc sequence for blindscan by clearing cached state */
-  tvhdebug(LS_BLINDSCAN, "Clearing diseqc cache: last_switch=%p, last_pol=%d, last_band=%d",
-           ls->ls_last_switch, ls->ls_last_switch_pol, ls->ls_last_switch_band);
-  ls->ls_last_switch = NULL;
-  ls->ls_last_switch_pol = 0;
-  ls->ls_last_switch_band = 0;
-  ls->ls_last_toneburst = 0;
-
-  /* Call each diseqc device's tune method (switch, rotor) */
-  for (i = 0; i < ARRAY_SIZE(lds); i++) {
-    if (!lds[i]) continue;
-
-    tvhdebug(LS_BLINDSCAN, "Calling diseqc tune for %s (pol=%d, band=%d, vol=%d)",
-             lds[i]->ld_type, pol, band, vol);
-
-    /* Call the device's tune method - uses linuxdvb_satconf_fe_fd internally */
-    r = lds[i]->ld_tune(lds[i], NULL, ls, lse, vol, pol, band, 0);
-
-    if (r < 0) {
-      tvherror(LS_BLINDSCAN, "DiSEqC device %s tune failed", lds[i]->ld_type);
-      return -1;
-    }
-
-    tvhdebug(LS_BLINDSCAN, "DiSEqC device %s tune returned %d", lds[i]->ld_type, r);
-
-    /* Wait if device requested delay */
-    if (r > 0) {
-      tvhdebug(LS_BLINDSCAN, "DiSEqC device %s: waiting %d seconds", lds[i]->ld_type, r);
-      usleep(r * 1000000);
-    }
-  }
-
-  /* Set final voltage */
-  fe_sec_voltage_t volt_val = pol_is_v ? SEC_VOLTAGE_13 : SEC_VOLTAGE_18;
-  if (ioctl(fd, FE_SET_VOLTAGE, volt_val) < 0) {
-    tvherror(LS_BLINDSCAN, "FE_SET_VOLTAGE failed: %s", strerror(errno));
-    return -1;
-  }
-  usleep(15000);
-
-  /* Set tone for band selection */
-  fe_sec_tone_mode_t tone = (band == 1) ? SEC_TONE_ON : SEC_TONE_OFF;
-  if (ioctl(fd, FE_SET_TONE, tone) < 0) {
-    tvherror(LS_BLINDSCAN, "FE_SET_TONE failed: %s", strerror(errno));
-    return -1;
-  }
-  usleep(20000);
-
-  tvhdebug(LS_BLINDSCAN, "LNB configured: pol=%c, band=%s",
-           pol_is_v ? 'V' : 'H', band ? "high" : "low");
-
-  return 0;
-}
-
-/**
  * Calculate mux half-bandwidth based on symbol rate and rolloff
  * Returns half-bandwidth in kHz
  */
@@ -1071,14 +862,15 @@ blindscan_worker(void *arg)
   /* RF input is set by satconf tune path - blindscan uses same satconf */
 
   /* Determine polarisations to scan */
-  int pol_list[2] = {0, 0};  /* 0=H, 1=V */
+  /* pol convention: 0=V, 1=H (matches EN50494/LNB voltage convention) */
+  int pol_list[2] = {0, 0};
   int pol_count = 0;
 
   if (bs->bs_polarisation == -1 || bs->bs_polarisation == DVB_POLARISATION_HORIZONTAL) {
-    pol_list[pol_count++] = 0;  /* H */
+    pol_list[pol_count++] = 1;  /* H = 1 */
   }
   if (bs->bs_polarisation == -1 || bs->bs_polarisation == DVB_POLARISATION_VERTICAL) {
-    pol_list[pol_count++] = 1;  /* V */
+    pol_list[pol_count++] = 0;  /* V = 0 */
   }
 
   /* Determine bands */
@@ -1099,8 +891,8 @@ blindscan_worker(void *arg)
 
   /* Scan each polarisation and band */
   for (int pi = 0; pi < pol_count && !bs->bs_should_stop; pi++) {
-    int pol_is_v = pol_list[pi];
-    char pol_char = pol_is_v ? 'V' : 'H';
+    int pol = pol_list[pi];  /* 0=V, 1=H */
+    char pol_char = pol ? 'H' : 'V';
 
     for (int bi = 0; bi < band_count && !bs->bs_should_stop; bi++) {
       int band = band_list[bi];
@@ -1145,12 +937,12 @@ blindscan_worker(void *arg)
         }
 
         /* Step through frequency range */
-        uint32_t step_size = 50000;  /* 50 MHz steps */
+        uint32_t step_size = 40000;  /* 40 MHz steps (unicable SCR bandwidth limit) */
         uint32_t range = band_end - band_start;
         int total_steps = (range + step_size - 1) / step_size;
 
         /* Allocate combined spectrum */
-        sd = blindscan_spectrum_alloc(total_steps * 2000, band, pol_is_v ? 'V' : 'H');
+        sd = blindscan_spectrum_alloc(total_steps * 2000, band, pol_char);
         if (!sd) {
           tvherror(LS_BLINDSCAN, "Failed to allocate spectrum buffer");
           continue;
@@ -1175,16 +967,30 @@ blindscan_worker(void *arg)
           /* Set satconf's frontend to blindscan's frontend (like normal tuning does) */
           lse->lse_parent->ls_frontend = (mpegts_input_t *)lfe;
 
-          /* Send unicable command to tune LNB using existing TVH unicable function */
-          if (blindscan_send_unicable_command(lse, center_freq, pol_is_v, band) < 0) {
-            tvhwarn(LS_BLINDSCAN, "Failed unicable command for %u kHz", center_freq);
+          /* Get IF frequency using LNB config - same as regular tune */
+          dvb_mux_t tmp_mux;
+          memset(&tmp_mux, 0, sizeof(tmp_mux));
+          tmp_mux.lm_tuning.dmc_fe_freq = center_freq;
+          tmp_mux.lm_tuning.u.dmc_fe_qpsk.polarisation = pol ?
+            DVB_POLARISATION_HORIZONTAL : DVB_POLARISATION_VERTICAL;
+          uint32_t if_freq = lse->lse_lnb->lnb_freq(lse->lse_lnb, &tmp_mux);
+
+          tvhdebug(LS_BLINDSCAN, "Unicable slice %d/%d: tp=%u kHz, if=%u kHz, band=%d, pol=%d",
+                   step + 1, total_steps, center_freq, if_freq, band, pol);
+
+          /* Use shared satconf setup (same as regular tuning) */
+          uint32_t tune_freq;
+          int setup_ret = linuxdvb_satconf_ele_setup(lse, NULL, pol, band, if_freq, &tune_freq);
+          tvhdebug(LS_BLINDSCAN, "Satconf setup returned %d, tune_freq=%u", setup_ret, tune_freq);
+          if (setup_ret < 0) {
+            tvhwarn(LS_BLINDSCAN, "Failed satconf setup for %u kHz", center_freq);
             continue;
           }
 
           /* Acquire slice at SCR frequency - also collect driver candidates */
           int slice_peaks = 0;
           blindscan_spectrum_data_t *slice = blindscan_acquire_unicable_slice(
-            fd, bs, center_freq, scr_freq, step_size, pol_is_v,
+            fd, bs, center_freq, scr_freq, step_size, !pol,
             &driver_peaks[num_driver_peaks], &slice_peaks, 512 - num_driver_peaks);
 
           if (slice && slice->num_points > 0) {
@@ -1206,18 +1012,19 @@ blindscan_worker(void *arg)
         tvhinfo(LS_BLINDSCAN, "Unicable acquisition complete: %zu points, %d driver candidates",
                 sd->num_points, num_driver_peaks);
       } else {
-        /* Standard LNB: configure and do direct sweep */
-        /* Set satconf's frontend so diseqc functions can get the fd */
+        /* Standard LNB: configure using same function as regular tuning */
         lse->lse_parent->ls_frontend = (mpegts_input_t *)lfe;
 
-        if (blindscan_configure_lnb(fd, lse, band, pol_is_v, bs) < 0) {
+        /* For non-unicable, freq param is ignored by LNB tune - just needs pol/band */
+        uint32_t tune_freq;
+        if (linuxdvb_satconf_ele_setup(lse, NULL, pol, band, 0, &tune_freq) < 0) {
           tvherror(LS_BLINDSCAN, "Failed to configure LNB");
           continue;
         }
 
         /* Acquire spectrum */
         sd = blindscan_acquire_spectrum_neumo(
-          fd, bs, band, pol_is_v, driver_peaks, &num_driver_peaks, 512);
+          fd, bs, band, !pol, driver_peaks, &num_driver_peaks, 512);
       }
 
       if (!sd) {
@@ -1226,7 +1033,7 @@ blindscan_worker(void *arg)
       }
 
       /* Store spectrum */
-      if (pol_is_v) {
+      if (!pol) {  /* pol=0 is V */
         if (band == 0) {
           blindscan_spectrum_free(bs->bs_spectrum_v_low);
           bs->bs_spectrum_v_low = sd;
@@ -1315,7 +1122,7 @@ blindscan_worker(void *arg)
         peak->bp_symbol_rate = driver_peaks[i].symbol_rate;
         peak->bp_snr = driver_peaks[i].snr;
         peak->bp_level = driver_peaks[i].level;
-        peak->bp_polarisation = pol_is_v ? DVB_POLARISATION_VERTICAL : DVB_POLARISATION_HORIZONTAL;
+        peak->bp_polarisation = pol ? DVB_POLARISATION_HORIZONTAL : DVB_POLARISATION_VERTICAL;
         peak->bp_status = BLINDSCAN_PEAK_PENDING;
         peak->bp_stream_id = -1;
         peak->bp_verified_freq = 0;
@@ -2197,47 +2004,42 @@ linuxdvb_blindscan_prescan(const char *uuid, uint32_t frequency, char pol)
     return result;
   }
 
-  /* Determine band and polarisation */
-  int band = blindscan_band_for_freq(frequency);
-  int pol_is_v = (pol == 'V' || pol == 'v');
-  uint32_t lof = band ? BLINDSCAN_LNB_LOF_HIGH : BLINDSCAN_LNB_LOF_LOW;
+  /* Use LNB functions to get pol/band/freq - same as linuxdvb_satconf_ele_tune */
+  if (!lse || !lse->lse_lnb) {
+    tvherror(LS_BLINDSCAN, "No LNB configured");
+    htsmsg_add_bool(result, "locked", 0);
+    htsmsg_add_str(result, "error", "No LNB configured");
+    return result;
+  }
+  dvb_mux_t tmp_mux;
+  memset(&tmp_mux, 0, sizeof(tmp_mux));
+  tmp_mux.lm_tuning.dmc_fe_freq = frequency;
+  tmp_mux.lm_tuning.u.dmc_fe_qpsk.polarisation = (pol == 'V' || pol == 'v') ?
+    DVB_POLARISATION_VERTICAL : DVB_POLARISATION_HORIZONTAL;
+  int pol_val = lse->lse_lnb->lnb_pol(lse->lse_lnb, &tmp_mux) & 0x1;
+  int band = lse->lse_lnb->lnb_band(lse->lse_lnb, &tmp_mux) & 0x1;
+  uint32_t lnb_if = lse->lse_lnb->lnb_freq(lse->lse_lnb, &tmp_mux);
+  uint32_t lof = frequency - lnb_if;
   int32_t driver_freq;
 
-  /* Check for unicable setup */
-  if (lse && lse->lse_en50494) {
+  /* Setup using same function as regular tune */
+  lse->lse_parent->ls_frontend = (mpegts_input_t *)lfe;
+  uint32_t tune_freq;
+  if (linuxdvb_satconf_ele_setup(lse, NULL, pol_val, band, lnb_if, &tune_freq) < 0) {
+    tvherror(LS_BLINDSCAN, "Failed satconf setup");
+    htsmsg_add_bool(result, "locked", 0);
+    htsmsg_add_str(result, "error", "Satconf setup failed");
+    return result;
+  }
+
+  /* Determine driver frequency */
+  if (lse->lse_en50494) {
     linuxdvb_en50494_t *uc = (linuxdvb_en50494_t *)lse->lse_en50494;
-    uint32_t lnb_if = frequency - lof;  /* LNB IF frequency in kHz */
-    uint32_t scr_freq = uc->le_frequency * 1000;  /* SCR IF freq: MHz -> kHz */
-    int scr_id = uc->le_id;
-    int pos = uc->le_position;
-
-    tvhinfo(LS_BLINDSCAN, "Prescan unicable: freq=%u, lnb_if=%u, scr=%d, scr_freq=%u, pos=%d",
-            frequency, lnb_if, scr_id, scr_freq, pos);
-
-    /* Send unicable ODU command - pass transponder frequency (kHz) */
-    lse->lse_parent->ls_frontend = (mpegts_input_t *)lfe;
-    if (blindscan_send_unicable_command(lse, frequency, pol_is_v, band) < 0) {
-      tvherror(LS_BLINDSCAN, "Failed to send unicable command");
-      htsmsg_add_bool(result, "locked", 0);
-      htsmsg_add_str(result, "error", "Unicable command failed");
-      return result;
-    }
-
-    /* For unicable, tune to SCR IF frequency */
-    driver_freq = scr_freq;
+    driver_freq = uc->le_frequency * 1000;  /* SCR IF freq */
+    tvhinfo(LS_BLINDSCAN, "Prescan unicable: freq=%u, lnb_if=%u, scr_freq=%d",
+            frequency, lnb_if, driver_freq);
   } else {
-    /* Standard LNB: Configure voltage/tone */
-    if (lse) {
-      lse->lse_parent->ls_frontend = (mpegts_input_t *)lfe;
-      if (blindscan_configure_lnb(fd, lse, band, pol_is_v, bs) < 0) {
-        tvherror(LS_BLINDSCAN, "Failed to configure LNB");
-        htsmsg_add_bool(result, "locked", 0);
-        htsmsg_add_str(result, "error", "Failed to configure LNB");
-        return result;
-      }
-    }
-    /* For standard LNB, tune to LNB IF frequency */
-    driver_freq = frequency - lof;
+    driver_freq = lnb_if;
   }
 
   /* Set up blind tune with Neumo driver extensions */

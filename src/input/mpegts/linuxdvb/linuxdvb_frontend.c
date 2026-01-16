@@ -2438,6 +2438,13 @@ linuxdvb_frontend_tune0
 
   /* DVB-S */
   } else if (lfe->lfe_type == DVB_TYPE_S) {
+#if ENABLE_LINUXDVB_NEUMO
+    /* Neumo driver: use blind tuning for auto-detection */
+    if (lfe->lfe_neumo_supported) {
+      S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
+      S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
+    }
+#endif
     S2CMD(DTV_SYMBOL_RATE,       p.u.qpsk.symbol_rate);
     S2CMD(DTV_INNER_FEC,         p.u.qpsk.fec_inner);
     S2CMD(DTV_MODULATION,        TR(modulation, mod_tbl, QPSK));

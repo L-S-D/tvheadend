@@ -652,6 +652,10 @@ int linuxdvb_satconf_power_save( linuxdvb_satconf_t *ls );
 int linuxdvb_satconf_start_mux
   ( linuxdvb_satconf_t *ls, mpegts_mux_instance_t *mmi, int skip_diseqc );
 
+int linuxdvb_satconf_ele_setup
+  ( linuxdvb_satconf_ele_t *lse, dvb_mux_t *lm, int pol, int band,
+    uint32_t freq, uint32_t *tune_freq );
+
 int linuxdvb_satconf_match_mux
   ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm );
 

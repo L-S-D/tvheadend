@@ -1045,18 +1045,30 @@ linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol )
 
 static void linuxdvb_satconf_ele_tune_cb ( void *o );
 
-static int
-linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
+/**
+ * Setup satconf element for tuning (DiSEqC, voltage, tone, unicable)
+ * This does everything except the final frontend tune.
+ *
+ * @param lse       Satconf element
+ * @param lm        Mux (can be NULL for blindscan - rotor won't work without it)
+ * @param pol       Polarization: 0=H, 1=V
+ * @param band      Band: 0=low, 1=high
+ * @param freq      LNB IF frequency in kHz
+ * @param tune_freq Output: frequency to use for frontend tune (kHz)
+ * @return 0 = setup complete, >0 = pending (async, seconds to wait), <0 = error
+ *
+ * For blindscan: call this to set up the LNB/switch/unicable, then do
+ * spectrum acquisition instead of calling linuxdvb_frontend_tune1().
+ */
+int
+linuxdvb_satconf_ele_setup ( linuxdvb_satconf_ele_t *lse, dvb_mux_t *lm,
+                             int pol, int band, uint32_t freq, uint32_t *tune_freq )
 {
-  int r, i, vol, pol, band, freq;
-  uint32_t f;
+  int r, i, vol;
   linuxdvb_satconf_t *ls = lse->lse_parent;
 
-  /* Get beans in a row */
-  mpegts_mux_instance_t *mmi   = ls->ls_mmi;
-
-  if (mmi == NULL && ls->ls_active_diseqc) {
-    /* handle the rotor position update */
+  /* Handle rotor position update callback */
+  if (ls->ls_mmi == NULL && ls->ls_active_diseqc) {
     if (ls->ls_active_diseqc == lse->lse_rotor)
       lse->lse_rotor->ld_post(lse->lse_rotor, ls, lse);
     ls->ls_active_diseqc = NULL;
@@ -1065,7 +1077,6 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
   }
 
   linuxdvb_frontend_t   *lfe   = (linuxdvb_frontend_t*)ls->ls_frontend;
-  dvb_mux_t             *lm    = (dvb_mux_t*)mmi->mmi_mux;
   linuxdvb_diseqc_t     *lds[] = {
     ls->ls_switch_rotor ? (linuxdvb_diseqc_t*)lse->lse_switch :
                           (linuxdvb_diseqc_t*)lse->lse_rotor,
@@ -1082,7 +1093,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
    */
   int8_t rf_input_to_use = (lfe->lfe_rf_input >= 0) ? lfe->lfe_rf_input : lse->lse_rf_input;
 
-  tvhtrace(LS_DISEQC, "tune: lfe_rf_input=%d, lse_rf_input=%d, using=%d, neumo_supported=%d",
+  tvhtrace(LS_DISEQC, "setup: lfe_rf_input=%d, lse_rf_input=%d, using=%d, neumo_supported=%d",
            lfe->lfe_rf_input, lse->lse_rf_input, rf_input_to_use, lfe->lfe_neumo_supported);
 
   /* Only attempt RF input selection if Neumo driver is supported and RF input is specified */
@@ -1150,19 +1161,8 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
   }
 #endif
 
-  if (lse->lse_lnb) {
-    pol  = lse->lse_lnb->lnb_pol (lse->lse_lnb, lm) & 0x1;
-    band = lse->lse_lnb->lnb_band(lse->lse_lnb, lm) & 0x1;
-    freq = lse->lse_lnb->lnb_freq(lse->lse_lnb, lm);
-  } else {
-    tvherror(LS_LINUXDVB, "LNB is not defined!!!");
-    return -1;
-  }
-  if (!lse->lse_en50494) {
-    vol = pol;
-  } else {
-    vol  = 0; /* 13V */
-  }
+  /* Voltage: 13V for unicable, polarization-based for standard LNB */
+  vol = lse->lse_en50494 ? 0 : pol;
 
   /*
    * Disable tone (en50494 don't use tone)
@@ -1179,7 +1179,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     }
   }
 
-  /* Diseqc */  
+  /* Diseqc */
   ls->ls_active_diseqc = NULL;
   for (i = ls->ls_diseqc_idx; i < ARRAY_SIZE(lds); i++) {
     if (!lds[i]) continue;
@@ -1194,7 +1194,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
       tvhtrace(LS_DISEQC, "waiting %d seconds to finish setup for %s", r, lds[i]->ld_type);
       mtimer_arm_rel(&ls->ls_diseqc_timer, linuxdvb_satconf_ele_tune_cb, lse, sec2mono(r));
       ls->ls_diseqc_idx = i + 1;
-      return 0;
+      return r;  /* Return seconds to wait */
     }
   }
 
@@ -1223,12 +1223,49 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     }
   }
 
-  /* Frontend */
+  /* Return tuning frequency */
   /* use en50494 tuning frequency, if needed (not channel frequency) */
-  f = lse->lse_en50494
-    ? ((linuxdvb_en50494_t*)lse->lse_en50494)->le_tune_freq
-    : freq;
-  return linuxdvb_frontend_tune1(lfe, mmi, f);
+  if (tune_freq) {
+    *tune_freq = lse->lse_en50494
+      ? ((linuxdvb_en50494_t*)lse->lse_en50494)->le_tune_freq
+      : freq;
+  }
+
+  return 0;  /* Setup complete */
+}
+
+/**
+ * Tune satconf element - setup + frontend tune
+ * Derives pol/band/freq from mux and calls shared setup function.
+ */
+static int
+linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
+{
+  int pol, band, freq;
+  uint32_t tune_freq;
+  linuxdvb_satconf_t *ls = lse->lse_parent;
+  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)ls->ls_frontend;
+  mpegts_mux_instance_t *mmi = ls->ls_mmi;
+  dvb_mux_t *lm = mmi ? (dvb_mux_t*)mmi->mmi_mux : NULL;
+
+  /* Derive pol/band/freq from LNB and mux */
+  if (lse->lse_lnb && lm) {
+    pol  = lse->lse_lnb->lnb_pol (lse->lse_lnb, lm) & 0x1;
+    band = lse->lse_lnb->lnb_band(lse->lse_lnb, lm) & 0x1;
+    freq = lse->lse_lnb->lnb_freq(lse->lse_lnb, lm);
+  } else {
+    tvherror(LS_LINUXDVB, "LNB or mux not defined");
+    return -1;
+  }
+
+  int r = linuxdvb_satconf_ele_setup(lse, lm, pol, band, freq, &tune_freq);
+  if (r < 0)
+    return r;  /* Error */
+  if (r > 0)
+    return 0;  /* Pending - timer handles continuation */
+
+  /* Setup complete, now tune the frontend */
+  return linuxdvb_frontend_tune1(lfe, mmi, tune_freq);
 }
 
 static void
