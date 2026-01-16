@@ -1630,6 +1630,7 @@ dvb_sdt_mux
   uint8_t dtag;
   const uint8_t *lptr, *dptr;
   int llen, dlen;
+  int mux_prov_set = 0;
   mpegts_network_t *mn = mm->mm_network;
 
   tvhdebug(mt->mt_subsys, "%s: mux %s", mt->mt_name, mm->mm_nicename);
@@ -1734,12 +1735,18 @@ dvb_sdt_mux
       }
     }
 
-    /* Update mux provider network name from SDT provider */
-    if (*sprov && master && strcmp(mm->mm_provider_network_name ?: "", sprov)) {
-      free(mm->mm_provider_network_name);
-      mm->mm_provider_network_name = strdup(sprov);
-      idnode_changed(&mm->mm_id);
-      tvhtrace(mt->mt_subsys, "%s:    mux provider network name changed to [%s]", mt->mt_name, sprov);
+    /* Update mux provider network name from first SDT provider */
+    /* Only from SDT actual (master), skip DAB muxes - they get labels from DAB probe */
+    if (*sprov && master && !mux_prov_set &&
+        mm->mm_type != MM_TYPE_DAB_MPE && mm->mm_type != MM_TYPE_DAB_ETI &&
+        mm->mm_type != MM_TYPE_DAB_GSE && mm->mm_type != MM_TYPE_DAB_TSNI) {
+      if (strcmp(mm->mm_provider_network_name ?: "", sprov)) {
+        free(mm->mm_provider_network_name);
+        mm->mm_provider_network_name = strdup(sprov);
+        idnode_changed(&mm->mm_id);
+        tvhtrace(mt->mt_subsys, "%s:    mux provider network name changed to [%s]", mt->mt_name, sprov);
+      }
+      mux_prov_set = 1;
     }
 
     /* Update nice name */

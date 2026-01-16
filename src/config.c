@@ -2093,6 +2093,17 @@ config_class_uilevel ( void *o, const char *lang )
 }
 
 static htsmsg_t *
+config_class_blindscan_mode_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("Never"),    0 },
+    { N_("Scanning"), 1 },
+    { N_("Always"),   2 },
+  };
+  return strtab2htsmsg(tab, 1, lang);
+}
+
+static htsmsg_t *
 config_class_chiconscheme_list ( void *o, const char *lang )
 {
   static const struct strtab tab[] = {
@@ -2810,6 +2821,28 @@ const idclass_t config_class = {
                    "DVB time is greater than this. This can help stop "
                    "excessive oscillations on the system clock."),
       .off    = offsetof(config_t, tvhtime_tolerance),
+      .opts   = PO_EXPERT,
+      .group  = 8,
+    },
+    {
+      .type   = PT_INT,
+      .id     = "blindscan_mode",
+      .name   = N_("Blind scan"),
+      .desc   = N_("Use blind scanning algorithm for DVB-S tuning. "
+                   "'Never' uses standard tuning, 'Scanning' uses blind "
+                   "during mux scanning only, 'Always' uses blind for all tunes."),
+      .off    = offsetof(config_t, blindscan_mode),
+      .list   = config_class_blindscan_mode_list,
+      .opts   = PO_EXPERT | PO_DOC_NLIST,
+      .group  = 8,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "blindscan_update_mux",
+      .name   = N_("Update mux from blindscan"),
+      .desc   = N_("Update mux parameters (frequency, symbol rate, etc.) "
+                   "from blindscan results when signal is locked."),
+      .off    = offsetof(config_t, blindscan_update_mux),
       .opts   = PO_EXPERT,
       .group  = 8,
     },

@@ -85,6 +85,8 @@ typedef struct config {
   int enable_vainfo;
   #endif
   uint32_t page_size_ui;
+  int blindscan_mode;           /* 0=never, 1=scanning, 2=always */
+  int blindscan_update_mux;     /* Update mux parameters from blindscan */
 } config_t;
 
 extern const idclass_t config_class;

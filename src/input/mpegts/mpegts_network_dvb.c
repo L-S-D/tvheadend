@@ -531,6 +531,39 @@ dvb_network_check_orbital_pos ( int satpos1, int satpos2 )
   return 0;
 }
 
+/* Find mux by physical parameters only (freq + pol for DVB-S) */
+static dvb_mux_t *
+dvb_network_find_mux_by_physical(dvb_network_t *ln, dvb_mux_conf_t *dmc)
+{
+  mpegts_mux_t *mm;
+  uint32_t deltaf = 4000; /* Same tolerance as find_mux */
+
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    dvb_mux_t *lm = (dvb_mux_t*)mm;
+
+    /* Must be same FE type */
+    if (lm->lm_tuning.dmc_fe_type != dmc->dmc_fe_type) continue;
+
+    /* Check frequency with tolerance */
+    if (deltaU32(lm->lm_tuning.dmc_fe_freq, dmc->dmc_fe_freq) > deltaf) continue;
+
+    /* For DVB-S: same polarization is enough */
+    if (dmc->dmc_fe_type == DVB_TYPE_S) {
+      if (lm->lm_tuning.u.dmc_fe_qpsk.polarisation == dmc->u.dmc_fe_qpsk.polarisation)
+        return lm;
+    }
+    /* For DVB-C: frequency match is enough (no polarization) */
+    else if (dmc->dmc_fe_type == DVB_TYPE_C || dmc->dmc_fe_type == DVB_TYPE_ATSC_C) {
+      return lm;
+    }
+    /* For DVB-T: frequency match is enough */
+    else if (dmc->dmc_fe_type == DVB_TYPE_T || dmc->dmc_fe_type == DVB_TYPE_DTMB) {
+      return lm;
+    }
+  }
+  return NULL;
+}
+
 dvb_mux_t *
 dvb_network_find_mux
   ( dvb_network_t *ln, dvb_mux_conf_t *dmc, uint32_t onid, uint32_t tsid, int check, int approx_match )
@@ -827,6 +860,17 @@ dvb_network_create_mux
   ln = (dvb_network_t*)mn;
   mm = dvb_network_find_mux(ln, dmc, onid, tsid, 0, (ln->mn_autodiscovery == MN_DISCOVERY_CHANGE));
   if (!mm && (ln->mn_autodiscovery != MN_DISCOVERY_DISABLE || force)) {
+    /* Check if mux with same physical parameters exists */
+    /* Only skip if blindscan is updating mux params (which causes NIT mismatch) */
+    if (config.blindscan_update_mux) {
+      dvb_mux_t *physical_match = dvb_network_find_mux_by_physical(ln, dmc);
+      if (physical_match) {
+        /* Mux exists with same freq/pol but different tuning params */
+        /* Don't create duplicate - return the existing match */
+        mm = physical_match;
+        goto noop;
+      }
+    }
     save |= dvb_fe_type_by_network_class(ln->mn_id.in_class) == dmc->dmc_fe_type;
     if (save && dmc->dmc_fe_type == DVB_TYPE_S) {
       satpos = dvb_network_get_orbital_pos(mn);
@@ -909,7 +953,10 @@ dvb_network_create_mux
       break;
     case DVB_TYPE_S:
       save |= COMPARE(u.dmc_fe_qpsk.polarisation, CBIT_POLARISATION);
-      save |= COMPARE(u.dmc_fe_qpsk.symbol_rate, CBIT_RATE);
+      /* Only update symbol rate if difference > 100kHz */
+      if (deltaU32(dmc->u.dmc_fe_qpsk.symbol_rate, tuning_new.u.dmc_fe_qpsk.symbol_rate) > 100000) {
+        save |= COMPARE(u.dmc_fe_qpsk.symbol_rate, CBIT_RATE);
+      }
       save |= COMPARE(dmc_fe_stream_id, CBIT_STREAM_ID);
       save |= COMPAREN(dmc_fe_pls_mode, CBIT_PLS_MODE);
       save |= COMPAREN(dmc_fe_pls_code, CBIT_PLS_CODE);
@@ -917,7 +964,10 @@ dvb_network_create_mux
       break;
     case DVB_TYPE_C:
     case DVB_TYPE_ATSC_C:
-      save |= COMPARE(u.dmc_fe_qam.symbol_rate, CBIT_RATE);
+      /* Only update symbol rate if difference > 100kHz */
+      if (deltaU32(dmc->u.dmc_fe_qam.symbol_rate, tuning_new.u.dmc_fe_qam.symbol_rate) > 100000) {
+        save |= COMPARE(u.dmc_fe_qam.symbol_rate, CBIT_RATE);
+      }
       save |= COMPAREN(u.dmc_fe_qam.fec_inner, CBIT_FEC_INNER);
       break;
     case DVB_TYPE_ATSC_T:
