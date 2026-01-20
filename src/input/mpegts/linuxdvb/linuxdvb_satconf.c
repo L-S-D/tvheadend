@@ -529,8 +529,19 @@ linuxdvb_satconf_class_en50494_group_set
 {
   linuxdvb_satconf_t *ls = p;
   linuxdvb_satconf_ele_t *lse;
+  uint16_t new_group = *(uint16_t*)v;
+  uint16_t old_group = 0;
+
+  lse = TAILQ_FIRST(&ls->ls_elements);
+  if (lse && lse->lse_en50494)
+    old_group = ((linuxdvb_en50494_t*)lse->lse_en50494)->le_group_id;
+
+  /* Invalidate old and new group caches */
+  linuxdvb_unicable_invalidate_group(old_group);
+  linuxdvb_unicable_invalidate_group(new_group);
+
   TAILQ_FOREACH(lse, &ls->ls_elements, lse_link)
-    (((linuxdvb_en50494_t*)lse->lse_en50494)->le_group_id) = *(uint16_t*)v;
+    (((linuxdvb_en50494_t*)lse->lse_en50494)->le_group_id) = new_group;
   return 1;
 }
 
@@ -548,6 +559,15 @@ linuxdvb_satconf_class_en50494_master_set
 {
   linuxdvb_satconf_t *ls = p;
   linuxdvb_satconf_ele_t *lse;
+  uint16_t group_id = 0;
+
+  lse = TAILQ_FIRST(&ls->ls_elements);
+  if (lse && lse->lse_en50494)
+    group_id = ((linuxdvb_en50494_t*)lse->lse_en50494)->le_group_id;
+
+  /* Invalidate group cache when master changes */
+  linuxdvb_unicable_invalidate_group(group_id);
+
   TAILQ_FOREACH(lse, &ls->ls_elements, lse_link)
     (((linuxdvb_en50494_t*)lse->lse_en50494)->le_is_master) = *(int*)v;
   return 1;

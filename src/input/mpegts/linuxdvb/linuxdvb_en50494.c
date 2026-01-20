@@ -125,8 +125,6 @@ linuxdvb_unicable_group_get ( uint16_t group_id )
   group = calloc(1, sizeof(*group));
   if (group) {
     group->lug_group_id = group_id;
-    group->lug_master_fd = -1;
-    group->lug_fd_owned = 0;
     tvh_mutex_init(&group->lug_lock, NULL);
     TAILQ_INSERT_TAIL(&linuxdvb_unicable_groups, group, lug_link);
     tvhtrace(LS_EN50494, "created unicable group %d", group_id);
@@ -137,7 +135,7 @@ linuxdvb_unicable_group_get ( uint16_t group_id )
 }
 
 /*
- * Get master frontend FD for a group - opens if necessary
+ * Get master frontend FD for a group
  * Must be called WITH group->lug_lock held
  */
 static int
@@ -145,10 +143,6 @@ linuxdvb_unicable_get_master_fd ( linuxdvb_unicable_group_t *group )
 {
   linuxdvb_satconf_t *ls;
   linuxdvb_frontend_t *lfe;
-
-  /* Return cached FD if valid */
-  if (group->lug_master_fd > 0)
-    return group->lug_master_fd;
 
   /* Find master element if not cached */
   if (!group->lug_master_ele) {
@@ -162,45 +156,14 @@ linuxdvb_unicable_get_master_fd ( linuxdvb_unicable_group_t *group )
   ls = group->lug_master_ele->lse_parent;
   lfe = (linuxdvb_frontend_t *)ls->ls_frontend;
 
-  /* Use existing FD if master frontend is active */
-  if (lfe->lfe_fe_fd > 0) {
-    group->lug_master_fd = lfe->lfe_fe_fd;
-    group->lug_fd_owned = 0;
-    tvhtrace(LS_EN50494, "using master's existing FD %d for group %d",
-             group->lug_master_fd, group->lug_group_id);
-  } else {
-    /* Open FD ourselves */
-    group->lug_master_fd = tvh_open(lfe->lfe_fe_path, O_RDWR | O_NONBLOCK, 0);
-    if (group->lug_master_fd > 0) {
-      group->lug_fd_owned = 1;
-      tvhtrace(LS_EN50494, "opened master FD %d for group %d",
-               group->lug_master_fd, group->lug_group_id);
-    } else {
-      tvherror(LS_EN50494, "failed to open master frontend %s for group %d",
-               lfe->lfe_fe_path, group->lug_group_id);
-    }
+  /* Master frontend FD must be open */
+  if (lfe->lfe_fe_fd <= 0) {
+    tvherror(LS_EN50494, "master frontend FD not open for group %d (frontend %s)",
+             group->lug_group_id, lfe->lfe_fe_path);
+    return -1;
   }
 
-  return group->lug_master_fd;
-}
-
-/*
- * Release master frontend FD
- * Must be called WITH group->lug_lock held
- */
-static void
-linuxdvb_unicable_release_master_fd ( linuxdvb_unicable_group_t *group )
-{
-  /* Only close if we opened it ourselves */
-  if (group->lug_fd_owned && group->lug_master_fd > 0) {
-    close(group->lug_master_fd);
-    tvhtrace(LS_EN50494, "closed master FD for group %d", group->lug_group_id);
-    group->lug_master_fd = -1;
-    group->lug_fd_owned = 0;
-  } else if (!group->lug_fd_owned) {
-    /* FD belongs to master frontend, just clear our reference */
-    group->lug_master_fd = -1;
-  }
+  return lfe->lfe_fe_fd;
 }
 
 /*
@@ -222,10 +185,33 @@ linuxdvb_unicable_invalidate_master ( linuxdvb_satconf_ele_t *lse )
   TAILQ_FOREACH(group, &linuxdvb_unicable_groups, lug_link) {
     if (group->lug_group_id == le->le_group_id && group->lug_master_ele == lse) {
       tvh_mutex_lock(&group->lug_lock);
-      linuxdvb_unicable_release_master_fd(group);
       group->lug_master_ele = NULL;
       tvh_mutex_unlock(&group->lug_lock);
       tvhtrace(LS_EN50494, "invalidated master for group %d", le->le_group_id);
+      break;
+    }
+  }
+  tvh_mutex_unlock(&linuxdvb_unicable_groups_lock);
+}
+
+/*
+ * Invalidate cached master for a group by group ID (called when master config changes)
+ */
+void
+linuxdvb_unicable_invalidate_group ( uint16_t group_id )
+{
+  linuxdvb_unicable_group_t *group;
+
+  if (group_id == 0)
+    return;
+
+  tvh_mutex_lock(&linuxdvb_unicable_groups_lock);
+  TAILQ_FOREACH(group, &linuxdvb_unicable_groups, lug_link) {
+    if (group->lug_group_id == group_id) {
+      tvh_mutex_lock(&group->lug_lock);
+      group->lug_master_ele = NULL;
+      tvh_mutex_unlock(&group->lug_lock);
+      tvhtrace(LS_EN50494, "invalidated cached master for group %d", group_id);
       break;
     }
   }
@@ -705,8 +691,7 @@ linuxdvb_en50494_tune
     ret = linuxdvb_en50494_tune_internal(ld, lm, sc, vol, pol, band, freq,
                                          fd, volt_lsp, repeats);
 
-    /* Release master FD and group lock */
-    linuxdvb_unicable_release_master_fd(group);
+    /* Release group lock */
     tvh_mutex_unlock(&group->lug_lock);
 
     return ret;
@@ -762,8 +747,6 @@ linuxdvb_en50494_done (void)
   tvh_mutex_lock(&linuxdvb_unicable_groups_lock);
   while ((group = TAILQ_FIRST(&linuxdvb_unicable_groups)) != NULL) {
     TAILQ_REMOVE(&linuxdvb_unicable_groups, group, lug_link);
-    if (group->lug_fd_owned && group->lug_master_fd >= 0)
-      close(group->lug_master_fd);
     tvh_mutex_destroy(&group->lug_lock);
     free(group);
   }

@@ -442,8 +442,6 @@ struct linuxdvb_unicable_group
   uint16_t                             lug_group_id;
   tvh_mutex_t                          lug_lock;       /* per-group lock for command serialization */
   linuxdvb_satconf_ele_t              *lug_master_ele; /* cached master element reference */
-  int                                  lug_master_fd;  /* master frontend FD (-1 if closed) */
-  int                                  lug_fd_owned;   /* 1 if we opened the FD ourselves */
 };
 
 typedef TAILQ_HEAD(,linuxdvb_unicable_group) linuxdvb_unicable_group_list_t;
@@ -612,6 +610,7 @@ static inline int linuxdvb_unicable_is_en50494( const char *str )
 void linuxdvb_en50494_init (void);
 void linuxdvb_en50494_done (void);
 void linuxdvb_unicable_invalidate_master ( linuxdvb_satconf_ele_t *lse );
+void linuxdvb_unicable_invalidate_group ( uint16_t group_id );
 
 int linuxdvb_diseqc_raw_send (int fd, int len, ...);
 int
