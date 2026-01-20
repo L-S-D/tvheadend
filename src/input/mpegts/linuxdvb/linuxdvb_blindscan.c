@@ -2077,8 +2077,9 @@ linuxdvb_blindscan_prescan(const char *uuid, uint32_t frequency, char pol)
 
   /* Search range - half SR for large transponders, 8 MHz floor for small ones */
   uint32_t search_range = (est_symbol_rate > 8000000) ? est_symbol_rate / 2 : 8000000;
-  props[n].cmd = DTV_SEARCH_RANGE;
-  props[n++].u.data = search_range;
+  //props[n].cmd = DTV_SEARCH_RANGE;
+  //props[n++].u.data = search_range;
+  (void)search_range; /* unused for now */
 
   /* Symbol rate (estimated, in symbols/sec) */
   if (est_symbol_rate > 0) {

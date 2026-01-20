@@ -2442,7 +2442,7 @@ linuxdvb_frontend_tune0
     /* Neumo driver: use blind tuning for auto-detection */
     if (lfe->lfe_neumo_supported) {
       S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
-      S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
+      //S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
     }
 #endif
     S2CMD(DTV_SYMBOL_RATE,       p.u.qpsk.symbol_rate);
