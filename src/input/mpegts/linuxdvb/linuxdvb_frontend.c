@@ -2719,7 +2719,7 @@ linuxdvb_frontend_tune0
          (config.blindscan_mode == 1 &&
           ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_ACTIVE))) {
       S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
-      S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
+      //S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
     }
 #endif
     S2CMD(DTV_SYMBOL_RATE,       p.u.qpsk.symbol_rate);
