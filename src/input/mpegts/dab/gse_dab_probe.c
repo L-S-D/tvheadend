@@ -418,9 +418,14 @@ mpegts_gse_dab_probe_complete(mpegts_mux_t *mm)
     dvbdab_streamer_destroy(ctx->streamer);
   }
 
-  /* Close demux */
+  /* Close demux - skip DMX_STOP as it can block with DMX_SET_FE_STREAM
+   * TODO: Re-enable DMX_STOP once kernel driver issue is fixed:
+   *   ioctl(ctx->dmx_fd, DMX_STOP);
+   * The Neumo stid135 driver blocks indefinitely on DMX_STOP when
+   * DMX_SET_FE_STREAM mode was used. close() alone should be sufficient
+   * for cleanup as the kernel handles fd release.
+   */
   if (ctx->dmx_fd >= 0) {
-    ioctl(ctx->dmx_fd, DMX_STOP);
     close(ctx->dmx_fd);
   }
 

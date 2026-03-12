@@ -956,9 +956,9 @@ linuxdvb_dab_done ( linuxdvb_frontend_t *lfe )
   if (lfe->lfe_dab_ctx) {
     dab_stream_destroy(lfe->lfe_dab_ctx);
     lfe->lfe_dab_ctx = NULL;
+    sbuf_free(&lfe->lfe_dab_buffer);
+    lfe->lfe_stream_pid = 0;
   }
-  sbuf_free(&lfe->lfe_dab_buffer);
-  lfe->lfe_stream_pid = 0;
 }
 
 #if ENABLE_LINUXDVB_NEUMO
@@ -1215,6 +1215,7 @@ linuxdvb_gse_done ( linuxdvb_frontend_t *lfe )
     }
     lfe->lfe_gse_running = 0;
     tvh_pipe_close(&lfe->lfe_gse_pipe);
+    sbuf_free(&lfe->lfe_dab_buffer);
   }
 
   /* Destroy streamer */
@@ -1229,8 +1230,6 @@ linuxdvb_gse_done ( linuxdvb_frontend_t *lfe )
     close(lfe->lfe_gse_dmx_fd);
     lfe->lfe_gse_dmx_fd = -1;
   }
-
-  sbuf_free(&lfe->lfe_dab_buffer);
 }
 #endif /* ENABLE_LINUXDVB_NEUMO - GSE support */
 
