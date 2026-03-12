@@ -2571,6 +2571,7 @@ const idclass_t config_class = {
       .opts   = PO_EXPERT,
       .group  = 5
     },
+#if ENABLE_HDHOMERUN_CLIENT
     {
       .type   = PT_STR,
       .id     = "hdhomerun_ip",
@@ -2615,6 +2616,8 @@ const idclass_t config_class = {
       .opts   = PO_HIDDEN | PO_EXPERT,
       .group  = 6
     },
+#endif
+#if ENABLE_HDHOMERUN_SERVER
     {
       .type   = PT_U32,
       .id     = "hdhomerun_server_tuner_count",
@@ -2635,11 +2638,7 @@ const idclass_t config_class = {
                    "Set to zero for Tvheadend to use a default value."
                   ),
       .off    = offsetof(config_t, hdhomerun_server_tuner_count),
-      .opts   = PO_EXPERT
-#if !ENABLE_HDHOMERUN_SERVER
-      | PO_PHIDDEN
-#endif
-      ,
+      .opts   = PO_EXPERT,
       .group  = 6,
     },
     {
@@ -2655,11 +2654,7 @@ const idclass_t config_class = {
                    "for Tvheadend to use a default."
                   ),
       .off    = offsetof(config_t, hdhomerun_server_model_name),
-      .opts   = PO_EXPERT
-#if !ENABLE_HDHOMERUN_SERVER
-      | PO_PHIDDEN
-#endif
-      ,
+      .opts   = PO_EXPERT,
       .group  = 6,
     },
     {
@@ -2671,13 +2666,10 @@ const idclass_t config_class = {
                    "to be used on some media servers."
                   ),
       .off    = offsetof(config_t, hdhomerun_server_enable),
-      .opts   = PO_EXPERT
-#if !ENABLE_HDHOMERUN_SERVER
-      | PO_PHIDDEN
-#endif
-,
+      .opts   = PO_EXPERT,
       .group  = 6
     },
+#endif
     {
       .type   = PT_INT,
       .id     = "rtsp_udp_min_port",
@@ -2711,6 +2703,7 @@ const idclass_t config_class = {
     },
     {
       .type   = PT_INT,
+      .intextra = INTEXTRA_RANGE(1, 128, 1),
       .id     = "iptv_tpool",
       .name   = N_("IPTV threads"),
       .desc   = N_("Set the number of threads for IPTV to split load "
