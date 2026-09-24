@@ -257,6 +257,7 @@ tvheadend.IdNodeField = function(conf)
     this.lorder = conf.lorder;
     this.multiline = conf.multiline;
     this.persistent = conf.persistent;
+    this.listonly = conf.listonly;
     this['enum'] = conf['enum'];
     this.store = null;
     if (this['enum'])
@@ -471,7 +472,8 @@ tvheadend.IdNodeField = function(conf)
                 c['mode'] = 'local';
                 c['store'] = this.store;
                 c['typeAhead'] = true;
-                c['forceSelection'] = false;
+                c['forceSelection'] = this.listonly ? true : false;
+                c['editable'] = this.listonly ? false : !this.rdonly;
                 c['triggerAction'] = 'all';
                 c['emptyText'] = _('Select {0} ...').replace('{0}', this.text);
             }
@@ -480,7 +482,9 @@ tvheadend.IdNodeField = function(conf)
         } else {
 
             if (this.type == 'perm') {
-                c['regex'] = /^[0][0-7]{3}$/;
+                /* 0 + 3 digits, or 0 + 4 when a special bit
+                 * (setuid/setgid/sticky) is set, e.g. 02775. */
+                c['regex'] = /^0[0-7]{3,4}$/;
                 c['maskRe'] = /[0-7]/;
                 c['allowBlank'] = false;
                 c['blankText'] = _('You must provide a value - use octal chmod notation, e.g. 0664');
@@ -719,7 +723,8 @@ tvheadend.idnode_editor_field = function(f, conf)
             checkField: 'checked_' + f.id,
             store: st,
             typeAhead: true, // TODO: this does strange things in multi
-            forceSelection: false,
+            forceSelection: f.listonly ? true : false,
+            editable: f.listonly ? false : !d,
             triggerAction: 'all',
             emptyText:  _('Select {0} ...').replace('{0}', f.caption),
             listeners: {
@@ -786,9 +791,9 @@ tvheadend.idnode_editor_field = function(f, conf)
                     value: value,
                     disabled: false,
                     width: 300,
-                    timeFormat: 'H:i:s',
+                    timeFormat: tvheadend.dvr_show_seconds ? 'H:i:s' : 'H:i',
                     timeConfig: {
-                        altFormats: 'H:i:s',
+                        altFormats: 'H:i:s|H:i',
                         allowBlank: true,
                         increment: 10
                     },
@@ -858,7 +863,8 @@ tvheadend.idnode_editor_field = function(f, conf)
                 value: value,
                 disabled: d,
                 width: 125,
-                regex: /^[0][0-7]{3}$/,
+                /* 0 + 3 digits, or 0 + 4 with a special bit set. */
+                regex: /^0[0-7]{3,4}$/,
                 maskRe: /[0-7]/,
                 allowBlank: false,
                 blankText: _('You must provide a value - use octal chmod notation, e.g. 0664')
@@ -1998,7 +2004,7 @@ tvheadend.idnode_grid = function(panel, conf)
                 store: new Ext.data.ArrayStore({
                     id: 0,
                     fields: ['key', 'val'],
-                    data: [['default', _('Parent disabled')],
+                    data: [['default', _('Inactive services')],
                         ['all', _('All')],
                         ['none', _('None')]]
                 }),

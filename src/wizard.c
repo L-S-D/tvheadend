@@ -436,6 +436,7 @@ wizard_page_t *wizard_login(const char *lang)
       .desc     = N_("Enter an administrator password."),
       .get      = wizard_get_value_admin_password,
       .set      = wizard_set_value_admin_password,
+      .opts     = PO_PASSWORD,
       .group    = 2
     },
     {
@@ -454,6 +455,7 @@ wizard_page_t *wizard_login(const char *lang)
       .desc     = N_("Enter a non-admin user password."),
       .get      = wizard_get_value_password,
       .set      = wizard_set_value_password,
+      .opts     = PO_PASSWORD,
       .group    = 3
     },
     ICON(),
@@ -586,6 +588,7 @@ static void network_changed(idnode_t *in)
   .get  = network_get_value##num, \
   .set  = network_set_value##num, \
   .list = network_get_list##num, \
+  .opts = PO_LISTONLY, \
   .group = num, \
 }
 

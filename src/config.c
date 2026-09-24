@@ -1482,6 +1482,39 @@ config_migrate_v24 ( void )
 }
 
 /*
+ * v24 -> v25 : "blue" and "gray" themes replaced by "light"
+ */
+static void
+config_migrate_v25 ( void )
+{
+  htsmsg_t *c, *e;
+  htsmsg_field_t *f;
+  const char *s;
+
+  /*
+   * config_boot() has already loaded config.theme_ui into memory by
+   * the time the migrations run, so the global default is retuned
+   * there; config_migrate() saves the idnode when it finishes.
+   */
+  s = tvh_str_default(config.theme_ui, NULL);
+  if (s && (!strcmp(s, "blue") || !strcmp(s, "gray")))
+    tvh_str_set(&config.theme_ui, "light");
+
+  /* Access entries are loaded later, so rewrite them on disk. */
+  if ((c = hts_settings_load("accesscontrol")) != NULL) {
+    HTSMSG_FOREACH(f, c) {
+      if (!(e = htsmsg_field_get_map(f))) continue;
+      s = htsmsg_get_str(e, "themeui");
+      if (s == NULL) continue;
+      if (strcmp(s, "blue") && strcmp(s, "gray")) continue;
+      htsmsg_set_str(e, "themeui", "light");
+      hts_settings_save(e, "accesscontrol/%s", htsmsg_field_name(f));
+    }
+    htsmsg_destroy(c);
+  }
+}
+
+/*
  * Perform backup
  */
 static void
@@ -1606,7 +1639,8 @@ static const config_migrate_t config_migrate_table[] = {
   config_migrate_v21,
   config_migrate_v22,
   config_migrate_v23,
-  config_migrate_v24
+  config_migrate_v24,
+  config_migrate_v25
 };
 
 /*
@@ -1709,6 +1743,12 @@ static char *config_get_dir ( uid_t uid )
   if (uid == -1)
     uid = getuid();
 
+  /* Prefer the well-known system locations, but only when they are owned by
+   * the user we run as. If the ownership does not match (e.g. a packaged
+   * /var/lib/tvheadend left owned by root), fall through to the HOME-based
+   * locations below. Distribution packaging must keep this directory owned
+   * by the service user, otherwise the config silently moves to ~/.config/hts
+   * and any file pre-seeded here (e.g. debian's superuser) is never read. */
   snprintf(hts_home, sizeof(hts_home), "/var/lib/tvheadend");
   if ((stat(hts_home, &st) == 0) && (st.st_uid == uid))
     return strndup(hts_home, sizeof(hts_home));
@@ -1774,11 +1814,12 @@ config_boot
   config.epg_cut_window = 5*60;
   config.epg_update_window = 24*3600;
   config_scanfile_ok = 0;
-  config.theme_ui = strdup("blue");
+  config.theme_ui = strdup("auto");
   config.chname_num = 1;
   config.iptv_tpool_count = 2;
   config.date_mask = strdup("");
   config.label_formatting = 0;
+  config.dvr_show_seconds = 1;
   config.hdhomerun_ip = strdup("");
   config.local_ip = strdup("");
   config.local_port = 0;
@@ -2146,6 +2187,35 @@ config_class_http_auth_algo_list ( void *o, const char *lang )
   return strtab2htsmsg(tab, 1, lang);
 }
 
+htsmsg_t *
+config_class_default_tab_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("System Default"),        CONFIG_DEFAULT_TAB_SYSTEM },
+    { N_("EPG"),                   CONFIG_DEFAULT_TAB_EPG },
+    { N_("DVR-Upcoming/Current"),  CONFIG_DEFAULT_TAB_DVR_UPCOMING },
+    { N_("DVR-Finished"),          CONFIG_DEFAULT_TAB_DVR_FINISHED },
+    { N_("DVR-Failed"),            CONFIG_DEFAULT_TAB_DVR_FAILED },
+    { N_("DVR-Removed"),           CONFIG_DEFAULT_TAB_DVR_REMOVED },
+    { N_("DVR-Autorecs"),          CONFIG_DEFAULT_TAB_DVR_AUTORECS },
+    { N_("DVR-Timers"),            CONFIG_DEFAULT_TAB_DVR_TIMERS },
+    { N_("Config-General"),        CONFIG_DEFAULT_TAB_CFG_GENERAL },
+    { N_("Config-Users"),          CONFIG_DEFAULT_TAB_CFG_USERS },
+    { N_("Config-DVB Inputs"),     CONFIG_DEFAULT_TAB_CFG_DVB },
+    { N_("Config-Channel/EPG"),    CONFIG_DEFAULT_TAB_CFG_CHANNEL },
+    { N_("Config-Stream"),         CONFIG_DEFAULT_TAB_CFG_STREAM },
+    { N_("Config-Recording"),      CONFIG_DEFAULT_TAB_CFG_REC },
+    { N_("Config-CAs"),            CONFIG_DEFAULT_TAB_CFG_CA },
+    { N_("Config-Debugging"),      CONFIG_DEFAULT_TAB_CFG_DEBUG },
+    { N_("Status-Stream"),         CONFIG_DEFAULT_TAB_STATUS_STREAM },
+    { N_("Status-Subscriptions"),  CONFIG_DEFAULT_TAB_STATUS_SUBS },
+    { N_("Status-Connections"),    CONFIG_DEFAULT_TAB_STATUS_CONN },
+    { N_("Status-Service Mapper"), CONFIG_DEFAULT_TAB_STATUS_SVC },
+    { N_("About"),                 CONFIG_DEFAULT_TAB_ABOUT },
+  };
+  return strtab2htsmsg(tab, 1, lang);
+}
+
 #if ENABLE_MPEGTS_DVB
 static void
 config_muxconfpath_notify_cb(void *opaque, int disarmed)
@@ -2366,6 +2436,27 @@ const idclass_t config_class = {
       .desc   = N_("Custom date mask like (%yyyy-%M-%dd %h:%m:%s)"),
       .opts   = PO_ADVANCED,
       .off    = offsetof(config_t, date_mask),
+      .group  = 2,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "default_tab",
+      .name   = N_("Default tab"),
+      .desc   = N_("Set the default start-up tab.  'EPG' is the system default tab."),
+      .list   = config_class_default_tab_list,
+      .off    = offsetof(config_t, default_tab),
+      .opts   = PO_DOC_NLIST,
+      .group  = 2
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "dvr_show_seconds",
+      .name   = N_("Show DVR seconds"),
+      .desc   = N_("Show seconds in the DVR entry add/edit dialogue window. "
+                   "If disabled, existing seconds can not be edited and "
+                   "new entries will have seconds set to zero."),
+      .opts   = PO_ADVANCED,
+      .off    = offsetof(config_t, dvr_show_seconds),
       .group  = 2,
     },
     {
