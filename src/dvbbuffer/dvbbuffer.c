@@ -53,6 +53,7 @@ dvbbuffer_init(void)
   dvbbuffer_conf_init();
   dvbbuffer_mux_init();
   dvbbuffer_warm_init();
+  dvbbuffer_hls_init();
 }
 
 /*
@@ -63,6 +64,8 @@ dvbbuffer_done(void)
 {
   if (dvbbuffer_ctx == NULL)
     return;
+  /* first: its request threads may wait for global_lock */
+  dvbbuffer_hls_done();
   tvh_mutex_lock(&global_lock);
   dvbbuffer_warm_done();
   dvbbuffer_mux_done();

@@ -512,6 +512,7 @@ struct mpegts_mux
    * under mi_output_lock; prebuffer = keep this mux warm (persisted) */
   struct dvbbuffer_mux       *mm_dvbbuffer;
   int                         mm_prebuffer;
+  int                         mm_dvbbuffer_hold;  /* HLS clients (global_lock) */
 #endif
   RB_HEAD(, mpegts_pid)       mm_pids;
   LIST_HEAD(, mpegts_pid_sub) mm_all_subs;

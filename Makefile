@@ -528,7 +528,8 @@ SRCS-DVBBUFFER = \
 	src/dvbbuffer/conf.c \
 	src/dvbbuffer/mux.c \
 	src/dvbbuffer/svc.c \
-	src/dvbbuffer/warm.c
+	src/dvbbuffer/warm.c \
+	src/dvbbuffer/hlsbridge.c
 SRCS-$(CONFIG_DVBBUFFER) += $(SRCS-DVBBUFFER)
 I18N-C += $(SRCS-AVAHI)
 

@@ -14,11 +14,20 @@ static mpegts_listener_t dvbbuffer_mux_listener;
 static int dvbbuffer_mux_count;     /* library muxes alive */
 static int dvbbuffer_shutdown;      /* destroy the context with the last mux */
 
+/* kept warm (prebuffer) */
 int
-dvbbuffer_mux_wanted(mpegts_mux_t *mm)
+dvbbuffer_mux_prebuffer(mpegts_mux_t *mm)
 {
   return dvbbuffer_ctx != NULL && !dvbbuffer_shutdown &&
          dvbbuffer_conf.enabled && mm->mm_prebuffer && mm->mm_is_enabled(mm);
+}
+
+/* ring buffer wanted: warm, or held by HLS clients */
+int
+dvbbuffer_mux_wanted(mpegts_mux_t *mm)
+{
+  return dvbbuffer_mux_prebuffer(mm) ||
+         (dvbbuffer_ctx != NULL && !dvbbuffer_shutdown && mm->mm_dvbbuffer_hold > 0);
 }
 
 void

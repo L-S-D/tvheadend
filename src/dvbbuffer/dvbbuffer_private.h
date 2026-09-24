@@ -36,6 +36,22 @@ typedef struct dvbbuffer_conf {
   uint32_t start_reserve_kb;  /* extra output queue room at stream start */
   uint32_t start_reserve_sec; /* ... for this long after the first data */
   int      inject_dvr;        /* also inject for recordings */
+  /* HLS server (webOS path) */
+  int      hls_enabled;
+  uint32_t hls_port;
+  uint32_t hls_weight;        /* mux subscription weight of HLS clients */
+  uint32_t hls_start_back_ms;
+  uint32_t hls_initial_target_ms;
+  uint32_t hls_target_ms;
+  uint32_t hls_target_duration;
+  uint32_t hls_initial_segments;
+  uint32_t hls_initial_duration_ms;
+  uint32_t hls_initial_timeout_ms;
+  uint32_t hls_window_ms;
+  uint32_t hls_keep_ms;
+  uint32_t hls_idle_ms;
+  int      hls_start_offset_ms;
+  int      hls_blocking_reload;
 } dvbbuffer_conf_t;
 
 extern dvbbuffer_conf_t dvbbuffer_conf;
@@ -66,6 +82,7 @@ void dvbbuffer_mux_detach(mpegts_mux_t *mm);
 void dvbbuffer_mux_ref(dvbbuffer_mux_t *dm);
 void dvbbuffer_mux_unref(dvbbuffer_mux_t *dm);
 int  dvbbuffer_mux_wanted(mpegts_mux_t *mm);
+int  dvbbuffer_mux_prebuffer(mpegts_mux_t *mm);
 
 /*
  * Warm mux manager (warm.c), global_lock
@@ -74,5 +91,11 @@ void dvbbuffer_warm_init(void);
 void dvbbuffer_warm_done(void);
 void dvbbuffer_warm_reconcile(void);
 void dvbbuffer_warm_mux_delete(mpegts_mux_t *mm);
+
+/*
+ * HLS server bridge (hlsbridge.c)
+ */
+void dvbbuffer_hls_init(void);   /* global_lock */
+void dvbbuffer_hls_done(void);   /* WITHOUT global_lock */
 
 #endif /* __TVH_DVBBUFFER_PRIVATE_H__ */

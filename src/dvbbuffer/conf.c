@@ -34,6 +34,10 @@ dvbbuffer_conf_fixup(void)
     dvbbuffer_conf.max_age_ms = 500;
   if (dvbbuffer_conf.keyframe_back < 1)
     dvbbuffer_conf.keyframe_back = 1;
+  if (dvbbuffer_conf.hls_port < 1 || dvbbuffer_conf.hls_port > 65535)
+    dvbbuffer_conf.hls_port = 8890;
+  if (dvbbuffer_conf.hls_target_duration < 1)
+    dvbbuffer_conf.hls_target_duration = 1;
 
   /* output queues (HTSP/HTTP) take the burst of a start without dropping */
   if (dvbbuffer_conf.enabled && dvbbuffer_ctx) {
@@ -79,6 +83,10 @@ const idclass_t dvbbuffer_conf_class = {
     {
       .name   = N_("Kodi / tvh streaming"),
       .number = 2,
+    },
+    {
+      .name   = N_("HLS server (webOS)"),
+      .number = 3,
     },
     {}
   },
@@ -210,6 +218,139 @@ const idclass_t dvbbuffer_conf_class = {
       .opts   = PO_ADVANCED,
       .group  = 2,
     },
+    {
+      .type   = PT_BOOL,
+      .id     = "hls_enabled",
+      .name   = N_("HLS server"),
+      .desc   = N_("Own HTTP server with HLS for the webOS app: "
+                   "/hls/<channel uuid>/index.m3u8 (changes need a restart)."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_enabled),
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_port",
+      .name   = N_("HLS port"),
+      .desc   = N_("TCP port of the HLS server (changes need a restart)."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_port),
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_weight",
+      .name   = N_("HLS subscription weight"),
+      .desc   = N_("Weight of the mux subscription of an HLS client."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_weight),
+      .opts   = PO_ADVANCED,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_start_back_ms",
+      .name   = N_("HLS start back (ms)"),
+      .desc   = N_("A stream starts this far in the past (at a keyframe) - "
+                   "the backlog is delivered at once."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_start_back_ms),
+      .opts   = PO_ADVANCED,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_initial_target_ms",
+      .name   = N_("HLS backlog segment length (ms)"),
+      .desc   = N_("Minimum length of the segments from the buffer."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_initial_target_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_target_ms",
+      .name   = N_("HLS live segment length (ms)"),
+      .desc   = N_("Minimum length of the live segments."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_target_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_target_duration",
+      .name   = N_("HLS target duration (s)"),
+      .desc   = N_("EXT-X-TARGETDURATION, constant."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_target_duration),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_initial_segments",
+      .name   = N_("HLS first playlist: segments"),
+      .desc   = N_("The first playlist is delivered with at least this "
+                   "many segments ..."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_initial_segments),
+      .opts   = PO_ADVANCED,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_initial_duration_ms",
+      .name   = N_("HLS first playlist: duration (ms)"),
+      .desc   = N_("... and at least this much content."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_initial_duration_ms),
+      .opts   = PO_ADVANCED,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_initial_timeout_ms",
+      .name   = N_("HLS first playlist: timeout (ms)"),
+      .desc   = N_("After this, the first playlist comes with what is there."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_initial_timeout_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_window_ms",
+      .name   = N_("HLS playlist window (ms)"),
+      .off    = offsetof(dvbbuffer_conf_t, hls_window_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_keep_ms",
+      .name   = N_("HLS segments kept (ms)"),
+      .off    = offsetof(dvbbuffer_conf_t, hls_keep_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_idle_ms",
+      .name   = N_("HLS idle timeout (ms)"),
+      .desc   = N_("A stream without requests ends after this."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_idle_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_INT,
+      .id     = "hls_start_offset_ms",
+      .name   = N_("HLS start offset (ms)"),
+      .desc   = N_("EXT-X-START TIME-OFFSET (0 = none, negative = from the end)."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_start_offset_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "hls_blocking_reload",
+      .name   = N_("HLS blocking playlist reload"),
+      .off    = offsetof(dvbbuffer_conf_t, hls_blocking_reload),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
     {}
   }
 };
@@ -238,6 +379,21 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.key_wait_ms      = 3000;
   dvbbuffer_conf.start_reserve_kb  = 8000;
   dvbbuffer_conf.start_reserve_sec = 5;
+  dvbbuffer_conf.hls_enabled             = 1;
+  dvbbuffer_conf.hls_port                = 8890;
+  dvbbuffer_conf.hls_weight              = 150;
+  dvbbuffer_conf.hls_start_back_ms       = 8000;
+  dvbbuffer_conf.hls_initial_target_ms   = 1000;
+  dvbbuffer_conf.hls_target_ms           = 2000;
+  dvbbuffer_conf.hls_target_duration     = 4;
+  dvbbuffer_conf.hls_initial_segments    = 4;
+  dvbbuffer_conf.hls_initial_duration_ms = 6000;
+  dvbbuffer_conf.hls_initial_timeout_ms  = 8000;
+  dvbbuffer_conf.hls_window_ms           = 30000;
+  dvbbuffer_conf.hls_keep_ms             = 60000;
+  dvbbuffer_conf.hls_idle_ms             = 30000;
+  dvbbuffer_conf.hls_start_offset_ms     = 0;
+  dvbbuffer_conf.hls_blocking_reload     = 1;
 
   idclass_register(&dvbbuffer_conf_class);
 

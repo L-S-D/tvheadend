@@ -132,7 +132,7 @@ dvbbuffer_warm_reconcile_cb(void *aux)
 
   /* keep existing ones first (up to warm_max) */
   LIST_FOREACH(dw, &dvbbuffer_warm_all, dw_link)
-    if (dvbbuffer_mux_wanted(dw->dw_mux) && count < dvbbuffer_conf.warm_max) {
+    if (dvbbuffer_mux_prebuffer(dw->dw_mux) && count < dvbbuffer_conf.warm_max) {
       dw->dw_mark = 1;
       count++;
     }
@@ -145,7 +145,7 @@ dvbbuffer_warm_reconcile_cb(void *aux)
 
   LIST_FOREACH(mn, &mpegts_network_all, mn_global_link)
     LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link) {
-      if (!dvbbuffer_mux_wanted(mm))
+      if (!dvbbuffer_mux_prebuffer(mm))
         continue;
       LIST_FOREACH(dw, &dvbbuffer_warm_all, dw_link)
         if (dw->dw_mux == mm)
