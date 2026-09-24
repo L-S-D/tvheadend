@@ -52,8 +52,12 @@ int dvbbuffer_service_packet0(struct mpegts_service *t, uint64_t tspos,
 void dvbbuffer_service_start(struct mpegts_service *t);
 void dvbbuffer_service_stop(struct mpegts_service *t);
 
-/* H5 - descrambler_keys(): tvh obtained a key, s_stream_mutex held (read-only hint) */
-void dvbbuffer_service_key(struct service *t);
+/* H5 - descrambler_keys(): tvh obtained a key, s_stream_mutex held (read-only
+ * hint). type = DESCRAMBLER_*, even/odd = key data (zero = not in this answer),
+ * keylen in bytes, ecm = ICAM ecm byte of the key (csa_ecm) */
+void dvbbuffer_service_key(struct service *t, int type, uint16_t pid,
+                           const uint8_t *even, const uint8_t *odd,
+                           int keylen, uint8_t ecm);
 
 /* H8 - mux property "prebuffer" changed, global_lock held */
 void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);

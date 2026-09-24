@@ -859,7 +859,8 @@ cont:
     td->td_service->s_descrambler = td;
 #if ENABLE_DVBBUFFER
     /* Instant zapping: read-only hint, the backlog may be injected now */
-    dvbbuffer_service_key(t);
+    dvbbuffer_service_key(t, type, pid, even, odd, tk->key_csa.csa_keylen,
+                          tk->key_csa.csa_ecm);
 #endif
   } else {
     tvhdebug(LS_DESCRAMBLER,

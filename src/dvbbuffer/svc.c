@@ -36,6 +36,9 @@ typedef struct dvbbuffer_svc {
   int              ds_decided;      /* decision timer ran */
   int              ds_allowed;      /* injection allowed for these subscribers */
   int              ds_has_key;      /* H5: tvh obtained a key */
+  uint8_t          ds_cw[2][8];     /* H5: DVB-CSA keys (even, odd) so far */
+  uint8_t          ds_cw_valid[2];
+  uint8_t          ds_cw_ecm;       /* ICAM ecm byte */
   int64_t          ds_start;        /* mclk() of the service start */
   int64_t          ds_key_wait;     /* key wait limit (mono) */
   uint8_t         *ds_buf;
@@ -161,20 +164,58 @@ dvbbuffer_service_stop(mpegts_service_t *t)
 
 /*
  * H5 - descrambler_keys() (s_stream_mutex)
+ *
+ * The keys are also handed to the raw reader: with them the start keyframe
+ * is chosen by trial decryption - only where tvh can descramble and a
+ * decoder can start (SPS/PPS...). OSCam often answers with one parity only,
+ * the keys are collected per parity.
  */
 void
-dvbbuffer_service_key(service_t *t)
+dvbbuffer_service_key(service_t *t, int type, uint16_t pid,
+                      const uint8_t *even, const uint8_t *odd,
+                      int keylen, uint8_t ecm)
 {
+  static const uint8_t empty[8];
   dvbbuffer_svc_t *ds;
+  elementary_stream_t *st;
+  const uint8_t *cw[2] = { even, odd };
+  int i, r;
 
   if (t->s_source_type != S_MPEG_TS)
     return;
   ds = ((mpegts_service_t *)t)->s_dvbbuffer;
-  if (ds && !ds->ds_has_key) {
+  if (ds == NULL)
+    return;
+  if (!ds->ds_has_key) {
     ds->ds_has_key = 1;
     tvhdebug(LS_DVBBUFFER, "%s: tvh has the key after %"PRId64" ms",
              service_nicename(t), mono2ms(mclk() - ds->ds_start));
   }
+  if (ds->ds_state != DVBBUFFER_SVC_WAIT)
+    return;
+  /* DVB-CSA only; per-PID keys: only those of the video stream */
+  if (type != DESCRAMBLER_CSA_CBC || keylen != 8)
+    return;
+  if (pid) {
+    st = elementary_stream_find(&t->s_components, pid);
+    if (st == NULL || !SCT_ISVIDEO(st->es_type))
+      return;
+  }
+  for (i = 0; i < 2; i++)
+    if (cw[i] && memcmp(cw[i], empty, 8)) {
+      memcpy(ds->ds_cw[i], cw[i], 8);
+      ds->ds_cw_valid[i] = 1;
+    }
+  ds->ds_cw_ecm = ecm;
+  r = dvbbuf_raw_set_cw(ds->ds_raw, ds->ds_cw_valid[0] ? ds->ds_cw[0] : NULL,
+                        ds->ds_cw_valid[1] ? ds->ds_cw[1] : NULL, ecm);
+  if (r != DVBBUF_OK)
+    tvhwarn(LS_DVBBUFFER, "%s: keys not usable for the keyframe search: %s",
+            service_nicename(t), dvbbuf_last_error());
+  else
+    tvhdebug(LS_DVBBUFFER, "%s: keys for the keyframe search: even %s, odd %s, ecm %d",
+             service_nicename(t), ds->ds_cw_valid[0] ? "yes" : "no",
+             ds->ds_cw_valid[1] ? "yes" : "no", ecm);
 }
 
 /*
@@ -281,7 +322,8 @@ dvbbuffer_service_packet0(mpegts_service_t *t, uint64_t tspos,
     tvhdebug(LS_DVBBUFFER, "%s: injecting from keyframe %"PRId64" ms back "
              "(pid %d, %s), %"PRId64" ms after start",
              service_nicename((service_t *)t), rap.age_us / 1000, rap.pid,
-             rap.method == DVBBUF_RAP_ES ? "ES" : "RAI",
+             rap.method == DVBBUF_RAP_ES ? "ES" :
+             rap.method == DVBBUF_RAP_CW ? "CW" : "RAI",
              mono2ms(mclk() - ds->ds_start));
     /* subscription_input() drops everything before TSS_PACKETS, which tvh
      * would only set after the first flush of our backlog */

@@ -163,9 +163,9 @@ const idclass_t dvbbuffer_conf_class = {
       .type   = PT_U32,
       .id     = "keyframe_back",
       .name   = N_("Start keyframe"),
-      .desc   = N_("Keyframe to start from, counted back from the newest: "
-                   "1 = newest (may still be on air), 2 = the one before "
-                   "(complete in the buffer)."),
+      .desc   = N_("Keyframe to start from, counted back over the complete ones: "
+                   "1 = newest complete one, 2 = the one before, ... "
+                   "(a keyframe still on air never counts)."),
       .off    = offsetof(dvbbuffer_conf_t, keyframe_back),
       .opts   = PO_EXPERT,
       .group  = 2,
@@ -234,7 +234,7 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.burst_kb         = 8000;
   dvbbuffer_conf.pace_factor      = 3;
   dvbbuffer_conf.max_age_ms       = 5000;
-  dvbbuffer_conf.keyframe_back    = 2;
+  dvbbuffer_conf.keyframe_back    = 1;
   dvbbuffer_conf.key_wait_ms      = 3000;
   dvbbuffer_conf.start_reserve_kb  = 8000;
   dvbbuffer_conf.start_reserve_sec = 5;
