@@ -36,6 +36,7 @@ OPTIONS=(
   "timeshift:yes"
   "trace:yes"
   "avahi:auto"
+  "dvbbuffer:auto"
   "zlib:auto"
   "libav:auto"
   "vue_build:auto"
@@ -598,6 +599,17 @@ if enabled_or_auto avahi; then
     enable avahi
   elif enabled avahi; then
     die "Avahi development support not found (use --disable-avahi)"
+  fi
+fi
+
+#
+# libdvbbuffer (instant channel switching, L-S-D)
+#
+if enabled_or_auto dvbbuffer; then
+  if check_pkg dvbbuffer; then
+    enable dvbbuffer
+  elif enabled dvbbuffer; then
+    die "libdvbbuffer not found (use --disable-dvbbuffer)"
   fi
 fi
 

@@ -185,6 +185,9 @@ tvhlog_subsys_t tvhlog_subsystems[] = {
 #endif
   [LS_UDP]           = { "udp",           N_("UDP Streamer") },
   [LS_RATINGLABELS]  = { "ratinglabels",  N_("Rating Labels") },
+#if ENABLE_DVBBUFFER
+  [LS_DVBBUFFER]     = { "dvbbuffer",     N_("Instant zapping buffer") },
+#endif
 
 };
 

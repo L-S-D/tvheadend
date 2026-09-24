@@ -204,6 +204,9 @@ enum {
 #endif
   LS_UDP,
   LS_RATINGLABELS,
+#if ENABLE_DVBBUFFER
+  LS_DVBBUFFER,
+#endif
   LS_LAST     /* keep this last */
 };
 
