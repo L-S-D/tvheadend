@@ -68,6 +68,14 @@ int dvbbuffer_service_ecm(struct mpegts_service *t, uint16_t pid,
                           int (*match)(void *opaque, const uint8_t *sec, int len),
                           void *opaque, uint8_t *out, int max);
 
+/* H7 - subscription_link_service(), s_stream_mutex held: a subscriber joins a
+ * running service. _pre before it is linked to the service output, then
+ * after its start message: it alone gets the backlog since the last keyframe
+ * up to what the others got. */
+struct th_subscription;
+void dvbbuffer_service_link_pre(struct service *t);
+void dvbbuffer_service_link(struct service *t, struct th_subscription *s);
+
 /* H8 - mux property "prebuffer" changed, global_lock held */
 void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);
 

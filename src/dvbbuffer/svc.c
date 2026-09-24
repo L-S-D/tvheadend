@@ -26,6 +26,9 @@ typedef enum {
   DVBBUFFER_SVC_LIVE      /* done, tvh processes live packets */
 } dvbbuffer_svc_state_t;
 
+/* H7: keys per parity kept for the backlog of joining subscribers */
+#define DVBBUFFER_SVC_CW_HIST    4
+
 typedef struct dvbbuffer_svc {
   /* global_lock */
   dvbbuffer_mux_t *ds_mux;
@@ -39,12 +42,16 @@ typedef struct dvbbuffer_svc {
   uint8_t          ds_cw[2][8];     /* H5: DVB-CSA keys (even, odd) so far */
   uint8_t          ds_cw_valid[2];
   uint8_t          ds_cw_ecm;       /* ICAM ecm byte */
+  uint8_t          ds_cw_hist[2][DVBBUFFER_SVC_CW_HIST][8]; /* H7: recent distinct keys, */
+  uint8_t          ds_cw_hist_n[2];                         /* oldest first */
   uint32_t         ds_cw_gen;       /* key updates handed to the raw reader */
   uint32_t         ds_tried_gen;    /* keys of the last start attempt without result */
   int              ds_tried;
   int64_t          ds_retry_at;     /* next start attempt (mono) */
   uint32_t         ds_ecm_replayed; /* H6: ECMs from the history given to the CA client */
   uint64_t         ds_ecm_ids[8];   /* H6: ... their history ids (each once per start) */
+  uint64_t         ds_next_pos;     /* H7: end of what tvh processed live (tspos) */
+  uint32_t         ds_joins;        /* H7: subscribers started from the backlog */
   int64_t          ds_start;        /* mclk() of the service start */
   int64_t          ds_key_wait;     /* key wait limit (mono) */
   uint8_t         *ds_buf;
@@ -57,6 +64,25 @@ typedef struct dvbbuffer_svc {
 #define DVBBUFFER_SVC_LINK_WAIT  sec2mono(2)
 /* no start point yet: next search after this */
 #define DVBBUFFER_SVC_RETRY      ms2mono(40)
+
+/* remember a key (s_stream_mutex); a known one moves to the end */
+static void
+dvbbuffer_svc_cw_hist(dvbbuffer_svc_t *ds, int parity, const uint8_t *cw)
+{
+  uint8_t (*h)[8] = ds->ds_cw_hist[parity];
+  int i, n = ds->ds_cw_hist_n[parity];
+
+  for (i = 0; i < n; i++)
+    if (memcmp(h[i], cw, 8) == 0)
+      break;
+  if (i == n && n == DVBBUFFER_SVC_CW_HIST)
+    i = 0;                       /* full: drop the oldest */
+  else if (i == n)
+    n++;
+  memmove(h[i], h[i + 1], (size_t)(n - 1 - i) * 8);
+  memcpy(h[n - 1], cw, 8);
+  ds->ds_cw_hist_n[parity] = n;
+}
 
 static void
 dvbbuffer_svc_go_live(mpegts_service_t *t, dvbbuffer_svc_t *ds, const char *why)
@@ -199,8 +225,6 @@ dvbbuffer_service_key(service_t *t, int type, uint16_t pid,
     tvhdebug(LS_DVBBUFFER, "%s: tvh has the key after %"PRId64" ms",
              service_nicename(t), mono2ms(mclk() - ds->ds_start));
   }
-  if (ds->ds_state != DVBBUFFER_SVC_WAIT)
-    return;
   /* DVB-CSA only; per-PID keys: only those of the video stream */
   if (type != DESCRAMBLER_CSA_CBC || keylen != 8)
     return;
@@ -209,12 +233,16 @@ dvbbuffer_service_key(service_t *t, int type, uint16_t pid,
     if (st == NULL || !SCT_ISVIDEO(st->es_type))
       return;
   }
+  /* collected all the time: joining subscribers get a decrypted backlog (H7) */
   for (i = 0; i < 2; i++)
     if (cw[i] && memcmp(cw[i], empty, 8)) {
       memcpy(ds->ds_cw[i], cw[i], 8);
       ds->ds_cw_valid[i] = 1;
+      dvbbuffer_svc_cw_hist(ds, i, cw[i]);
     }
   ds->ds_cw_ecm = ecm;
+  if (ds->ds_state != DVBBUFFER_SVC_WAIT)
+    return;
   r = dvbbuf_raw_set_cw(ds->ds_raw, ds->ds_cw_valid[0] ? ds->ds_cw[0] : NULL,
                         ds->ds_cw_valid[1] ? ds->ds_cw[1] : NULL, ecm);
   if (r != DVBBUF_OK) {
@@ -349,9 +377,9 @@ dvbbuffer_svc_ready(mpegts_service_t *t, dvbbuffer_svc_t *ds, const char **why)
 /*
  * H3 - live run of one PID (input thread, s_stream_mutex)
  */
-int
-dvbbuffer_service_packet0(mpegts_service_t *t, uint64_t tspos,
-                          uint16_t pid, const uint8_t *tsb, int len)
+static int
+dvbbuffer_svc_packet(mpegts_service_t *t, uint64_t tspos,
+                     uint16_t pid, const uint8_t *tsb, int len)
 {
   dvbbuffer_svc_t *ds = t->s_dvbbuffer;
   elementary_stream_t *st;
@@ -465,4 +493,141 @@ dvbbuffer_service_packet0(mpegts_service_t *t, uint64_t tspos,
   }
   ds->ds_dropped += len / 188;
   return 1;
+}
+
+int
+dvbbuffer_service_packet0(mpegts_service_t *t, uint64_t tspos,
+                          uint16_t pid, const uint8_t *tsb, int len)
+{
+  dvbbuffer_svc_t *ds = t->s_dvbbuffer;
+  int r = dvbbuffer_svc_packet(t, tspos, pid, tsb, len);
+
+  /* tvh processes this run: it is delivered (or queued for descrambling) */
+  if (r == 0 && ds->ds_state == DVBBUFFER_SVC_LIVE)
+    ds->ds_next_pos = tspos + len;
+  return r;
+}
+
+/*
+ * H7 - a subscriber joins a running service (s_stream_mutex held)
+ */
+void
+dvbbuffer_service_link_pre(service_t *t)
+{
+  dvbbuffer_svc_t *ds;
+
+  if (t->s_source_type != S_MPEG_TS)
+    return;
+  ds = ((mpegts_service_t *)t)->s_dvbbuffer;
+  if (ds && ds->ds_state == DVBBUFFER_SVC_LIVE && ds->ds_next_pos) {
+    /* the CSA batches first: their output goes through ts_remux() */
+    descrambler_flush_csa(t);
+    ts_remux_flush((mpegts_service_t *)t);
+  }
+}
+
+void
+dvbbuffer_service_link(service_t *t, th_subscription_t *s)
+{
+  mpegts_service_t *ms = (mpegts_service_t *)t;
+  dvbbuffer_svc_t *ds;
+  th_descrambler_runtime_t *dr;
+  dvbbuf_raw_config cfg;
+  dvbbuf_raw_result res;
+  dvbbuf_rap rap;
+  dvbbuf_raw *raw = NULL;
+  streaming_message_t sm;
+  pktbuf_t *pb;
+  uint8_t *buf = NULL;
+  size_t len = 0, cap = 0;
+  int encrypted, r, i, j;
+  const char *why = NULL;
+
+  if (t->s_source_type != S_MPEG_TS)
+    return;
+  ds = ms->s_dvbbuffer;
+  if (ds == NULL || ds->ds_state != DVBBUFFER_SVC_LIVE || ds->ds_next_pos == 0)
+    return;                      /* not buffered, or the first subscriber (injection) */
+  if (ms->s_dvb_mux->mm_dvbbuffer != ds->ds_mux)
+    return;
+  if (!dvbbuffer_conf.inject_dvr && s->ths_title && strncmp(s->ths_title, "DVR: ", 5) == 0)
+    return;
+  dr = t->s_descramble;
+  if (dr && dr->dr_descramble) {
+    why = "hardware/pass-through descrambling";
+    goto skip;
+  }
+  if (dr && dr->dr_queue_total) {
+    why = "descrambler queue not empty";
+    goto skip;
+  }
+  encrypted = service_is_encrypted(t);
+  if (encrypted && !(ds->ds_cw_valid[0] || ds->ds_cw_valid[1])) {
+    why = "no key yet";
+    goto skip;
+  }
+
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.struct_size   = sizeof(cfg);
+  cfg.service_id    = service_id16(t);
+  cfg.max_age_ms    = dvbbuffer_conf.max_age_ms;
+  cfg.keyframe_back = dvbbuffer_conf.keyframe_back;
+  cfg.decrypt       = encrypted ? 1 : 0;
+  if (dvbbuf_raw_open(ds->ds_mux->dm_lib, &cfg, &raw) != DVBBUF_OK) {
+    why = "raw reader";
+    goto skip;
+  }
+  if (encrypted) {
+    /* all recent keys for the parity runs of the backlog (an answer to a
+     * replayed older ECM may have replaced the current one), tvh's own last */
+    for (i = 0; i < 2; i++)
+      for (j = 0; j < ds->ds_cw_hist_n[i]; j++)
+        dvbbuf_raw_set_cw(raw, i == 0 ? ds->ds_cw_hist[0][j] : NULL,
+                          i == 1 ? ds->ds_cw_hist[1][j] : NULL, ds->ds_cw_ecm);
+    dvbbuf_raw_set_cw(raw, ds->ds_cw_valid[0] ? ds->ds_cw[0] : NULL,
+                      ds->ds_cw_valid[1] ? ds->ds_cw[1] : NULL, ds->ds_cw_ecm);
+  }
+  memset(&rap, 0, sizeof(rap));
+  rap.struct_size = sizeof(rap);
+  if ((r = dvbbuf_raw_start(raw, &rap)) != DVBBUF_OK) {
+    why = r == DVBBUF_EAGAIN ? "ring buffer busy" : "no keyframe";
+    goto skip;
+  }
+  /* the backlog up to what the other subscribers got */
+  for (;;) {
+    if (cap - len < 4096 * 188) {
+      cap = cap ? cap * 2 : 8192 * 188;
+      buf = realloc(buf, cap);
+    }
+    memset(&res, 0, sizeof(res));
+    if (dvbbuf_raw_read_until(raw, ds->ds_next_pos, buf + len,
+                              (uint32_t)((cap - len) / 188), &res) != DVBBUF_OK || res.lost) {
+      why = encrypted ? "backlog lost or key missing" : "backlog lost";
+      goto skip;
+    }
+    len += (size_t)res.packets * 188;
+    if (res.handoff)
+      break;
+  }
+  if (len) {
+    pb = pktbuf_alloc(buf, len);
+    memset(&sm, 0, sizeof(sm));
+    sm.sm_type = SMT_MPEGTS;
+    sm.sm_data = pb;
+    streaming_target_deliver(&s->ths_input, streaming_msg_clone(&sm));
+    pktbuf_ref_dec(pb);
+  }
+  ds->ds_joins++;
+  tvhdebug(LS_DVBBUFFER, "%s: subscriber %s starts from the keyframe %"PRId64" ms back "
+           "(%zu packets%s)", service_nicename(t), s->ths_title ?: "?", rap.age_us / 1000,
+           len / 188, encrypted ? ", decrypted" : "");
+  goto done;
+
+skip:
+  tvhdebug(LS_DVBBUFFER, "%s: subscriber %s joins live (%s)", service_nicename(t),
+           s->ths_title ?: "?", why);
+done:
+  if (raw)
+    dvbbuf_raw_close(raw);
+  free(buf);
 }

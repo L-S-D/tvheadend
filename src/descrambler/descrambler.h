@@ -194,6 +194,7 @@ int  descrambler_resolved      ( struct service *t, th_descrambler_t *ignore );
 int  descrambler_multi_pid     ( th_descrambler_t *t );
 #if ENABLE_DVBBUFFER
 void descrambler_ecm_from_buffer(struct service *t, int pid, const uint8_t *ptr, int len);
+void descrambler_flush_csa     ( struct service *t );
 #endif
 void descrambler_keys          ( th_descrambler_t *t, int type, uint16_t pid,
                                  const uint8_t *even, const uint8_t *odd );

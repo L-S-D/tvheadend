@@ -1352,6 +1352,28 @@ descrambler_ecm_from_buffer(service_t *t, int pid, const uint8_t *ptr, int len)
   if (dr && len > 4)
     descrambler_ecm_sent_locked((mpegts_service_t *)t, dr, pid, ptr, mclk());
 }
+
+/*
+ * Instant zapping (H7): descramble and deliver what the CSA batches hold,
+ * before another subscriber gets the backlog up to here (s_stream_mutex held)
+ */
+void
+descrambler_flush_csa(service_t *t)
+{
+  th_descrambler_runtime_t *dr = t->s_descramble;
+  th_descrambler_key_t *tk;
+  int i;
+
+  lock_assert(&t->s_stream_mutex);
+  if (dr == NULL)
+    return;
+  for (i = 0; i < DESCRAMBLER_MAX_KEYS; i++) {
+    tk = &dr->dr_keys[i];
+    if (tk->key_csa.csa_flush)
+      tk->key_csa.csa_flush(&tk->key_csa, (mpegts_service_t *)t);
+    if (!dr->dr_key_multipid) break;
+  }
+}
 #endif
 
 static int

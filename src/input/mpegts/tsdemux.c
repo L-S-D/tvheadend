@@ -332,6 +332,19 @@ ts_flush(mpegts_service_t *t, sbuf_t *sb)
   sbuf_reset(sb, 2*TS_REMUX_BUFSIZE);
 }
 
+#if ENABLE_DVBBUFFER
+/**
+ * Instant zapping (H7): deliver what ts_remux() collected, before another
+ * subscriber is linked (s_stream_mutex held)
+ */
+void
+ts_remux_flush(mpegts_service_t *t)
+{
+  if (t->s_tsbuf.sb_data && t->s_tsbuf.sb_ptr > 0)
+    ts_flush(t, &t->s_tsbuf);
+}
+#endif
+
 /**
  *
  */
