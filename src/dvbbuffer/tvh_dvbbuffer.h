@@ -59,6 +59,15 @@ void dvbbuffer_service_key(struct service *t, int type, uint16_t pid,
                            const uint8_t *even, const uint8_t *odd,
                            int keylen, uint8_t ecm);
 
+/* H6 - capmt_set_filter(): newest ECM section of `pid` in the ring buffer
+ * history accepted by `match` (the CA client's filter), while the service is
+ * waiting for its start keyframe. Returns the section length copied to
+ * `out`, 0 if none. Called with the CA client's lock held, takes
+ * s_stream_mutex. */
+int dvbbuffer_service_ecm(struct mpegts_service *t, uint16_t pid,
+                          int (*match)(void *opaque, const uint8_t *sec, int len),
+                          void *opaque, uint8_t *out, int max);
+
 /* H8 - mux property "prebuffer" changed, global_lock held */
 void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);
 

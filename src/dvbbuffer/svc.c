@@ -39,6 +39,12 @@ typedef struct dvbbuffer_svc {
   uint8_t          ds_cw[2][8];     /* H5: DVB-CSA keys (even, odd) so far */
   uint8_t          ds_cw_valid[2];
   uint8_t          ds_cw_ecm;       /* ICAM ecm byte */
+  uint32_t         ds_cw_gen;       /* key updates handed to the raw reader */
+  uint32_t         ds_tried_gen;    /* keys of the last start attempt without result */
+  int              ds_tried;
+  int64_t          ds_retry_at;     /* next start attempt (mono) */
+  uint32_t         ds_ecm_replayed; /* H6: ECMs from the history given to the CA client */
+  uint64_t         ds_ecm_ids[8];   /* H6: ... their history ids (each once per start) */
   int64_t          ds_start;        /* mclk() of the service start */
   int64_t          ds_key_wait;     /* key wait limit (mono) */
   uint8_t         *ds_buf;
@@ -49,6 +55,8 @@ typedef struct dvbbuffer_svc {
 
 /* waiting for subscribers / PMT longer than this -> give up */
 #define DVBBUFFER_SVC_LINK_WAIT  sec2mono(2)
+/* no start point yet: next search after this */
+#define DVBBUFFER_SVC_RETRY      ms2mono(40)
 
 static void
 dvbbuffer_svc_go_live(mpegts_service_t *t, dvbbuffer_svc_t *ds, const char *why)
@@ -209,13 +217,85 @@ dvbbuffer_service_key(service_t *t, int type, uint16_t pid,
   ds->ds_cw_ecm = ecm;
   r = dvbbuf_raw_set_cw(ds->ds_raw, ds->ds_cw_valid[0] ? ds->ds_cw[0] : NULL,
                         ds->ds_cw_valid[1] ? ds->ds_cw[1] : NULL, ecm);
-  if (r != DVBBUF_OK)
+  if (r != DVBBUF_OK) {
     tvhwarn(LS_DVBBUFFER, "%s: keys not usable for the keyframe search: %s",
             service_nicename(t), dvbbuf_last_error());
-  else
-    tvhdebug(LS_DVBBUFFER, "%s: keys for the keyframe search: even %s, odd %s, ecm %d",
-             service_nicename(t), ds->ds_cw_valid[0] ? "yes" : "no",
-             ds->ds_cw_valid[1] ? "yes" : "no", ecm);
+    return;
+  }
+  ds->ds_cw_gen++;
+  tvhdebug(LS_DVBBUFFER, "%s: keys for the keyframe search: even %s, odd %s, ecm %d",
+           service_nicename(t), ds->ds_cw_valid[0] ? "yes" : "no",
+           ds->ds_cw_valid[1] ? "yes" : "no", ecm);
+}
+
+/*
+ * H6 - capmt_set_filter() (capmt_mutex held)
+ *
+ * While the service waits for its start, a new ECM filter of the CA client
+ * gets the newest matching ECM of the history at once: the one on air (no
+ * wait for the next repetition) and - when OSCam then filters for the other
+ * table id - the ECM of the previous crypto period, whose key opens the
+ * keyframes in the ring buffer (OSCam answers each ECM with the key of one
+ * period only, e.g. VideoGuard).
+ */
+int
+dvbbuffer_service_ecm(mpegts_service_t *t, uint16_t pid,
+                      int (*match)(void *opaque, const uint8_t *sec, int len),
+                      void *opaque, uint8_t *out, int max)
+{
+  dvbbuffer_svc_t *ds;
+  dvbbuf_ecm_entry *e = NULL;
+  uint32_t n = 0, cnt, len, i, j;
+  int64_t now = getfastmonoclock(), oldest;
+  int r = 0;
+
+  tvh_mutex_lock(&t->s_stream_mutex);
+  ds = t->s_dvbbuffer;
+  if (ds == NULL || ds->ds_state != DVBBUFFER_SVC_WAIT)
+    goto end;
+  /* history is oldest first: get the count, then all entries */
+  if (dvbbuf_mux_ecm_history(ds->ds_mux->dm_lib, pid, NULL, 0, &cnt) != DVBBUF_OK || cnt == 0)
+    goto end;
+  cnt += 8;  /* the input thread may add some meanwhile */
+  e = malloc(cnt * sizeof(*e));
+  if (dvbbuf_mux_ecm_history(ds->ds_mux->dm_lib, pid, e, cnt, &n) != DVBBUF_OK)
+    goto end;
+  if (n > cnt)
+    goto end;  /* grew too fast, the next filter will try again */
+  /* only ECMs of the buffered period are of use */
+  oldest = now - (int64_t)dvbbuffer_conf.buffer_sec * 1000000;
+  for (i = n; i-- > 0; ) {
+    if (e[i].last_mono_us < oldest)
+      break;
+    if (dvbbuf_mux_ecm_section(ds->ds_mux->dm_lib, pid, e[i].id, out, max, &len) != DVBBUF_OK)
+      continue;
+    if (!match(opaque, out, len))
+      continue;
+    /* an older ECM than the one on air only while a key parity is missing
+     * (one key per answer, e.g. VideoGuard): its answer would otherwise
+     * overwrite tvh's key of the next period with an old one */
+    if (i != n - 1 && ds->ds_cw_valid[0] && ds->ds_cw_valid[1])
+      goto end;
+    /* the newest match only, and each ECM once: OSCam re-sets its filter
+     * after every section, a second delivery would loop */
+    for (j = 0; j < ARRAY_SIZE(ds->ds_ecm_ids); j++)
+      if (ds->ds_ecm_ids[j] == e[i].id)
+        goto end;
+    if (ds->ds_ecm_replayed >= ARRAY_SIZE(ds->ds_ecm_ids))
+      goto end;
+    ds->ds_ecm_ids[ds->ds_ecm_replayed++] = e[i].id;
+    /* tvh's descrambler: ECM start of the parity, ICAM ecm mode of the keys */
+    descrambler_ecm_from_buffer((service_t *)t, pid, out, len);
+    tvhdebug(LS_DVBBUFFER, "%s: ECM table %02X on pid %d from the buffer (%"PRId64" ms old) "
+             "to the CA client", service_nicename((service_t *)t), out[0], pid,
+             (now - e[i].last_mono_us) / 1000);
+    r = len;
+    break;
+  }
+end:
+  tvh_mutex_unlock(&t->s_stream_mutex);
+  free(e);
+  return r;
 }
 
 /*
@@ -308,6 +388,12 @@ dvbbuffer_service_packet0(mpegts_service_t *t, uint64_t tspos,
       ds->ds_dropped += len / 188;
       return 1;
     }
+    /* no (good) start point so far: try again with new keys at once,
+     * otherwise every DVBBUFFER_SVC_RETRY */
+    if (ds->ds_tried && ds->ds_tried_gen == ds->ds_cw_gen && mclk() < ds->ds_retry_at) {
+      ds->ds_dropped += len / 188;
+      return 1;
+    }
     memset(&rap, 0, sizeof(rap));
     rap.struct_size = sizeof(rap);
     r = dvbbuf_raw_start(ds->ds_raw, &rap);
@@ -316,8 +402,36 @@ dvbbuffer_service_packet0(mpegts_service_t *t, uint64_t tspos,
       return 1;
     }
     if (r != DVBBUF_OK) {
+      /* no complete keyframe (with a known key) yet - e.g. the crypto period
+       * just changed or the mux was just tuned: wait for one (at most a GOP
+       * normally) instead of going live in the middle of a GOP */
+      if (mclk() < ds->ds_key_wait) {
+        if (!ds->ds_tried)
+          tvhdebug(LS_DVBBUFFER, "%s: no start point yet (keys: even %s, odd %s), waiting",
+                   service_nicename((service_t *)t), ds->ds_cw_valid[0] ? "yes" : "no",
+                   ds->ds_cw_valid[1] ? "yes" : "no");
+        ds->ds_tried = 1;
+        ds->ds_tried_gen = ds->ds_cw_gen;
+        ds->ds_retry_at = mclk() + DVBBUFFER_SVC_RETRY;
+        ds->ds_dropped += len / 188;
+        return 1;
+      }
       dvbbuffer_svc_go_live(t, ds, "no keyframe in the ring buffer");
       return 0;
+    }
+    /* a start in an older crypto period only, the key of the newer one is
+     * probably on its way (H6): wait for it rather than start far back */
+    if (rap.newer_without_key && !(ds->ds_cw_valid[0] && ds->ds_cw_valid[1]) &&
+        mclk() < ds->ds_key_wait) {
+      if (!ds->ds_tried)
+        tvhdebug(LS_DVBBUFFER, "%s: start %"PRId64" ms back in the older crypto period only, "
+                 "waiting for the %s key", service_nicename((service_t *)t), rap.age_us / 1000,
+                 ds->ds_cw_valid[0] ? "odd" : "even");
+      ds->ds_tried = 1;
+      ds->ds_tried_gen = ds->ds_cw_gen;
+      ds->ds_retry_at = mclk() + DVBBUFFER_SVC_RETRY;
+      ds->ds_dropped += len / 188;
+      return 1;
     }
     tvhdebug(LS_DVBBUFFER, "%s: injecting from keyframe %"PRId64" ms back "
              "(pid %d, %s), %"PRId64" ms after start",

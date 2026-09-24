@@ -32,6 +32,7 @@
 #include "tvhpoll.h"
 
 #include "subscriptions.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #if ENABLE_LINUXDVB
 #include "input/mpegts/linuxdvb/linuxdvb_private.h"
 #endif
@@ -979,6 +980,31 @@ capmt_filter_data(capmt_t *capmt, uint8_t adapter, uint8_t demux_index,
     capmt_queue_msg(capmt, adapter, 0x10000, buf, len + 6, flags);
 }
 
+#if ENABLE_DVBBUFFER
+/*
+ * Instant zapping (H6): filter match like capmt_table_input()
+ */
+static int
+capmt_filter_match(void *opaque, const uint8_t *data, int len)
+{
+  dmx_filter_t *f = opaque;
+  int i;
+
+  if (f->mode[0] != 0)
+    return 0;
+  if ((data[0] & f->mask[0]) != f->filter[0])
+    return 0;
+  /* note that the data offset changes here (+2) !!! */
+  for (i = 1; i < DMX_FILTER_SIZE && i + 2 < len; i++) {
+    if (f->mode[i] != 0)
+      break;
+    if ((data[i + 2] & f->mask[i]) != f->filter[i])
+      break;
+  }
+  return i >= DMX_FILTER_SIZE || i + 2 == len;
+}
+#endif
+
 static void
 capmt_set_filter(capmt_t *capmt, int adapter, sbuf_t *sb, int offset)
 {
@@ -1062,6 +1088,16 @@ cont:
     capmt->capmt_demuxes.max = demux_index + 1;
   if (cf->max <= filter_index)
     cf->max = filter_index + 1;
+#if ENABLE_DVBBUFFER
+  /* Instant zapping: the newest matching ECM from the ring buffer at once */
+  if (t && flags == CAPMT_MSG_FAST) {
+    uint8_t ecm[4096];
+    int len = dvbbuffer_service_ecm(t, pid, capmt_filter_match, &filter->filter,
+                                    ecm, sizeof(ecm));
+    if (len > 0)
+      capmt_filter_data(capmt, adapter, demux_index, filter_index, ecm, len, flags);
+  }
+#endif
 end:
   tvh_mutex_unlock(&capmt->capmt_mutex);
 }
