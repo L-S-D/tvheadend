@@ -52,6 +52,8 @@ typedef struct dvbbuffer_conf {
   uint32_t hls_idle_ms;
   int      hls_start_offset_ms;
   int      hls_blocking_reload;
+  char    *hls_oscam_host;    /* scrambled channels: OSCam dvbapi (protocol 2) */
+  uint32_t hls_oscam_port;
 } dvbbuffer_conf_t;
 
 extern dvbbuffer_conf_t dvbbuffer_conf;

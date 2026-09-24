@@ -268,12 +268,19 @@ dvbbuffer_hls_init(void)
   cfg.cb.resolve   = dvbbuffer_hls_resolve;
   cfg.cb.acquire   = dvbbuffer_hls_acquire;
   cfg.cb.release   = dvbbuffer_hls_release;
+  if (dvbbuffer_conf.hls_oscam_host && *dvbbuffer_conf.hls_oscam_host &&
+      dvbbuffer_conf.hls_oscam_port > 0 && dvbbuffer_conf.hls_oscam_port < 65536) {
+    cfg.oscam_host = dvbbuffer_conf.hls_oscam_host;
+    cfg.oscam_port = (uint16_t)dvbbuffer_conf.hls_oscam_port;
+  }
   if (dvbbuf_http_start(dvbbuffer_ctx, &cfg, &dvbbuffer_http) != DVBBUF_OK) {
     tvherror(LS_DVBBUFFER, "HLS server on port %s: %s", port, dvbbuf_last_error());
     dvbbuffer_http = NULL;
     return;
   }
-  tvhinfo(LS_DVBBUFFER, "HLS server on port %s: /hls/<channel uuid>/index.m3u8", port);
+  tvhinfo(LS_DVBBUFFER, "HLS server on port %s: /hls/<channel uuid>/index.m3u8, scrambled channels %s%s%s",
+          port, cfg.oscam_host ? "via OSCam " : "refused", cfg.oscam_host ? cfg.oscam_host : "",
+          cfg.oscam_host ? "" : "");
 }
 
 /*

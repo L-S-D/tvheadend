@@ -344,6 +344,23 @@ const idclass_t dvbbuffer_conf_class = {
       .group  = 3,
     },
     {
+      .type   = PT_STR,
+      .id     = "hls_oscam_host",
+      .name   = N_("HLS OSCam host"),
+      .desc   = N_("OSCam dvbapi (network mode, protocol 2) for scrambled "
+                   "channels of the HLS server; empty = scrambled channels "
+                   "are refused (changes need a restart)."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_oscam_host),
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_oscam_port",
+      .name   = N_("HLS OSCam port"),
+      .off    = offsetof(dvbbuffer_conf_t, hls_oscam_port),
+      .group  = 3,
+    },
+    {
       .type   = PT_BOOL,
       .id     = "hls_blocking_reload",
       .name   = N_("HLS blocking playlist reload"),
@@ -394,6 +411,8 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.hls_idle_ms             = 30000;
   dvbbuffer_conf.hls_start_offset_ms     = 0;
   dvbbuffer_conf.hls_blocking_reload     = 1;
+  dvbbuffer_conf.hls_oscam_host          = strdup("127.0.0.1");
+  dvbbuffer_conf.hls_oscam_port          = 9001;
 
   idclass_register(&dvbbuffer_conf_class);
 
