@@ -147,6 +147,7 @@ JAVASCRIPT += $(ROOTPATH)/app/mpegts.js
 endif
 ifeq ($(CONFIG_TIMESHIFT), yes)
 JAVASCRIPT += $(ROOTPATH)/app/timeshift.js
+JAVASCRIPT += $(ROOTPATH)/app/dvbbuffer.js
 endif
 JAVASCRIPT += $(ROOTPATH)/app/chconf.js
 JAVASCRIPT += $(ROOTPATH)/app/epg.js

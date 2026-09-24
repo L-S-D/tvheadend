@@ -507,6 +507,12 @@ struct mpegts_mux
    */
 
   uint64_t                    mm_input_pos;
+#if ENABLE_DVBBUFFER
+  /* Instant zapping: ring buffer of this mux (libdvbbuffer), set/cleared
+   * under mi_output_lock; prebuffer = keep this mux warm (persisted) */
+  struct dvbbuffer_mux       *mm_dvbbuffer;
+  int                         mm_prebuffer;
+#endif
   RB_HEAD(, mpegts_pid)       mm_pids;
   LIST_HEAD(, mpegts_pid_sub) mm_all_subs;
   int                         mm_last_pid;
@@ -632,6 +638,10 @@ struct mpegts_service
    * the EIT_PROCESSING_ADAPTIVE policy to start dropping other-TS
    * once detailed actual-TS data is available. Not persisted. */
   int      s_dvb_eit_actual_seen;
+#if ENABLE_DVBBUFFER
+  /* Instant zapping: backlog injection state (s_stream_mutex) */
+  struct dvbbuffer_svc *s_dvbbuffer;
+#endif
   uint64_t s_dvb_opentv_chnum;
   uint16_t s_dvb_opentv_id;
   uint16_t s_atsc_source_id;

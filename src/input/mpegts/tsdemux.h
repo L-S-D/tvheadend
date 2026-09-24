@@ -28,6 +28,10 @@ int ts_recv_packet1
   (struct mpegts_service *t, uint64_t tspos, uint16_t pid,
    const uint8_t *tsb, int len, int table);
 
+int ts_recv_packet1_locked
+  (struct mpegts_service *t, uint16_t pid, const uint8_t *tsb, int len,
+   int table, int error);
+
 void ts_recv_packet2(struct mpegts_service *t, const uint8_t *tsb, int len);
 
 void ts_skip_packet2(struct mpegts_service *t, const uint8_t *tsb, int len);

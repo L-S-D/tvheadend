@@ -8,12 +8,10 @@
  *  (at your option) any later version.
  */
 
-#include "tvheadend.h"
-#include "tvh_dvbbuffer.h"
+#include "dvbbuffer_private.h"
+#include "streaming.h"
 
-#include <dvbbuffer/dvbbuffer.h>
-
-static dvbbuf_ctx *dvbbuffer_ctx;
+dvbbuf_ctx *dvbbuffer_ctx;
 
 /*
  * Route library log messages into tvhlog. Called from library threads
@@ -51,13 +49,24 @@ dvbbuffer_init(void)
     return;
   }
   tvhinfo(LS_DVBBUFFER, "libdvbbuffer %s initialised", dvbbuf_version());
+
+  dvbbuffer_conf_init();
+  dvbbuffer_mux_init();
+  dvbbuffer_warm_init();
 }
 
+/*
+ * Called before mpegts_done(): inputs and services may still run
+ */
 void
 dvbbuffer_done(void)
 {
-  if (dvbbuffer_ctx) {
-    dvbbuf_ctx_destroy(dvbbuffer_ctx);
-    dvbbuffer_ctx = NULL;
-  }
+  if (dvbbuffer_ctx == NULL)
+    return;
+  tvh_mutex_lock(&global_lock);
+  dvbbuffer_warm_done();
+  dvbbuffer_mux_done();
+  streaming_start_reserve      = 0;
+  streaming_start_reserve_time = 0;
+  tvh_mutex_unlock(&global_lock);
 }

@@ -1518,6 +1518,15 @@ capmt_analyze_cmd(capmt_t *capmt, uint32_t cmd, int adapter, sbuf_t *sb, int off
       tvherror(LS_CAPMT, "%s: Invalid adapter %d or index %d", capmt_name(capmt), adapter, index);
       return;
     }
+    /*
+     * OSCam with extended_cw_api sends algo 3 (CSA-ALT) for VideoGuard ICAM
+     * services. The ICAM ecm byte is derived by the descrambler itself from
+     * the ECM (descrambler.c, csa_ecm), so this is plain DVB-CSA here.
+     */
+    if (algo == 3) {
+      tvhdebug(LS_CAPMT, "%s: CA_SET_DESCR_MODE algo 3 (CSA-ALT) mapped to DVB-CSA", capmt_name(capmt));
+      algo = CA_ALGO_DVBCSA;
+    }
     if (algo < 0 || algo > 2) {
       tvherror(LS_CAPMT, "%s: Invalid algo %d", capmt_name(capmt), algo);
       return;

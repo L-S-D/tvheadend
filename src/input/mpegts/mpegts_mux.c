@@ -29,6 +29,7 @@
 #include "epggrab.h"
 #include "mpegts_dvb.h"
 #include "config.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 #include <assert.h>
 
@@ -775,6 +776,20 @@ const idclass_t mpegts_mux_class =
       .off      = offsetof(mpegts_mux_t, mm_sid_filter),
       .opts     = PO_HIDDEN | PO_EXPERT
     },
+#if ENABLE_DVBBUFFER
+    {
+      .type     = PT_BOOL,
+      .id       = "prebuffer",
+      .name     = N_("Prebuffer (instant zapping)"),
+      .desc     = N_("Keep this mux tuned with a low weight and hold the "
+                     "last seconds of the whole transport stream in RAM, "
+                     "so services of this mux start immediately from the "
+                     "last keyframe."),
+      .off      = offsetof(mpegts_mux_t, mm_prebuffer),
+      .notify   = dvbbuffer_mux_prebuffer_notify,
+      .opts     = PO_ADVANCED
+    },
+#endif
     {
       .type     = PT_TIME,
       .id       = "created",

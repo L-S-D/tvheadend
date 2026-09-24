@@ -170,6 +170,9 @@ const tvh_caps_t tvheadend_capabilities[] = {
 #if ENABLE_TIMESHIFT
   { "timeshift", (uint32_t *)&timeshift_conf.enabled },
 #endif
+#if ENABLE_DVBBUFFER
+  { "dvbbuffer", NULL },
+#endif
 #if ENABLE_TRACE
   { "trace",     NULL },
 #endif

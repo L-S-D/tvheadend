@@ -22,6 +22,7 @@
 #include "input.h"
 #include "dvb_psi_hbbtv.h"
 #include "tsdemux.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 #define TS_REMUX_BUFSIZE (188 * 100)
 
@@ -142,14 +143,62 @@ skip_cc:
 
 /**
  * Process service stream packets, optionally descramble
+ * (s_stream_mutex held, service running)
+ */
+int
+ts_recv_packet1_locked
+  (mpegts_service_t *t, uint16_t pid, const uint8_t *tsb, int len,
+   int table, int error)
+{
+  elementary_stream_t *st;
+  uint_fast8_t scrambled;
+  int r;
+
+  st = elementary_stream_find(&t->s_components, pid);
+
+  if((st == NULL) && (pid != t->s_components.set_pcr_pid) && !table)
+    return 0;
+
+  if(!error)
+    service_set_streaming_status_flags((service_t*)t, TSS_INPUT_SERVICE);
+
+  scrambled = t->s_scrambled_seen;
+  if(!t->s_scrambled_pass && ((tsb[3] & 0xc0) || scrambled)) {
+
+    /**
+     * Lock for descrambling, but only if packet was not in error
+     */
+    if(!scrambled && !error)
+      t->s_scrambled_seen |= service_is_encrypted((service_t*)t);
+
+    /* scrambled stream */
+    r = descrambler_descramble((service_t *)t, st, tsb, len);
+    if(r > 0)
+      return 1;
+
+    if(!error && service_is_encrypted((service_t*)t)) {
+      if(r == 0) {
+        service_set_streaming_status_flags((service_t*)t, TSS_NO_DESCRAMBLER);
+      } else {
+        service_set_streaming_status_flags((service_t*)t, TSS_NO_ACCESS);
+      }
+    }
+
+  } else {
+    ts_recv_packet0(t, st, tsb, len);
+  }
+  return 1;
+}
+
+/**
+ * Process service stream packets
  */
 int
 ts_recv_packet1
   (mpegts_service_t *t, uint64_t tspos, uint16_t pid,
    const uint8_t *tsb, int len, int table)
 {
-  elementary_stream_t *st;
-  uint_fast8_t scrambled, error = 0;
+  uint_fast8_t error = 0;
   int r;
   
   /* Error */
@@ -178,47 +227,18 @@ ts_recv_packet1
               service_nicename((service_t*)t), t->s_tei_log.count);
   }
 
-  st = elementary_stream_find(&t->s_components, pid);
-
-  if((st == NULL) && (pid != t->s_components.set_pcr_pid) && !table) {
+#if ENABLE_DVBBUFFER
+  /* Instant zapping: backlog injection / live packets held back */
+  if (dvbbuffer_service_packet(t, tspos, pid, tsb, len)) {
     tvh_mutex_unlock(&t->s_stream_mutex);
-    return 0;
+    return 1;
   }
+#endif
 
-  if(!error)
-    service_set_streaming_status_flags((service_t*)t, TSS_INPUT_SERVICE);
-
-  scrambled = t->s_scrambled_seen;
-  if(!t->s_scrambled_pass && ((tsb[3] & 0xc0) || scrambled)) {
-
-    /**
-     * Lock for descrambling, but only if packet was not in error
-     */
-    if(!scrambled && !error)
-      t->s_scrambled_seen |= service_is_encrypted((service_t*)t);
-
-    /* scrambled stream */
-    r = descrambler_descramble((service_t *)t, st, tsb, len);
-    if(r > 0) {
-      tvh_mutex_unlock(&t->s_stream_mutex);
-      return 1;
-    }
-
-    if(!error && service_is_encrypted((service_t*)t)) {
-      if(r == 0) {
-        service_set_streaming_status_flags((service_t*)t, TSS_NO_DESCRAMBLER);
-      } else {
-        service_set_streaming_status_flags((service_t*)t, TSS_NO_ACCESS);
-      }
-    }
-
-  } else {
-    ts_recv_packet0(t, st, tsb, len);
-  }
+  r = ts_recv_packet1_locked(t, pid, tsb, len, table, error);
   tvh_mutex_unlock(&t->s_stream_mutex);
-  return 1;
+  return r;
 }
-
 
 /*
  * Process transport stream packets, simple version

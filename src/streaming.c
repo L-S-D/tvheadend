@@ -21,6 +21,11 @@
 
 #include "tvheadend.h"
 #include "streaming.h"
+
+#if ENABLE_DVBBUFFER
+size_t  streaming_start_reserve;
+int64_t streaming_start_reserve_time;
+#endif
 #include "packet.h"
 #include "atomic.h"
 #include "service.h"
@@ -73,11 +78,18 @@ static void
 streaming_queue_deliver(void *opauqe, streaming_message_t *sm)
 {
   streaming_queue_t *sq = opauqe;
+  size_t maxsize;
 
   tvh_mutex_lock(&sq->sq_mutex);
 
+  maxsize = sq->sq_maxsize;
+#if ENABLE_DVBBUFFER
+  if (maxsize && streaming_message_data_size(sm) > 0)
+    maxsize += streaming_start_reserve_get(&sq->sq_start_until, mclk());
+#endif
+
   /* queue size protection */
-  if (sq->sq_maxsize && sq->sq_maxsize < sq->sq_size) {
+  if (maxsize && maxsize < sq->sq_size) {
     streaming_msg_free(sm);
   } else {
     TAILQ_INSERT_TAIL(&sq->sq_queue, sm, sm_link);
@@ -134,6 +146,9 @@ streaming_queue_init(streaming_queue_t *sq, int reject_filter, size_t maxsize)
 
   sq->sq_maxsize = maxsize;
   sq->sq_size = 0;
+#if ENABLE_DVBBUFFER
+  sq->sq_start_until = 0;
+#endif
 }
 
 /**

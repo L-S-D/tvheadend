@@ -1192,6 +1192,8 @@ function accessUpdate(o) {
         if (tvheadend.capabilities.indexOf('libav') !== -1)
             tvheadend.codec_tab(stream);
         tvheadend.esfilter_tab(stream);
+        if (tvheadend.capabilities.indexOf('dvbbuffer') !== -1)
+            tvheadend.dvbbuffer(stream);
 
         cp.add(stream);
 

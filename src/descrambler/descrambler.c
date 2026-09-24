@@ -27,6 +27,7 @@
 #include "input.h"
 #include "input/mpegts/tsdemux.h"
 #include "dvbcam.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #include "streaming.h"
 
 #if 0
@@ -856,6 +857,10 @@ cont:
     dr->dr_ecm_last_key_time = mclk();
     descrambler_change_keystate(td, DS_RESOLVED, 0);
     td->td_service->s_descrambler = td;
+#if ENABLE_DVBBUFFER
+    /* Instant zapping: read-only hint, the backlog may be injected now */
+    dvbbuffer_service_key(t);
+#endif
   } else {
     tvhdebug(LS_DESCRAMBLER,
              "Empty %s keys%s received from %s for service \"%s\"%s",
