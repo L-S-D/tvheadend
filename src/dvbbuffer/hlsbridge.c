@@ -154,6 +154,10 @@ dvbbuffer_hls_resolve(void *user, const char *channel, dvbbuf_http_source *src)
     src->service_id = service_id16(ms);
     src->scrambled = service_is_encrypted((service_t *)ms) ? 1 : 0;
     strlcpy(src->name, channel_get_name(ch, ""), sizeof(src->name));
+    /* the mux of a channel played as TS (no HLS stream): tracks.json, /ttx/ */
+    if (src->struct_size >= offsetof(dvbbuf_http_source, tsid) + sizeof(src->tsid) &&
+        ms->s_dvb_mux && ms->s_dvb_mux->mm_tsid != MPEGTS_TSID_NONE)
+      src->tsid = (uint16_t)ms->s_dvb_mux->mm_tsid;
     r = DVBBUF_OK;
   }
   tvh_mutex_unlock(&global_lock);

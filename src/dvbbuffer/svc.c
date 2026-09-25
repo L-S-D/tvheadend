@@ -40,6 +40,7 @@ typedef struct dvbbuffer_svc {
   dvbbuffer_svc_state_t ds_state;
   int              ds_decided;      /* decision timer ran */
   int              ds_allowed;      /* injection allowed for these subscribers */
+  int              ds_ts_client;    /* raw TS client: start ts_start_ms back */
   int              ds_has_key;      /* H5: tvh obtained a key */
   uint8_t          ds_cw[2][8];     /* H5: DVB-CSA keys (even, odd) so far */
   uint8_t          ds_cw_valid[2];
@@ -67,6 +68,9 @@ typedef struct dvbbuffer_svc {
 #define DVBBUFFER_SVC_LINK_WAIT  sec2mono(2)
 /* no start point yet: next search after this */
 #define DVBBUFFER_SVC_RETRY      ms2mono(40)
+/* TS client: wait at most this long (from the service start) for the key of
+ * the older crypto period - VideoGuard gives one key per ECM */
+#define DVBBUFFER_SVC_TS_KEY_WAIT ms2mono(1000)
 
 /* remember a key (s_stream_mutex); a known one moves to the end */
 static void
@@ -98,6 +102,19 @@ dvbbuffer_svc_go_live(mpegts_service_t *t, dvbbuffer_svc_t *ds, const char *why)
 }
 
 /*
+ * A client that gets the raw transport stream over HTTP (pass profile, e.g.
+ * a TV): it buffers some seconds before it plays, so it starts further back.
+ * HTSP (Kodi) gets parsed packets and starts at once.
+ */
+static int
+dvbbuffer_ts_client(th_subscription_t *s)
+{
+  return dvbbuffer_conf.ts_start_ms &&
+         (s->ths_flags & SUBSCRIPTION_STREAMING) &&
+         (s->ths_flags & SUBSCRIPTION_TYPE_MASK) == SUBSCRIPTION_MPEGTS;
+}
+
+/*
  * Decision on the main thread (global_lock): subscriptions are linked to the
  * service right after mpegts_service_start(), so they are visible here.
  */
@@ -107,16 +124,24 @@ dvbbuffer_svc_decide(void *aux)
   mpegts_service_t *t = aux;
   dvbbuffer_svc_t *ds = t->s_dvbbuffer;
   th_subscription_t *s;
-  int allowed = 1;
+  int allowed = 1, ts_client = 0;
 
   if (ds == NULL)
     return;
-  if (!dvbbuffer_conf.inject_dvr) {
-    LIST_FOREACH(s, &t->s_subscriptions, ths_service_link)
-      if (s->ths_title && strncmp(s->ths_title, "DVR: ", 5) == 0)
-        allowed = 0;
+  LIST_FOREACH(s, &t->s_subscriptions, ths_service_link) {
+    if (!dvbbuffer_conf.inject_dvr && s->ths_title && strncmp(s->ths_title, "DVR: ", 5) == 0)
+      allowed = 0;
+    if (dvbbuffer_ts_client(s))
+      ts_client = 1;
   }
   tvh_mutex_lock(&t->s_stream_mutex);
+  ds->ds_ts_client = ts_client;
+  if (ts_client && ds->ds_state == DVBBUFFER_SVC_WAIT) {
+    /* the oldest keyframe within ts_start_ms (keyframe_back large) */
+    dvbbuf_raw_set_start(ds->ds_raw, dvbbuffer_conf.ts_start_ms, 1000);
+    tvhdebug(LS_DVBBUFFER, "%s: TS client, start up to %u ms back",
+             service_nicename((service_t *)t), dvbbuffer_conf.ts_start_ms);
+  }
   ds->ds_decided = 1;
   ds->ds_allowed = allowed;
   if (!allowed && ds->ds_state == DVBBUFFER_SVC_WAIT)
@@ -475,6 +500,22 @@ dvbbuffer_svc_packet(mpegts_service_t *t, uint64_t tspos,
       ds->ds_dropped += len / 188;
       return 1;
     }
+    /* a TS client wants seconds of backlog (its pre-buffer): with only one
+     * key the older crypto period cannot be descrambled and the start is
+     * close to live - wait a little for the other key */
+    if (ds->ds_ts_client && rap.age_us < (int64_t)dvbbuffer_conf.ts_start_ms * 500 &&
+        !(ds->ds_cw_valid[0] && ds->ds_cw_valid[1]) &&
+        mclk() < ds->ds_start + DVBBUFFER_SVC_TS_KEY_WAIT) {
+      if (!ds->ds_tried)
+        tvhdebug(LS_DVBBUFFER, "%s: TS client start only %"PRId64" ms back, waiting for the %s key",
+                 service_nicename((service_t *)t), rap.age_us / 1000,
+                 ds->ds_cw_valid[0] ? "odd" : "even");
+      ds->ds_tried = 1;
+      ds->ds_tried_gen = ds->ds_cw_gen;
+      ds->ds_retry_at = mclk() + DVBBUFFER_SVC_RETRY;
+      ds->ds_dropped += len / 188;
+      return 1;
+    }
     tvhdebug(LS_DVBBUFFER, "%s: injecting from keyframe %"PRId64" ms back "
              "(pid %d, %s), %"PRId64" ms after start",
              service_nicename((service_t *)t), rap.age_us / 1000, rap.pid,
@@ -553,8 +594,13 @@ dvbbuffer_svc_join(mpegts_service_t *ms, dvbbuffer_svc_t *ds,
   memset(&cfg, 0, sizeof(cfg));
   cfg.struct_size   = sizeof(cfg);
   cfg.service_id    = service_id16(t);
-  cfg.max_age_ms    = dvbbuffer_conf.max_age_ms;
-  cfg.keyframe_back = dvbbuffer_conf.keyframe_back;
+  if (dvbbuffer_ts_client(s)) {
+    cfg.max_age_ms    = dvbbuffer_conf.ts_start_ms;
+    cfg.keyframe_back = 1000;
+  } else {
+    cfg.max_age_ms    = dvbbuffer_conf.max_age_ms;
+    cfg.keyframe_back = dvbbuffer_conf.keyframe_back;
+  }
   cfg.decrypt       = encrypted ? 1 : 0;
   if (dvbbuf_raw_open(ds->ds_mux->dm_lib, &cfg, &raw) != DVBBUF_OK) {
     why = "raw reader";

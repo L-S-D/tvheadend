@@ -204,6 +204,20 @@ const idclass_t dvbbuffer_conf_class = {
     },
     {
       .type   = PT_U32,
+      .id     = "ts_start_ms",
+      .name   = N_("TS streaming start (ms back)"),
+      .desc   = N_("Clients that get the raw transport stream over HTTP "
+                   "(e.g. a TV with the pass profile) buffer some seconds "
+                   "before they play: they start at the oldest keyframe "
+                   "within this time, so their buffer is full at once. "
+                   "HTSP (Kodi) keeps the start keyframe above. 0 = the same "
+                   "for all."),
+      .off    = offsetof(dvbbuffer_conf_t, ts_start_ms),
+      .opts   = PO_EXPERT,
+      .group  = 2,
+    },
+    {
+      .type   = PT_U32,
       .id     = "start_reserve_kb",
       .name   = N_("Start queue reserve (kB)"),
       .desc   = N_("A start from the buffer comes as a burst. HTSP and HTTP "
@@ -518,6 +532,7 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.pace_factor      = 3;
   dvbbuffer_conf.max_age_ms       = 5000;
   dvbbuffer_conf.keyframe_back    = 1;
+  dvbbuffer_conf.ts_start_ms      = 5000;
   dvbbuffer_conf.key_wait_ms      = 3000;
   dvbbuffer_conf.start_reserve_kb  = 8000;
   dvbbuffer_conf.start_reserve_sec = 5;
