@@ -28,6 +28,8 @@ typedef enum {
 
 /* H7: keys per parity kept for the backlog of joining subscribers */
 #define DVBBUFFER_SVC_CW_HIST    4
+/* H7: subscribers waiting for their backlog at the same time */
+#define DVBBUFFER_SVC_JOIN_MAX   4
 
 typedef struct dvbbuffer_svc {
   /* global_lock */
@@ -50,7 +52,8 @@ typedef struct dvbbuffer_svc {
   int64_t          ds_retry_at;     /* next start attempt (mono) */
   uint32_t         ds_ecm_replayed; /* H6: ECMs from the history given to the CA client */
   uint64_t         ds_ecm_ids[8];   /* H6: ... their history ids (each once per start) */
-  uint64_t         ds_next_pos;     /* H7: end of what tvh processed live (tspos) */
+  th_subscription_t *ds_join[DVBBUFFER_SVC_JOIN_MAX]; /* H7: joining subscribers, */
+  int              ds_njoin;        /* served by the next live run (input thread) */
   uint32_t         ds_joins;        /* H7: subscribers started from the backlog */
   int64_t          ds_start;        /* mclk() of the service start */
   int64_t          ds_key_wait;     /* key wait limit (mono) */
@@ -135,6 +138,12 @@ dvbbuffer_service_start(mpegts_service_t *t)
 
   lock_assert(&global_lock);
 
+  /* a viewer (or recording) uses this mux: LRU */
+  if (mm && t->s_type == STYPE_STD && !t->s_dvbbuffer_used) {
+    t->s_dvbbuffer_used = 1;
+    dvbbuffer_warm_used(mm, 1);
+  }
+
   if (dm == NULL || t->s_dvbbuffer || t->s_type != STYPE_STD ||
       t->s_scrambled_pass || service_id16(t) == 0)
     return;
@@ -182,6 +191,11 @@ dvbbuffer_service_stop(mpegts_service_t *t)
 
   lock_assert(&global_lock);
 
+  if (t->s_dvbbuffer_used) {
+    t->s_dvbbuffer_used = 0;
+    if (t->s_dvb_mux)
+      dvbbuffer_warm_used(t->s_dvb_mux, -1);
+  }
   if (ds == NULL)
     return;
   mtimer_disarm(&ds->ds_decide_timer);
@@ -495,42 +509,16 @@ dvbbuffer_svc_packet(mpegts_service_t *t, uint64_t tspos,
   return 1;
 }
 
-int
-dvbbuffer_service_packet0(mpegts_service_t *t, uint64_t tspos,
-                          uint16_t pid, const uint8_t *tsb, int len)
-{
-  dvbbuffer_svc_t *ds = t->s_dvbbuffer;
-  int r = dvbbuffer_svc_packet(t, tspos, pid, tsb, len);
-
-  /* tvh processes this run: it is delivered (or queued for descrambling) */
-  if (r == 0 && ds->ds_state == DVBBUFFER_SVC_LIVE)
-    ds->ds_next_pos = tspos + len;
-  return r;
-}
-
 /*
- * H7 - a subscriber joins a running service (s_stream_mutex held)
+ * H7 - the backlog of a joining subscriber, up to (excluding) the live run at
+ * tspos which tvh is about to process (input thread, s_stream_mutex held):
+ * the raw reader is used in feed context, as the library requires
  */
-void
-dvbbuffer_service_link_pre(service_t *t)
+static void
+dvbbuffer_svc_join(mpegts_service_t *ms, dvbbuffer_svc_t *ds,
+                   th_subscription_t *s, uint64_t tspos)
 {
-  dvbbuffer_svc_t *ds;
-
-  if (t->s_source_type != S_MPEG_TS)
-    return;
-  ds = ((mpegts_service_t *)t)->s_dvbbuffer;
-  if (ds && ds->ds_state == DVBBUFFER_SVC_LIVE && ds->ds_next_pos) {
-    /* the CSA batches first: their output goes through ts_remux() */
-    descrambler_flush_csa(t);
-    ts_remux_flush((mpegts_service_t *)t);
-  }
-}
-
-void
-dvbbuffer_service_link(service_t *t, th_subscription_t *s)
-{
-  mpegts_service_t *ms = (mpegts_service_t *)t;
-  dvbbuffer_svc_t *ds;
+  service_t *t = (service_t *)ms;
   th_descrambler_runtime_t *dr;
   dvbbuf_raw_config cfg;
   dvbbuf_raw_result res;
@@ -543,15 +531,10 @@ dvbbuffer_service_link(service_t *t, th_subscription_t *s)
   int encrypted, r, i, j;
   const char *why = NULL;
 
-  if (t->s_source_type != S_MPEG_TS)
-    return;
-  ds = ms->s_dvbbuffer;
-  if (ds == NULL || ds->ds_state != DVBBUFFER_SVC_LIVE || ds->ds_next_pos == 0)
-    return;                      /* not buffered, or the first subscriber (injection) */
-  if (ms->s_dvb_mux->mm_dvbbuffer != ds->ds_mux)
-    return;
-  if (!dvbbuffer_conf.inject_dvr && s->ths_title && strncmp(s->ths_title, "DVR: ", 5) == 0)
-    return;
+  if (ms->s_dvb_mux->mm_dvbbuffer != ds->ds_mux) {
+    why = "ring buffer stopped";
+    goto skip;
+  }
   dr = t->s_descramble;
   if (dr && dr->dr_descramble) {
     why = "hardware/pass-through descrambling";
@@ -593,14 +576,15 @@ dvbbuffer_service_link(service_t *t, th_subscription_t *s)
     why = r == DVBBUF_EAGAIN ? "ring buffer busy" : "no keyframe";
     goto skip;
   }
-  /* the backlog up to what the other subscribers got */
+  /* the backlog up to this live run: everything before it went to the
+   * others (flushed when the subscriber was linked) */
   for (;;) {
     if (cap - len < 4096 * 188) {
       cap = cap ? cap * 2 : 8192 * 188;
       buf = realloc(buf, cap);
     }
     memset(&res, 0, sizeof(res));
-    if (dvbbuf_raw_read_until(raw, ds->ds_next_pos, buf + len,
+    if (dvbbuf_raw_read_until(raw, tspos, buf + len,
                               (uint32_t)((cap - len) / 188), &res) != DVBBUF_OK || res.lost) {
       why = encrypted ? "backlog lost or key missing" : "backlog lost";
       goto skip;
@@ -630,4 +614,84 @@ done:
   if (raw)
     dvbbuf_raw_close(raw);
   free(buf);
+}
+
+int
+dvbbuffer_service_packet0(mpegts_service_t *t, uint64_t tspos,
+                          uint16_t pid, const uint8_t *tsb, int len)
+{
+  dvbbuffer_svc_t *ds = t->s_dvbbuffer;
+  int i;
+
+  /* joining subscribers first: their backlog ends right before this run */
+  if (ds->ds_njoin) {
+    for (i = 0; i < ds->ds_njoin; i++)
+      dvbbuffer_svc_join(t, ds, ds->ds_join[i], tspos);
+    ds->ds_njoin = 0;
+  }
+  return dvbbuffer_svc_packet(t, tspos, pid, tsb, len);
+}
+
+/*
+ * H7 - a subscriber joins a running service (subscription_link_service(),
+ * global_lock + s_stream_mutex): what tvh processed so far goes to the others
+ * now, the new one waits for its backlog in the input thread
+ */
+void
+dvbbuffer_service_link_pre(service_t *t)
+{
+  dvbbuffer_svc_t *ds;
+
+  if (t->s_source_type != S_MPEG_TS)
+    return;
+  ds = ((mpegts_service_t *)t)->s_dvbbuffer;
+  if (ds && ds->ds_state == DVBBUFFER_SVC_LIVE) {
+    /* the CSA batches first: their output goes through ts_remux() */
+    descrambler_flush_csa(t);
+    ts_remux_flush((mpegts_service_t *)t);
+  }
+}
+
+void
+dvbbuffer_service_link(service_t *t, th_subscription_t *s)
+{
+  mpegts_service_t *ms = (mpegts_service_t *)t;
+  dvbbuffer_svc_t *ds;
+
+  if (t->s_source_type != S_MPEG_TS)
+    return;
+  ds = ms->s_dvbbuffer;
+  if (ds == NULL || ds->ds_state != DVBBUFFER_SVC_LIVE)
+    return;                      /* not buffered, or the first subscribers (injection) */
+  if (ms->s_dvb_mux->mm_dvbbuffer != ds->ds_mux)
+    return;
+  if (!dvbbuffer_conf.inject_dvr && s->ths_title && strncmp(s->ths_title, "DVR: ", 5) == 0)
+    return;
+  if (ds->ds_njoin >= DVBBUFFER_SVC_JOIN_MAX) {
+    tvhdebug(LS_DVBBUFFER, "%s: subscriber %s joins live (too many joining at once)",
+             service_nicename(t), s->ths_title ?: "?");
+    return;
+  }
+  ds->ds_join[ds->ds_njoin++] = s;
+}
+
+/* H7 - the subscriber is unlinked (s_stream_mutex held) */
+void
+dvbbuffer_service_unlink(service_t *t, th_subscription_t *s)
+{
+  dvbbuffer_svc_t *ds;
+  int i;
+
+  if (t->s_source_type != S_MPEG_TS)
+    return;
+  ds = ((mpegts_service_t *)t)->s_dvbbuffer;
+  if (ds == NULL)
+    return;
+  for (i = 0; i < ds->ds_njoin; i++)
+    if (ds->ds_join[i] == s) {
+      memmove(&ds->ds_join[i], &ds->ds_join[i + 1],
+              (size_t)(ds->ds_njoin - i - 1) * sizeof(ds->ds_join[0]));
+      ds->ds_njoin--;
+      break;
+    }
 }

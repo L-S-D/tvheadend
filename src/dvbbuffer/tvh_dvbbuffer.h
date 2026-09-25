@@ -75,6 +75,7 @@ int dvbbuffer_service_ecm(struct mpegts_service *t, uint16_t pid,
 struct th_subscription;
 void dvbbuffer_service_link_pre(struct service *t);
 void dvbbuffer_service_link(struct service *t, struct th_subscription *s);
+void dvbbuffer_service_unlink(struct service *t, struct th_subscription *s);
 
 /* H8 - mux property "prebuffer" changed, global_lock held */
 void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);

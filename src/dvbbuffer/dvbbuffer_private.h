@@ -28,6 +28,8 @@ typedef struct dvbbuffer_conf {
   uint32_t max_bitrate_kbps;  /* ring is sized for this rate */
   uint32_t warm_weight;       /* subscription weight of warm muxes */
   uint32_t warm_max;          /* max. number of warm muxes */
+  uint32_t lru_max;           /* recently used muxes kept warm too */
+  uint32_t lru_weight;        /* ... with this subscription weight */
   uint32_t burst_kb;          /* first injection burst */
   uint32_t pace_factor;       /* then up to k x live bytes */
   uint32_t max_age_ms;        /* keyframe may be at most this old */
@@ -93,6 +95,8 @@ void dvbbuffer_warm_init(void);
 void dvbbuffer_warm_done(void);
 void dvbbuffer_warm_reconcile(void);
 void dvbbuffer_warm_mux_delete(mpegts_mux_t *mm);
+void dvbbuffer_warm_used(mpegts_mux_t *mm, int delta);
+int  dvbbuffer_warm_lru(mpegts_mux_t *mm);
 
 /*
  * HLS server bridge (hlsbridge.c)

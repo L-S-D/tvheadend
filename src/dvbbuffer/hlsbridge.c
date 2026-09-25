@@ -154,8 +154,10 @@ dvbbuffer_hls_hold_free(dvbbuffer_hls_hold_t *h)
   if (h->dm)
     dvbbuffer_mux_unref(h->dm);
   if (mm) {
-    if (mm->mm_dvbbuffer_hold > 0)
+    if (mm->mm_dvbbuffer_hold > 0) {
       mm->mm_dvbbuffer_hold--;
+      dvbbuffer_warm_used(mm, -1);
+    }
     if (!dvbbuffer_mux_wanted(mm))
       dvbbuffer_mux_detach(mm);
   }
@@ -184,6 +186,7 @@ dvbbuffer_hls_acquire(void *user, const char *channel, const char *peer,
     h = calloc(1, sizeof(*h));
     idnode_uuid_as_str(&mm->mm_id, h->mm_uuid);
     mm->mm_dvbbuffer_hold++;
+    dvbbuffer_warm_used(mm, 1);
     streaming_target_init(&h->input, &dvbbuffer_hls_input_ops, h, 0);
     h->prch.prch_id = mm;
     h->prch.prch_st = &h->input;

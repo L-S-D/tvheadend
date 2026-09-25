@@ -642,6 +642,7 @@ struct mpegts_service
 #if ENABLE_DVBBUFFER
   /* Instant zapping: backlog injection state (s_stream_mutex) */
   struct dvbbuffer_svc *s_dvbbuffer;
+  int      s_dvbbuffer_used;    /* counted as mux use for the LRU (global_lock) */
 #endif
   uint64_t s_dvb_opentv_chnum;
   uint16_t s_dvb_opentv_id;

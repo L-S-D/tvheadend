@@ -22,12 +22,13 @@ dvbbuffer_mux_prebuffer(mpegts_mux_t *mm)
          dvbbuffer_conf.enabled && mm->mm_prebuffer && mm->mm_is_enabled(mm);
 }
 
-/* ring buffer wanted: warm, or held by HLS clients */
+/* ring buffer wanted: warm (prebuffer or recently used), or held by HLS clients */
 int
 dvbbuffer_mux_wanted(mpegts_mux_t *mm)
 {
   return dvbbuffer_mux_prebuffer(mm) ||
-         (dvbbuffer_ctx != NULL && !dvbbuffer_shutdown && mm->mm_dvbbuffer_hold > 0);
+         (dvbbuffer_ctx != NULL && !dvbbuffer_shutdown && dvbbuffer_conf.enabled &&
+          (mm->mm_dvbbuffer_hold > 0 || dvbbuffer_warm_lru(mm)));
 }
 
 void

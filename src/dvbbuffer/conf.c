@@ -26,6 +26,8 @@ dvbbuffer_conf_fixup(void)
     dvbbuffer_conf.max_bitrate_kbps = 1000;
   if (dvbbuffer_conf.warm_weight < 1)
     dvbbuffer_conf.warm_weight = 1;
+  if (dvbbuffer_conf.lru_weight < 1)
+    dvbbuffer_conf.lru_weight = 1;
   if (dvbbuffer_conf.burst_kb < 20)
     dvbbuffer_conf.burst_kb = 20;
   if (dvbbuffer_conf.pace_factor < 1)
@@ -135,6 +137,28 @@ const idclass_t dvbbuffer_conf_class = {
       .name   = N_("Maximum warm muxes"),
       .desc   = N_("At most this many muxes are kept warm."),
       .off    = offsetof(dvbbuffer_conf_t, warm_max),
+      .group  = 1,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "lru_max",
+      .name   = N_("Recently used muxes kept warm"),
+      .desc   = N_("Besides the prebuffer muxes, this many of the muxes "
+                   "last watched stay tuned with a ring buffer (it starts "
+                   "while watching), so zapping back starts from the "
+                   "buffer. 0 disables it."),
+      .off    = offsetof(dvbbuffer_conf_t, lru_max),
+      .group  = 1,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "lru_weight",
+      .name   = N_("Recently used mux weight"),
+      .desc   = N_("Subscription weight of the recently used muxes, "
+                   "normally below the warm mux weight: they give their "
+                   "tuners away first."),
+      .off    = offsetof(dvbbuffer_conf_t, lru_weight),
+      .opts   = PO_ADVANCED,
       .group  = 1,
     },
     {
@@ -389,6 +413,8 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.max_bitrate_kbps = 80000;
   dvbbuffer_conf.warm_weight      = 5;
   dvbbuffer_conf.warm_max         = 4;
+  dvbbuffer_conf.lru_max          = 2;
+  dvbbuffer_conf.lru_weight       = 3;
   dvbbuffer_conf.burst_kb         = 8000;
   dvbbuffer_conf.pace_factor      = 3;
   dvbbuffer_conf.max_age_ms       = 5000;

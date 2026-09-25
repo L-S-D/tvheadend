@@ -146,6 +146,10 @@ subscription_unlink_service0(th_subscription_t *s, int reason, int resched)
   tvh_mutex_lock(&t->s_stream_mutex);
 
   streaming_target_disconnect(&t->s_streaming_pad, &s->ths_input);
+#if ENABLE_DVBBUFFER
+  /* Instant zapping (H7): no backlog for it any more */
+  dvbbuffer_service_unlink(t, s);
+#endif
 
   if(!resched && t->s_running) {
     // Send a STOP message to the subscription client
