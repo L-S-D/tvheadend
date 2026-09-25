@@ -59,6 +59,11 @@ typedef struct dvbbuffer_conf {
   uint32_t hls_cold_segments;       /* ... first playlist after this many segments */
   uint32_t hls_cold_short_segments; /* ... this many short live segments */
   uint32_t hls_cold_first_ms;       /* ... first segment cut early (0 = off) */
+  int      hls_timeshift;           /* always record every HLS stream */
+  uint32_t hls_timeshift_min;       /* ... this many minutes per stream */
+  char    *hls_timeshift_dir;       /* ... beyond the RAM budget on disk here */
+  uint32_t hls_timeshift_ram_mb;    /* RAM budget, all streams (0 = auto) */
+  uint32_t hls_timeshift_disk_gb;   /* disk budget, all streams */
   char    *hls_oscam_host;    /* scrambled channels: OSCam dvbapi (protocol 2) */
   uint32_t hls_oscam_port;
 } dvbbuffer_conf_t;

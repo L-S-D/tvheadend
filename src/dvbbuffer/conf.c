@@ -410,6 +410,51 @@ const idclass_t dvbbuffer_conf_class = {
       .group  = 3,
     },
     {
+      .type   = PT_BOOL,
+      .id     = "hls_timeshift",
+      .name   = N_("HLS timeshift"),
+      .desc   = N_("Keep every HLS stream for timeshift (players pause and "
+                   "seek back); the recording starts with the stream and "
+                   "ends when its viewer switches (changes need a restart)."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_timeshift),
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_timeshift_min",
+      .name   = N_("HLS timeshift per stream (min)"),
+      .off    = offsetof(dvbbuffer_conf_t, hls_timeshift_min),
+      .group  = 3,
+    },
+    {
+      .type   = PT_STR,
+      .id     = "hls_timeshift_dir",
+      .name   = N_("HLS timeshift directory"),
+      .desc   = N_("Segments beyond the RAM budget go here (emptied at start)."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_timeshift_dir),
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_timeshift_ram_mb",
+      .name   = N_("HLS timeshift RAM (MB)"),
+      .desc   = N_("RAM for timeshift over all streams before segments go to "
+                   "disk; 0 = auto (25 % of the RAM, at most 8 GB)."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_timeshift_ram_mb),
+      .opts   = PO_ADVANCED,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_timeshift_disk_gb",
+      .name   = N_("HLS timeshift disk (GB)"),
+      .desc   = N_("Disk space for timeshift over all streams; beyond it the "
+                   "oldest segments are dropped."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_timeshift_disk_gb),
+      .opts   = PO_ADVANCED,
+      .group  = 3,
+    },
+    {
       .type   = PT_STR,
       .id     = "hls_audio_langs",
       .name   = N_("HLS preferred audio languages"),
@@ -496,6 +541,11 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.hls_cold_backlog_ms     = 3000;
   dvbbuffer_conf.hls_cold_segments       = 1;
   dvbbuffer_conf.hls_cold_short_segments = 4;
+  dvbbuffer_conf.hls_timeshift           = 1;
+  dvbbuffer_conf.hls_timeshift_min       = 60;
+  dvbbuffer_conf.hls_timeshift_dir       = strdup("/tmp/dvbbuffer-timeshift");
+  dvbbuffer_conf.hls_timeshift_ram_mb    = 0;
+  dvbbuffer_conf.hls_timeshift_disk_gb   = 50;
   dvbbuffer_conf.hls_oscam_port          = 9001;
 
   idclass_register(&dvbbuffer_conf_class);

@@ -289,6 +289,12 @@ dvbbuffer_hls_init(void)
   cfg.hls.cold_segments_min       = dvbbuffer_conf.hls_cold_segments;
   cfg.hls.cold_short_segments     = dvbbuffer_conf.hls_cold_short_segments;
   cfg.hls.cold_first_ms           = dvbbuffer_conf.hls_cold_first_ms;
+  if (dvbbuffer_conf.hls_timeshift && dvbbuffer_conf.hls_timeshift_min) {
+    cfg.hls.timeshift_ms          = dvbbuffer_conf.hls_timeshift_min * 60000;
+    cfg.hls.timeshift_dir         = dvbbuffer_conf.hls_timeshift_dir;
+    cfg.hls.timeshift_ram_mb      = dvbbuffer_conf.hls_timeshift_ram_mb;
+    cfg.hls.timeshift_disk_mb     = dvbbuffer_conf.hls_timeshift_disk_gb * 1024;
+  }
   cfg.cb.authorize = dvbbuffer_hls_authorize;
   cfg.cb.resolve   = dvbbuffer_hls_resolve;
   cfg.cb.acquire   = dvbbuffer_hls_acquire;
