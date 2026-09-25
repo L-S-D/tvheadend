@@ -594,18 +594,17 @@ dvbbuffer_svc_join(mpegts_service_t *ms, dvbbuffer_svc_t *ds,
   memset(&cfg, 0, sizeof(cfg));
   cfg.struct_size   = sizeof(cfg);
   cfg.service_id    = service_id16(t);
-  if (dvbbuffer_ts_client(s)) {
-    cfg.max_age_ms    = dvbbuffer_conf.ts_start_ms;
-    cfg.keyframe_back = 1000;
-  } else {
-    cfg.max_age_ms    = dvbbuffer_conf.max_age_ms;
-    cfg.keyframe_back = dvbbuffer_conf.keyframe_back;
-  }
+  cfg.max_age_ms    = dvbbuffer_conf.max_age_ms;
+  cfg.keyframe_back = dvbbuffer_conf.keyframe_back;
   cfg.decrypt       = encrypted ? 1 : 0;
   if (dvbbuf_raw_open(ds->ds_mux->dm_lib, &cfg, &raw) != DVBBUF_OK) {
     why = "raw reader";
     goto skip;
   }
+  /* a TS client starts further back (its player time 0 is noted for the
+   * subtitle timing, /ttx/<channel>/start) */
+  if (dvbbuffer_ts_client(s))
+    dvbbuf_raw_set_start(raw, dvbbuffer_conf.ts_start_ms, 1000);
   if (encrypted) {
     /* all recent keys for the parity runs of the backlog (an answer to a
      * replayed older ECM may have replaced the current one), tvh's own last */
