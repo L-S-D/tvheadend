@@ -368,6 +368,48 @@ const idclass_t dvbbuffer_conf_class = {
       .group  = 3,
     },
     {
+      .type   = PT_U32,
+      .id     = "hls_cold_backlog_ms",
+      .name   = N_("HLS cold start below (ms)"),
+      .desc   = N_("A stream whose mux has less history than this in its "
+                   "ring buffer (just tuned) starts cold: the first playlist "
+                   "does not wait for the backlog burst."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_cold_backlog_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_cold_segments",
+      .name   = N_("HLS cold start segments"),
+      .desc   = N_("Cold start: the first playlist after this many segments."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_cold_segments),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_cold_short_segments",
+      .name   = N_("HLS cold start short segments"),
+      .desc   = N_("Cold start: this many live segments are cut at the "
+                   "initial segment length, so the player has several soon."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_cold_short_segments),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "hls_cold_first_ms",
+      .name   = N_("HLS cold start first segment (ms)"),
+      .desc   = N_("Cold start: cut the first segment after this long even "
+                   "without the next keyframe, so the first playlist comes "
+                   "earlier (the following segment starts without a "
+                   "keyframe). 0 = off."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_cold_first_ms),
+      .opts   = PO_EXPERT,
+      .group  = 3,
+    },
+    {
       .type   = PT_STR,
       .id     = "hls_audio_langs",
       .name   = N_("HLS preferred audio languages"),
@@ -451,6 +493,9 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.hls_blocking_reload     = 1;
   dvbbuffer_conf.hls_oscam_host          = strdup("127.0.0.1");
   dvbbuffer_conf.hls_audio_langs         = strdup("ger");
+  dvbbuffer_conf.hls_cold_backlog_ms     = 3000;
+  dvbbuffer_conf.hls_cold_segments       = 1;
+  dvbbuffer_conf.hls_cold_short_segments = 4;
   dvbbuffer_conf.hls_oscam_port          = 9001;
 
   idclass_register(&dvbbuffer_conf_class);

@@ -37,6 +37,21 @@ typedef struct dvbbuffer_hls_hold {
 
 static dvbbuf_http *dvbbuffer_http;
 
+#if ENABLE_IPTV
+extern const idclass_t iptv_mux_class;
+#endif
+
+/* a DVB mux (satellite, cable, terrestrial), not IPTV */
+static int
+dvbbuffer_hls_dvb_mux(mpegts_mux_t *mm)
+{
+#if ENABLE_IPTV
+  return !idnode_is_instance(&mm->mm_id, &iptv_mux_class);
+#else
+  return 1;
+#endif
+}
+
 /*
  * Subscription output: the data is taken in mpegts_input_process()
  */
@@ -63,7 +78,9 @@ static streaming_ops_t dvbbuffer_hls_input_ops = {
 };
 
 /*
- * The service of a channel: a mux with a ring buffer first (global_lock)
+ * The service of a channel: a mux with a ring buffer first, then a DVB mux
+ * (every DVB channel can go this way, the mux is tuned on demand), IPTV
+ * last (global_lock)
  */
 static mpegts_service_t *
 dvbbuffer_hls_service(const char *channel)
@@ -84,7 +101,7 @@ dvbbuffer_hls_service(const char *channel)
       continue;
     if (ms->s_dvb_mux->mm_dvbbuffer)
       return ms;
-    if (best == NULL)
+    if (best == NULL || (!dvbbuffer_hls_dvb_mux(best->s_dvb_mux) && dvbbuffer_hls_dvb_mux(ms->s_dvb_mux)))
       best = ms;
   }
   return best;
@@ -268,6 +285,10 @@ dvbbuffer_hls_init(void)
   cfg.hls.start_offset_ms         = dvbbuffer_conf.hls_start_offset_ms;
   cfg.hls.no_blocking_reload      = !dvbbuffer_conf.hls_blocking_reload;
   cfg.hls.audio_langs             = dvbbuffer_conf.hls_audio_langs;
+  cfg.hls.cold_backlog_ms         = dvbbuffer_conf.hls_cold_backlog_ms;
+  cfg.hls.cold_segments_min       = dvbbuffer_conf.hls_cold_segments;
+  cfg.hls.cold_short_segments     = dvbbuffer_conf.hls_cold_short_segments;
+  cfg.hls.cold_first_ms           = dvbbuffer_conf.hls_cold_first_ms;
   cfg.cb.authorize = dvbbuffer_hls_authorize;
   cfg.cb.resolve   = dvbbuffer_hls_resolve;
   cfg.cb.acquire   = dvbbuffer_hls_acquire;

@@ -55,6 +55,10 @@ typedef struct dvbbuffer_conf {
   int      hls_start_offset_ms;
   int      hls_blocking_reload;
   char    *hls_audio_langs;   /* preferred audio languages, "ger,eng" */
+  uint32_t hls_cold_backlog_ms;     /* cold start: less backlog than this */
+  uint32_t hls_cold_segments;       /* ... first playlist after this many segments */
+  uint32_t hls_cold_short_segments; /* ... this many short live segments */
+  uint32_t hls_cold_first_ms;       /* ... first segment cut early (0 = off) */
   char    *hls_oscam_host;    /* scrambled channels: OSCam dvbapi (protocol 2) */
   uint32_t hls_oscam_port;
 } dvbbuffer_conf_t;
