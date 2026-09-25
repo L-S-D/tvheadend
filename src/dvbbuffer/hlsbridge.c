@@ -267,6 +267,7 @@ dvbbuffer_hls_init(void)
   cfg.hls.idle_ms                 = dvbbuffer_conf.hls_idle_ms;
   cfg.hls.start_offset_ms         = dvbbuffer_conf.hls_start_offset_ms;
   cfg.hls.no_blocking_reload      = !dvbbuffer_conf.hls_blocking_reload;
+  cfg.hls.audio_langs             = dvbbuffer_conf.hls_audio_langs;
   cfg.cb.authorize = dvbbuffer_hls_authorize;
   cfg.cb.resolve   = dvbbuffer_hls_resolve;
   cfg.cb.acquire   = dvbbuffer_hls_acquire;

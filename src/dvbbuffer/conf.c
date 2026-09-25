@@ -369,6 +369,18 @@ const idclass_t dvbbuffer_conf_class = {
     },
     {
       .type   = PT_STR,
+      .id     = "hls_audio_langs",
+      .name   = N_("HLS preferred audio languages"),
+      .desc   = N_("ISO 639-2 codes, comma separated (e.g. ger,eng): tracks "
+                   "in these languages come first - the player's default - "
+                   "Dolby before stereo; audio description last. Players "
+                   "get the track list from /hls/<channel>/tracks.json "
+                   "(changes need a restart)."),
+      .off    = offsetof(dvbbuffer_conf_t, hls_audio_langs),
+      .group  = 3,
+    },
+    {
+      .type   = PT_STR,
       .id     = "hls_oscam_host",
       .name   = N_("HLS OSCam host"),
       .desc   = N_("OSCam dvbapi (network mode, protocol 2) for scrambled "
@@ -438,6 +450,7 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.hls_start_offset_ms     = 0;
   dvbbuffer_conf.hls_blocking_reload     = 1;
   dvbbuffer_conf.hls_oscam_host          = strdup("127.0.0.1");
+  dvbbuffer_conf.hls_audio_langs         = strdup("ger");
   dvbbuffer_conf.hls_oscam_port          = 9001;
 
   idclass_register(&dvbbuffer_conf_class);
