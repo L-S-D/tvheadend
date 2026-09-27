@@ -2785,19 +2785,28 @@ dvr_event_removed(epg_broadcast_t *e)
 void dvr_event_updated(epg_broadcast_t *e)
 {
   dvr_entry_t *de;
+  dvr_entry_t *de_next;
 
   if (e->channel == NULL)
     return;
-  LIST_FOREACH(de, &e->dvr_entries, de_bcast_link) {
+  /*
+   * _dvr_entry_update() destroys an autorec entry that no longer matches
+   * the event, so the next entry must be fetched before calling it.
+   */
+  de = LIST_FIRST(&e->dvr_entries);
+  while (de != NULL) {
+    de_next = LIST_NEXT(de, de_bcast_link);
     assert(de->de_bcast == e);
-    if (de->de_sched_state != DVR_SCHEDULED) continue;
-    _dvr_entry_update(de, -1, NULL, e, NULL, NULL, NULL, NULL, NULL,
-                      NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0, -1, -1, 0, NULL, NULL);
+    if (de->de_sched_state == DVR_SCHEDULED)
+      _dvr_entry_update(de, -1, NULL, e, NULL, NULL, NULL, NULL, NULL,
+                        NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0, -1, -1, 0, NULL, NULL);
+    de = de_next;
   }
-  LIST_FOREACH(de, &e->channel->ch_dvrs, de_channel_link) {
-    if (de->de_sched_state != DVR_SCHEDULED) continue;
-    if (de->de_bcast) continue;
-    if (dvr_entry_fuzzy_match(de, e, e->dvb_eid,
+  de = LIST_FIRST(&e->channel->ch_dvrs);
+  while (de != NULL) {
+    de_next = LIST_NEXT(de, de_channel_link);
+    if (de->de_sched_state == DVR_SCHEDULED && de->de_bcast == NULL &&
+        dvr_entry_fuzzy_match(de, e, e->dvb_eid,
                               de->de_config->dvr_update_window)) {
       dvr_entry_trace_time2(de, "start", e->start, "stop", e->stop,
                             "link to event %s on %s",
@@ -2806,6 +2815,7 @@ void dvr_event_updated(epg_broadcast_t *e)
       _dvr_entry_update(de, -1, NULL, e, NULL, NULL, NULL, NULL, NULL,
                         NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0, -1, -1, 0, NULL, NULL);
     }
+    de = de_next;
   }
 }
 
@@ -3120,6 +3130,31 @@ dvr_stop_recording(dvr_entry_t *de, int stopcode, int saveconf, int clone)
 
   //Create the sm file
   dvr_create_recording_scene_markers(de);
+}
+
+/**
+ * The recording thread must not call dvr_stop_recording() itself:
+ * dvr_rec_unsubscribe() joins that thread and frees the profile chain
+ * it reads from. Stop it from the timer thread instead.
+ */
+static void
+dvr_timer_stop_recording_error(void *aux)
+{
+  dvr_entry_t *de = aux;
+  if (de->de_sched_state != DVR_RECORDING)
+    return;
+  dvr_stop_recording(de, de->de_last_error, 1, 0);
+}
+
+void
+dvr_stop_recording_deferred(dvr_entry_t *de, int stopcode)
+{
+  lock_assert(&global_lock);
+  de->de_last_error = stopcode;
+  /* a dvr_entry_set_timer() call before the timer fires then stops
+   * the recording instead of re-arming de_timer for the stop time */
+  de->de_dont_reschedule = 1;
+  gtimer_arm_rel(&de->de_timer, dvr_timer_stop_recording_error, de, 0);
 }
 
 
