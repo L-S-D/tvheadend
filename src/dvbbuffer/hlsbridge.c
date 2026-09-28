@@ -37,21 +37,6 @@ typedef struct dvbbuffer_hls_hold {
 
 static dvbbuf_http *dvbbuffer_http;
 
-#if ENABLE_IPTV
-extern const idclass_t iptv_mux_class;
-#endif
-
-/* a DVB mux (satellite, cable, terrestrial), not IPTV */
-static int
-dvbbuffer_hls_dvb_mux(mpegts_mux_t *mm)
-{
-#if ENABLE_IPTV
-  return !idnode_is_instance(&mm->mm_id, &iptv_mux_class);
-#else
-  return 1;
-#endif
-}
-
 /*
  * Subscription output: the data is taken in mpegts_input_process()
  */
@@ -101,7 +86,7 @@ dvbbuffer_hls_service(const char *channel)
       continue;
     if (ms->s_dvb_mux->mm_dvbbuffer)
       return ms;
-    if (best == NULL || (!dvbbuffer_hls_dvb_mux(best->s_dvb_mux) && dvbbuffer_hls_dvb_mux(ms->s_dvb_mux)))
+    if (best == NULL || (!dvbbuffer_mux_is_dvb(best->s_dvb_mux) && dvbbuffer_mux_is_dvb(ms->s_dvb_mux)))
       best = ms;
   }
   return best;

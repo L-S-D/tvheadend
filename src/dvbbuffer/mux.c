@@ -14,6 +14,21 @@ static mpegts_listener_t dvbbuffer_mux_listener;
 static int dvbbuffer_mux_count;     /* library muxes alive */
 static int dvbbuffer_shutdown;      /* destroy the context with the last mux */
 
+#if ENABLE_IPTV
+extern const idclass_t iptv_mux_class;
+#endif
+
+/* a DVB mux (satellite, cable, terrestrial), not IPTV */
+int
+dvbbuffer_mux_is_dvb(mpegts_mux_t *mm)
+{
+#if ENABLE_IPTV
+  return !idnode_is_instance(&mm->mm_id, &iptv_mux_class);
+#else
+  return 1;
+#endif
+}
+
 /* kept warm (prebuffer) */
 int
 dvbbuffer_mux_prebuffer(mpegts_mux_t *mm)

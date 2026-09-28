@@ -99,6 +99,7 @@ void dvbbuffer_mux_ref(dvbbuffer_mux_t *dm);
 void dvbbuffer_mux_unref(dvbbuffer_mux_t *dm);
 int  dvbbuffer_mux_wanted(mpegts_mux_t *mm);
 int  dvbbuffer_mux_prebuffer(mpegts_mux_t *mm);
+int  dvbbuffer_mux_is_dvb(mpegts_mux_t *mm);
 
 /*
  * Warm mux manager (warm.c), global_lock

@@ -6,7 +6,7 @@
  *  take the tuner when they need it; tvh's subscription scheduler brings
  *  the warm mux back as soon as a tuner is free again.
  *
- *  LRU: the muxes last used by viewers (service starts, HLS clients) are
+ *  LRU: the DVB muxes last used by viewers (service starts, HLS clients) are
  *  kept warm as well, up to lru_max, with a lower weight (lru_weight). A
  *  used mux gets its warm subscription and ring buffer while it is being
  *  watched, so it stays tuned with a full backlog when the viewer leaves.
@@ -41,11 +41,14 @@ typedef struct dvbbuffer_used {
   int                 du_users;     /* services / HLS clients now */
   int64_t             du_last;      /* mclk() of the last start or stop */
   int                 du_sel;       /* among the lru_max kept warm */
+  int                 du_dead;      /* no input: not kept warm until used again */
 } dvbbuffer_used_t;
 
 static LIST_HEAD(, dvbbuffer_warm) dvbbuffer_warm_all;
 static LIST_HEAD(, dvbbuffer_used) dvbbuffer_used_all;
 static mtimer_t dvbbuffer_warm_timer;
+
+static void dvbbuffer_warm_lru_dead(mpegts_mux_t *mm);
 
 /*
  * Subscription output: the data itself is taken in mpegts_input_process()
@@ -62,6 +65,11 @@ dvbbuffer_warm_input(void *opaque, streaming_message_t *sm)
              dw->dw_mux->mm_nicename,
              sm->sm_type == SMT_STOP ? "stopped" : "not started",
              streaming_code2txt(sm->sm_code));
+    /* tuned, but no data (transponder gone): a recently used mux is
+     * dropped instead of being retried every 2 s; busy tuners
+     * (SM_CODE_NO_FREE_ADAPTER ...) keep it */
+    if (sm->sm_type == SMT_NOSTART && sm->sm_code == SM_CODE_NO_INPUT && dw->dw_lru)
+      dvbbuffer_warm_lru_dead(dw->dw_mux);
     break;
   default:
     break;
@@ -204,7 +212,7 @@ dvbbuffer_used_select(void)
   qsort(v, n, sizeof(*v), dvbbuffer_used_cmp);
   /* prebuffer muxes are warm anyway: they do not take LRU places */
   for (i = 0, sel = 0; i < n && sel < dvbbuffer_conf.lru_max; i++)
-    if (dvbbuffer_ctx && dvbbuffer_conf.enabled &&
+    if (dvbbuffer_ctx && dvbbuffer_conf.enabled && !v[i]->du_dead &&
         !dvbbuffer_mux_prebuffer(v[i]->du_mux) && v[i]->du_mux->mm_is_enabled(v[i]->du_mux)) {
       v[i]->du_sel = 1;
       sel++;
@@ -296,6 +304,10 @@ dvbbuffer_warm_used(mpegts_mux_t *mm, int delta)
   dvbbuffer_used_t *du;
 
   lock_assert(&global_lock);
+  /* only DVB muxes: an IPTV mux has no tuner to keep, a warm subscription
+   * would only hold the stream open (or retry a dead one forever) */
+  if (!dvbbuffer_mux_is_dvb(mm))
+    return;
   LIST_FOREACH(du, &dvbbuffer_used_all, du_link)
     if (du->du_mux == mm)
       break;
@@ -310,8 +322,31 @@ dvbbuffer_warm_used(mpegts_mux_t *mm, int delta)
   if (du->du_users < 0)
     du->du_users = 0;
   du->du_last = mclk();
+  if (delta > 0)
+    du->du_dead = 0;    /* used again: another try */
   if (dvbbuffer_conf.lru_max)
     dvbbuffer_warm_reconcile();
+}
+
+/*
+ * The warm subscription of a recently used mux did not start: no input
+ * (called from its subscription output, global_lock) - the reconciler
+ * releases it, not this callback
+ */
+static void
+dvbbuffer_warm_lru_dead(mpegts_mux_t *mm)
+{
+  dvbbuffer_used_t *du;
+
+  LIST_FOREACH(du, &dvbbuffer_used_all, du_link)
+    if (du->du_mux == mm)
+      break;
+  if (du == NULL || du->du_dead)
+    return;
+  du->du_dead = 1;
+  tvhinfo(LS_DVBBUFFER, "%s: no input, no longer kept warm as recently used mux",
+          mm->mm_nicename);
+  dvbbuffer_warm_reconcile();
 }
 
 /* kept warm as a recently used mux */
