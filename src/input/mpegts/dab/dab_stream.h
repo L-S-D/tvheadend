@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "build.h"
 
 /* TS packet size */
 #define DAB_TS_PACKET_SIZE  188
@@ -39,6 +40,8 @@ typedef struct dab_stream_config {
   uint32_t    filter_ip;    /* Multicast IP (host byte order) */
   uint16_t    filter_port;  /* UDP port */
 } dab_stream_config_t;
+
+#if ENABLE_DVBDAB
 
 /**
  * Create a DAB stream context
@@ -85,5 +88,23 @@ int dab_stream_start_all(dab_stream_ctx_t *ctx);
  * @return              0 on success, -1 on error
  */
 int dab_stream_start_service(dab_stream_ctx_t *ctx, uint8_t subchannel_id);
+
+#else /* !ENABLE_DVBDAB */
+
+/*
+ * Built without libdvbdab: no DAB streaming, dab_stream_create() fails
+ */
+static inline dab_stream_ctx_t *dab_stream_create(const dab_stream_config_t *config,
+                                                  dab_stream_output_cb cb, void *opaque)
+{ return NULL; }
+static inline void dab_stream_destroy(dab_stream_ctx_t *ctx) { }
+static inline int dab_stream_feed(dab_stream_ctx_t *ctx, const uint8_t *data, size_t len)
+{ return -1; }
+static inline int dab_stream_is_ready(dab_stream_ctx_t *ctx) { return 0; }
+static inline int dab_stream_start_all(dab_stream_ctx_t *ctx) { return -1; }
+static inline int dab_stream_start_service(dab_stream_ctx_t *ctx, uint8_t subchannel_id)
+{ return -1; }
+
+#endif /* ENABLE_DVBDAB */
 
 #endif /* __DAB_STREAM_H__ */

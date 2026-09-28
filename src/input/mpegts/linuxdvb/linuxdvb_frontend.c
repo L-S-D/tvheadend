@@ -35,7 +35,12 @@
 #include <poll.h>
 #include <linux/dvb/dmx.h>
 #include <linux/dvb/frontend.h>
-#include <dvbdab/dvbdab_c.h> 
+#if ENABLE_DVBDAB
+#include <dvbdab/dvbdab_c.h>
+#endif
+
+/* DAB-GSE: DMX_SET_FE_STREAM (Neumo driver) and the libdvbdab streamer */
+#define LINUXDVB_GSE (ENABLE_LINUXDVB_NEUMO && ENABLE_DVBDAB)
 
 #define NOSIGNAL(x) (((x) & FE_HAS_SIGNAL) == 0)
 
@@ -47,7 +52,7 @@ static void
 linuxdvb_t2mi_done ( linuxdvb_frontend_t *lfe );
 static void
 linuxdvb_dab_done ( linuxdvb_frontend_t *lfe );
-#if ENABLE_LINUXDVB_NEUMO
+#if LINUXDVB_GSE
 static void
 linuxdvb_gse_done ( linuxdvb_frontend_t *lfe );
 #endif
@@ -704,7 +709,7 @@ linuxdvb_frontend_stop_mux
   /* Cleanup DAB if active */
   linuxdvb_dab_done(lfe);
 
-#if ENABLE_LINUXDVB_NEUMO
+#if LINUXDVB_GSE
   /* Cleanup GSE if active */
   linuxdvb_gse_done(lfe);
 #endif
@@ -902,6 +907,11 @@ linuxdvb_dab_init ( linuxdvb_frontend_t *lfe, dvb_mux_t *dm, int format )
   dab_stream_config_t cfg;
   char ip_str[20];
 
+#if !ENABLE_DVBDAB
+  tvherror(LS_LINUXDVB, "DAB mux: tvheadend was built without libdvbdab");
+  return -1;
+#endif
+
   memset(&cfg, 0, sizeof(cfg));
   cfg.format = format;
   cfg.pid = dm->lm_tuning.dmc_fe_pid;
@@ -961,7 +971,7 @@ linuxdvb_dab_done ( linuxdvb_frontend_t *lfe )
   }
 }
 
-#if ENABLE_LINUXDVB_NEUMO
+#if LINUXDVB_GSE
 /* **************************************************************************
  * GSE streaming support (for DAB-GSE muxes)
  *
@@ -1231,7 +1241,7 @@ linuxdvb_gse_done ( linuxdvb_frontend_t *lfe )
     lfe->lfe_gse_dmx_fd = -1;
   }
 }
-#endif /* ENABLE_LINUXDVB_NEUMO - GSE support */
+#endif /* LINUXDVB_GSE - GSE support */
 
 /*
  * Process DAB packets from raw TS buffer
@@ -1289,12 +1299,17 @@ linuxdvb_frontend_start_mux
       return SM_CODE_TUNING_FAILED;
   }
 
-#if ENABLE_LINUXDVB_NEUMO
+#if LINUXDVB_GSE
   /* Check for DAB-GSE mux - uses separate DMX_SET_FE_STREAM mode */
   if (mm->mm_type == MM_TYPE_DAB_GSE) {
     dvb_mux_t *dm = (dvb_mux_t *)mm;
     if (linuxdvb_gse_init(lfe, dm) < 0)
       return SM_CODE_TUNING_FAILED;
+  }
+#elif ENABLE_LINUXDVB_NEUMO
+  if (mm->mm_type == MM_TYPE_DAB_GSE) {
+    tvherror(LS_LINUXDVB, "DAB-GSE mux: tvheadend was built without libdvbdab");
+    return SM_CODE_TUNING_FAILED;
   }
 #endif
 
@@ -1795,7 +1810,7 @@ linuxdvb_frontend_monitor ( void *aux )
 #endif
 
       /* Start input thread */
-#if ENABLE_LINUXDVB_NEUMO
+#if LINUXDVB_GSE
       /* GSE uses separate thread with DMX_SET_FE_STREAM */
       if (mm->mm_type == MM_TYPE_DAB_GSE && lfe->lfe_gse_dmx_fd >= 0) {
         tvh_pipe(O_NONBLOCK, &lfe->lfe_gse_pipe);
