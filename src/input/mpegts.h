@@ -1236,11 +1236,17 @@ void eit_nit_callback(mpegts_table_t *mt, uint16_t nbid, const char *name, uint3
 void eit_sdt_callback(mpegts_table_t *mt, uint32_t priv);
 
 /*
- * DAB probe
+ * DAB probe (libdvbdab; without it no DAB detection)
  */
+#if ENABLE_DVBDAB
 void mpegts_dab_probe_start(mpegts_mux_t *mm);
 int  mpegts_dab_probe_complete(mpegts_mux_t *mm);
 int  mpegts_dab_probe_is_done(mpegts_mux_t *mm);
+#else
+static inline void mpegts_dab_probe_start(mpegts_mux_t *mm) { }
+static inline int  mpegts_dab_probe_complete(mpegts_mux_t *mm) { return 0; }
+static inline int  mpegts_dab_probe_is_done(mpegts_mux_t *mm) { return 1; }
+#endif
 
 /*
  * ISI probe (Neumo driver only)
@@ -1250,11 +1256,17 @@ int  mpegts_isi_probe_complete(mpegts_mux_t *mm);
 int  mpegts_isi_probe_is_done(mpegts_mux_t *mm);
 
 /*
- * GSE-DAB probe (DAB detection in GSE streams)
+ * GSE-DAB probe (DAB detection in GSE streams, libdvbdab)
  */
+#if ENABLE_DVBDAB
 void mpegts_gse_dab_probe_start(mpegts_mux_t *mm);
 int  mpegts_gse_dab_probe_complete(mpegts_mux_t *mm);
 int  mpegts_gse_dab_probe_is_done(mpegts_mux_t *mm);
+#else
+static inline void mpegts_gse_dab_probe_start(mpegts_mux_t *mm) { }
+static inline int  mpegts_gse_dab_probe_complete(mpegts_mux_t *mm) { return 0; }
+static inline int  mpegts_gse_dab_probe_is_done(mpegts_mux_t *mm) { return 1; }
+#endif
 
 #endif /* __TVH_MPEGTS_H__ */
 

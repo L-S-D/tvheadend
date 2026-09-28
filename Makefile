@@ -476,18 +476,21 @@ SRCS-T2MI = \
 	src/input/mpegts/t2mi/t2mi_decap.c
 SRCS-yes += $(SRCS-T2MI)
 
-# DAB (Digital Audio Broadcasting) probe and streaming
+# ISI probe (multistream detection, Neumo driver)
+SRCS-yes += src/input/mpegts/dab/isi_probe.c
+
+# DAB (Digital Audio Broadcasting) probe and streaming - libdvbdab
+# (configure: dvbdab, flags come from pkg-config)
 SRCS-DAB = \
 	src/input/mpegts/dab/dab_probe.c \
 	src/input/mpegts/dab/dab_stream.c \
-	src/input/mpegts/dab/isi_probe.c \
 	src/input/mpegts/dab/gse_dab_probe.c
-SRCS-yes += $(SRCS-DAB)
-# Try pkg-config first, fall back to standard paths
-DVBDAB_CFLAGS := $(shell $(PKG_CONFIG) --cflags dvbdab 2>/dev/null || echo "-I/usr/local/include")
-DVBDAB_LIBS := $(shell $(PKG_CONFIG) --libs dvbdab 2>/dev/null || echo "-L/usr/local/lib -ldvbdab")
-CFLAGS  += $(DVBDAB_CFLAGS)
-LDFLAGS += $(DVBDAB_LIBS)
+SRCS-${CONFIG_DVBDAB} += $(SRCS-DAB)
+# static C++ library: dvbdab.pc does not list the C++ runtime; after the
+# package flags, --as-needed would drop it earlier
+ifeq ($(CONFIG_DVBDAB),yes)
+LDFLAGS += -lstdc++
+endif
 
 # TSfile
 SRCS-TSFILE = \
