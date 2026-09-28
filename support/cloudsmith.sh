@@ -98,6 +98,14 @@ esac
 
 echo "OS Detected as $DISTRO $TARGET"
 
+# No Cloudsmith target configured (e.g. a fork without the repository
+# variables and secrets): nothing to publish, the packages stay available
+# as workflow artifacts
+if [ -z "${CLOUDSMITH_ORG:-}" ] || [ -z "${CLOUDSMITH_REPO:-}" ] || [ -z "${CLOUDSMITH_API_KEY:-}" ]; then
+    echo -e "${YELLOW}Cloudsmith not configured (CLOUDSMITH_ORG/CLOUDSMITH_REPO/CLOUDSMITH_KEY): skipped publishing $FILE${NC}"
+    exit 0
+fi
+
 export LC_ALL=C.UTF-8
 export LANG=C.UTF-8
 
