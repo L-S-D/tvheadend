@@ -32,7 +32,15 @@ typedef struct dvbbuffer_warm {
   th_subscription_t  *dw_sub;
   int                 dw_mark;
   int                 dw_lru;       /* kept warm as recently used */
+  int                 dw_busy;      /* no free tuner: subscription released */
+  int64_t             dw_retry;     /* mclk() of the next try while busy */
+  int                 dw_backoff;   /* current wait while busy, seconds */
 } dvbbuffer_warm_t;
+
+/* all tuners busy (scan, viewers): wait before the next try, doubled up to
+ * the maximum while it keeps failing */
+#define DVBBUFFER_WARM_BUSY_MIN  30
+#define DVBBUFFER_WARM_BUSY_MAX  300
 
 /* mux use by viewers, for the LRU (global_lock) */
 typedef struct dvbbuffer_used {
@@ -47,8 +55,10 @@ typedef struct dvbbuffer_used {
 static LIST_HEAD(, dvbbuffer_warm) dvbbuffer_warm_all;
 static LIST_HEAD(, dvbbuffer_used) dvbbuffer_used_all;
 static mtimer_t dvbbuffer_warm_timer;
+static mtimer_t dvbbuffer_warm_freed_timer;
 
 static void dvbbuffer_warm_lru_dead(mpegts_mux_t *mm);
+static void dvbbuffer_warm_reconcile_cb(void *aux);
 
 /*
  * Subscription output: the data itself is taken in mpegts_input_process()
@@ -59,6 +69,10 @@ dvbbuffer_warm_input(void *opaque, streaming_message_t *sm)
   dvbbuffer_warm_t *dw = opaque;
 
   switch (sm->sm_type) {
+  case SMT_START:
+    /* got a tuner: the next busy period starts with the shortest wait */
+    dw->dw_backoff = 0;
+    break;
   case SMT_STOP:
   case SMT_NOSTART:
     tvhdebug(LS_DVBBUFFER, "%s: warm subscription %s (%s)",
@@ -66,10 +80,17 @@ dvbbuffer_warm_input(void *opaque, streaming_message_t *sm)
              sm->sm_type == SMT_STOP ? "stopped" : "not started",
              streaming_code2txt(sm->sm_code));
     /* tuned, but no data (transponder gone): a recently used mux is
-     * dropped instead of being retried every 2 s; busy tuners
-     * (SM_CODE_NO_FREE_ADAPTER ...) keep it */
+     * dropped instead of being retried every 2 s */
     if (sm->sm_type == SMT_NOSTART && sm->sm_code == SM_CODE_NO_INPUT && dw->dw_lru)
       dvbbuffer_warm_lru_dead(dw->dw_mux);
+    /* all tuners taken by higher weights (scan, viewers): tvh would retry
+     * every 2 s (log line each time) and grab every tuner freed between
+     * two scan steps only to lose it again - the reconciler releases the
+     * subscription and tries again later, not this callback */
+    else if (sm->sm_type == SMT_NOSTART && sm->sm_code == SM_CODE_NO_FREE_ADAPTER && !dw->dw_busy) {
+      dw->dw_busy = 1;
+      dvbbuffer_warm_reconcile();
+    }
     break;
   default:
     break;
@@ -111,12 +132,40 @@ dvbbuffer_warm_destroy(dvbbuffer_warm_t *dw)
     dvbbuffer_mux_detach(mm);
 }
 
+/* the full-mux subscription of an entry; 0 = ok */
+static int
+dvbbuffer_warm_subscribe(dvbbuffer_warm_t *dw)
+{
+  mpegts_mux_t *mm = dw->dw_mux;
+  mpegts_service_t *ms;
+  mpegts_apids_t pids;
+
+  dw->dw_sub = subscription_create_from_mux(&dw->dw_prch, NULL,
+                                            dvbbuffer_warm_weight(dw->dw_lru),
+                                            dw->dw_lru ? "dvbbuffer LRU" : "dvbbuffer",
+                                            SUBSCRIPTION_MINIMAL,
+                                            NULL, NULL, NULL, NULL);
+  if (dw->dw_sub == NULL) {
+    tvherror(LS_DVBBUFFER, "%s: unable to create warm subscription",
+             mm->mm_nicename);
+    return -1;
+  }
+
+  /* the whole transport stream */
+  ms = (mpegts_service_t *)dw->dw_sub->ths_service;
+  mpegts_pid_init(&pids);
+  pids.all = 1;
+  ms->s_update_pids(ms, &pids);
+  mpegts_pid_done(&pids);
+  /* a running mux (in use) gets its ring buffer now */
+  dvbbuffer_mux_attach(mm);
+  return 0;
+}
+
 static void
 dvbbuffer_warm_create(mpegts_mux_t *mm, int lru)
 {
   dvbbuffer_warm_t *dw;
-  mpegts_service_t *ms;
-  mpegts_apids_t pids;
 
   dw = calloc(1, sizeof(*dw));
   dw->dw_mux = mm;
@@ -127,30 +176,102 @@ dvbbuffer_warm_create(mpegts_mux_t *mm, int lru)
   dw->dw_prch.prch_st = &dw->dw_input;
   LIST_INSERT_HEAD(&dvbbuffer_warm_all, dw, dw_link);
 
-  dw->dw_sub = subscription_create_from_mux(&dw->dw_prch, NULL,
-                                            dvbbuffer_warm_weight(lru),
-                                            lru ? "dvbbuffer LRU" : "dvbbuffer",
-                                            SUBSCRIPTION_MINIMAL,
-                                            NULL, NULL, NULL, NULL);
-  if (dw->dw_sub == NULL) {
-    tvherror(LS_DVBBUFFER, "%s: unable to create warm subscription",
-             mm->mm_nicename);
+  if (dvbbuffer_warm_subscribe(dw)) {
     LIST_REMOVE(dw, dw_link);
     free(dw);
     return;
   }
-
-  /* the whole transport stream */
-  ms = (mpegts_service_t *)dw->dw_sub->ths_service;
-  mpegts_pid_init(&pids);
-  pids.all = 1;
-  ms->s_update_pids(ms, &pids);
-  mpegts_pid_done(&pids);
-
   tvhinfo(LS_DVBBUFFER, "%s: %s mux (weight %u)", mm->mm_nicename,
           lru ? "recently used" : "warm", dvbbuffer_warm_weight(lru));
-  /* a running mux (in use) gets its ring buffer now */
-  dvbbuffer_mux_attach(mm);
+}
+
+/*
+ * Busy entries (reconciler, global_lock): release the subscription of a
+ * newly busy one, subscribe again when its wait is over. Returns the
+ * mclk() of the next retry, 0 = none
+ */
+static int64_t
+dvbbuffer_warm_busy_update(void)
+{
+  dvbbuffer_warm_t *dw;
+  int64_t now = mclk(), next = 0;
+
+  LIST_FOREACH(dw, &dvbbuffer_warm_all, dw_link) {
+    if (!dw->dw_busy)
+      continue;
+    if (dw->dw_sub) {
+      subscription_unsubscribe(dw->dw_sub, UNSUBSCRIBE_FINAL);
+      dw->dw_sub = NULL;
+      dw->dw_backoff = dw->dw_backoff ?
+        MIN(dw->dw_backoff * 2, DVBBUFFER_WARM_BUSY_MAX) : DVBBUFFER_WARM_BUSY_MIN;
+      dw->dw_retry = now + sec2mono(dw->dw_backoff);
+      tvhinfo(LS_DVBBUFFER, "%s: all tuners busy, %s mux tried again in %d s",
+              dw->dw_mux->mm_nicename, dw->dw_lru ? "recently used" : "warm",
+              dw->dw_backoff);
+    } else if (dw->dw_retry <= now) {
+      dw->dw_busy = 0;
+      tvhdebug(LS_DVBBUFFER, "%s: trying again to keep the mux warm",
+               dw->dw_mux->mm_nicename);
+      if (dvbbuffer_warm_subscribe(dw) == 0)
+        continue;
+      /* no subscription possible: like busy, next wait */
+      dw->dw_busy = 1;
+      dw->dw_backoff = MIN(MAX(dw->dw_backoff * 2, DVBBUFFER_WARM_BUSY_MIN),
+                           DVBBUFFER_WARM_BUSY_MAX);
+      dw->dw_retry = now + sec2mono(dw->dw_backoff);
+    }
+    if (next == 0 || dw->dw_retry < next)
+      next = dw->dw_retry;
+  }
+  return next;
+}
+
+/* a network scan is queued or running: tuners freed now go to the scan */
+static int
+dvbbuffer_warm_scanning(void)
+{
+  mpegts_network_t *mn;
+
+  LIST_FOREACH(mn, &mpegts_network_all, mn_global_link)
+    if (TAILQ_FIRST(&mn->mn_scan_pend) || TAILQ_FIRST(&mn->mn_scan_active))
+      return 1;
+  return 0;
+}
+
+/* checked shortly after a mux stop: the last scan mux is still queued
+ * while it stops */
+static void
+dvbbuffer_warm_freed_cb(void *aux)
+{
+  dvbbuffer_warm_t *dw;
+  int any = 0;
+
+  if (dvbbuffer_warm_scanning())
+    return;
+  LIST_FOREACH(dw, &dvbbuffer_warm_all, dw_link)
+    if (dw->dw_busy && dw->dw_sub == NULL) {
+      dw->dw_retry = mclk();
+      any = 1;
+    }
+  if (any)
+    dvbbuffer_warm_reconcile();
+}
+
+/*
+ * A mux stopped, its tuner is free (global_lock): busy entries try again
+ * soon - not during a scan, where the next scan mux takes the tuner
+ */
+void
+dvbbuffer_warm_tuner_freed(void)
+{
+  dvbbuffer_warm_t *dw;
+
+  lock_assert(&global_lock);
+  LIST_FOREACH(dw, &dvbbuffer_warm_all, dw_link)
+    if (dw->dw_busy && dw->dw_sub == NULL) {
+      mtimer_arm_rel(&dvbbuffer_warm_freed_timer, dvbbuffer_warm_freed_cb, NULL, sec2mono(2));
+      return;
+    }
 }
 
 static dvbbuffer_warm_t *
@@ -237,6 +358,7 @@ dvbbuffer_warm_reconcile_cb(void *aux)
   mpegts_mux_t *mm;
   dvbbuffer_warm_t *dw, *dw_next;
   uint32_t count = 0;
+  int64_t next;
 
   dvbbuffer_used_t *du;
 
@@ -287,6 +409,11 @@ dvbbuffer_warm_reconcile_cb(void *aux)
   LIST_FOREACH(du, &dvbbuffer_used_all, du_link)
     if (du->du_sel && dvbbuffer_warm_find(du->du_mux) == NULL)
       dvbbuffer_warm_create(du->du_mux, 1);
+
+  /* busy entries keep their place; next try when the wait is over */
+  next = dvbbuffer_warm_busy_update();
+  if (next)
+    mtimer_arm_abs(&dvbbuffer_warm_timer, dvbbuffer_warm_reconcile_cb, NULL, next);
 }
 
 void
@@ -393,6 +520,7 @@ dvbbuffer_warm_done(void)
   dvbbuffer_used_t *du;
 
   mtimer_disarm(&dvbbuffer_warm_timer);
+  mtimer_disarm(&dvbbuffer_warm_freed_timer);
   while ((dw = LIST_FIRST(&dvbbuffer_warm_all)) != NULL)
     dvbbuffer_warm_destroy(dw);
   while ((du = LIST_FIRST(&dvbbuffer_used_all)) != NULL) {

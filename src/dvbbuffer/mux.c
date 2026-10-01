@@ -186,6 +186,8 @@ static void
 dvbbuffer_mux_stop_cb(mpegts_mux_t *mm, void *p, int reason)
 {
   dvbbuffer_mux_detach(mm);
+  /* its tuner is free: warm muxes waiting for one try again */
+  dvbbuffer_warm_tuner_freed();
 }
 
 static void

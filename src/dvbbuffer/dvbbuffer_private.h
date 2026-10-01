@@ -110,6 +110,7 @@ void dvbbuffer_warm_reconcile(void);
 void dvbbuffer_warm_mux_delete(mpegts_mux_t *mm);
 void dvbbuffer_warm_used(mpegts_mux_t *mm, int delta);
 int  dvbbuffer_warm_lru(mpegts_mux_t *mm);
+void dvbbuffer_warm_tuner_freed(void);
 
 /*
  * HLS server bridge (hlsbridge.c)
