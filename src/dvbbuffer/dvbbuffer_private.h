@@ -66,8 +66,6 @@ typedef struct dvbbuffer_conf {
   char    *hls_timeshift_dir;       /* ... beyond the RAM budget on disk here */
   uint32_t hls_timeshift_ram_mb;    /* RAM budget, all streams (0 = auto) */
   uint32_t hls_timeshift_disk_gb;   /* disk budget, all streams */
-  char    *hls_oscam_host;    /* scrambled channels: OSCam dvbapi (protocol 2) */
-  uint32_t hls_oscam_port;
 } dvbbuffer_conf_t;
 
 extern dvbbuffer_conf_t dvbbuffer_conf;

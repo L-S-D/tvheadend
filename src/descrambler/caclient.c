@@ -20,6 +20,7 @@
 #include "settings.h"
 #include "caclient.h"
 #include "dvbcam.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 const idclass_t *caclient_classes[] = {
 #if ENABLE_LINUXDVB_CA
@@ -147,6 +148,8 @@ caclient_create
   if (save)
     idnode_changed((idnode_t *)cac);
   cac->cac_conf_changed(cac);
+  /* H11: the HLS path uses the same OSCam instances */
+  dvbbuffer_caclients_changed();
   return cac;
 }
 
@@ -169,6 +172,8 @@ caclient_delete(caclient_t *cac, int delconf)
   free(cac->cac_name);
   free(cac->cac_comment);
   free(cac);
+  /* H11 */
+  dvbbuffer_caclients_changed();
 }
 
 static void
@@ -176,6 +181,8 @@ caclient_class_changed ( idnode_t *in )
 {
   caclient_t *cac = (caclient_t *)in;
   cac->cac_conf_changed(cac);
+  /* H11 */
+  dvbbuffer_caclients_changed();
 }
 
 static htsmsg_t *

@@ -26,6 +26,7 @@
 #include "streaming.h"
 #include "profile.h"
 #include "tcp.h"
+#include "descrambler/caclient.h"
 
 typedef struct dvbbuffer_hls_hold {
   char                mm_uuid[UUID_HEX_SIZE];
@@ -246,6 +247,79 @@ dvbbuffer_hls_release(void *user, void *handle)
 }
 
 /*
+ * OSCam instances of the HLS path: tvh's own enabled capmt clients in "OSCam
+ * net protocol" mode - the same instances (also several) as the normal
+ * descrambling. Collected via caclient_foreach() (caclients_mutex), callers
+ * hold global_lock (static collection buffer).
+ */
+#define DVBBUFFER_CAPMT_NET_PROTO 5   /* capmt.c CAPMT_OSCAM_NET_PROTO */
+
+static struct {
+  dvbbuf_oscam list[DVBBUF_OSCAM_MAX];
+  char host[DVBBUF_OSCAM_MAX][128];
+  char name[DVBBUF_OSCAM_MAX][64];
+  uint32_t count;
+} dvbbuffer_oscam;
+
+static void
+dvbbuffer_oscam_collect(caclient_t *cac)
+{
+  uint32_t mode, port, i = dvbbuffer_oscam.count;
+  const char *host;
+
+  if (!cac->cac_enabled || !idnode_is_instance(&cac->cac_id, &caclient_capmt_class))
+    return;
+  if (idnode_get_u32(&cac->cac_id, "mode", &mode) || mode != DVBBUFFER_CAPMT_NET_PROTO) {
+    tvhwarn(LS_DVBBUFFER, "HLS: CA client '%s' not used (only mode OSCam net protocol)",
+            cac->cac_name ?: "");
+    return;
+  }
+  host = idnode_get_str(&cac->cac_id, "camdfilename");
+  if (host == NULL || *host == '\0' ||
+      idnode_get_u32(&cac->cac_id, "port", &port) || port == 0 || port > 65535)
+    return;
+  if (i >= DVBBUF_OSCAM_MAX) {
+    tvhwarn(LS_DVBBUFFER, "HLS: CA client '%s' not used (more than %d OSCam)",
+            cac->cac_name ?: "", DVBBUF_OSCAM_MAX);
+    return;
+  }
+  strlcpy(dvbbuffer_oscam.host[i], host, sizeof(dvbbuffer_oscam.host[i]));
+  strlcpy(dvbbuffer_oscam.name[i], cac->cac_name ?: "", sizeof(dvbbuffer_oscam.name[i]));
+  dvbbuffer_oscam.list[i].host = dvbbuffer_oscam.host[i];
+  dvbbuffer_oscam.list[i].port = (uint16_t)port;
+  dvbbuffer_oscam.count = i + 1;
+}
+
+static void
+dvbbuffer_oscam_build(void)
+{
+  uint32_t i;
+
+  lock_assert(&global_lock);
+  dvbbuffer_oscam.count = 0;
+  caclient_foreach(dvbbuffer_oscam_collect);
+  for (i = 0; i < dvbbuffer_oscam.count; i++)
+    tvhinfo(LS_DVBBUFFER, "HLS: scrambled channels via OSCam '%s' %s:%u", dvbbuffer_oscam.name[i],
+            dvbbuffer_oscam.list[i].host, dvbbuffer_oscam.list[i].port);
+  if (dvbbuffer_oscam.count == 0)
+    tvhwarn(LS_DVBBUFFER, "HLS: no capmt client in OSCam net protocol mode - scrambled channels refused");
+}
+
+/*
+ * H11 - CA clients changed (global_lock): new HLS streams use the new list,
+ * running ones keep theirs
+ */
+void
+dvbbuffer_caclients_changed(void)
+{
+  if (dvbbuffer_http == NULL)
+    return;
+  dvbbuffer_oscam_build();
+  if (dvbbuf_http_set_oscam(dvbbuffer_http, dvbbuffer_oscam.list, dvbbuffer_oscam.count) != DVBBUF_OK)
+    tvherror(LS_DVBBUFFER, "HLS: OSCam list: %s", dvbbuf_last_error());
+}
+
+/*
  * Start the server (global_lock held, the callbacks run later on server threads)
  */
 void
@@ -288,19 +362,16 @@ dvbbuffer_hls_init(void)
   cfg.cb.resolve   = dvbbuffer_hls_resolve;
   cfg.cb.acquire   = dvbbuffer_hls_acquire;
   cfg.cb.release   = dvbbuffer_hls_release;
-  if (dvbbuffer_conf.hls_oscam_host && *dvbbuffer_conf.hls_oscam_host &&
-      dvbbuffer_conf.hls_oscam_port > 0 && dvbbuffer_conf.hls_oscam_port < 65536) {
-    cfg.oscam_host = dvbbuffer_conf.hls_oscam_host;
-    cfg.oscam_port = (uint16_t)dvbbuffer_conf.hls_oscam_port;
-  }
+  dvbbuffer_oscam_build();
+  cfg.oscam       = dvbbuffer_oscam.list;
+  cfg.oscam_count = dvbbuffer_oscam.count;
   if (dvbbuf_http_start(dvbbuffer_ctx, &cfg, &dvbbuffer_http) != DVBBUF_OK) {
     tvherror(LS_DVBBUFFER, "HLS server on port %s: %s", port, dvbbuf_last_error());
     dvbbuffer_http = NULL;
     return;
   }
-  tvhinfo(LS_DVBBUFFER, "HLS server on port %s: /hls/<channel uuid>/index.m3u8, scrambled channels %s%s%s",
-          port, cfg.oscam_host ? "via OSCam " : "refused", cfg.oscam_host ? cfg.oscam_host : "",
-          cfg.oscam_host ? "" : "");
+  tvhinfo(LS_DVBBUFFER, "HLS server on port %s: /hls/<channel uuid>/index.m3u8, scrambled channels %s (%u OSCam)",
+          port, cfg.oscam_count ? "via tvh's capmt OSCam" : "refused", cfg.oscam_count);
 }
 
 /*

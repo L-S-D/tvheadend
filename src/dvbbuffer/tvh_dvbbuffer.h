@@ -80,10 +80,16 @@ void dvbbuffer_service_unlink(struct service *t, struct th_subscription *s);
 /* H8 - mux property "prebuffer" changed, global_lock held */
 void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);
 
+/* H11 - a CA client was created, changed or deleted (caclient.c), global_lock
+ * held, caclients_mutex not: the HLS path uses the same OSCam instances as
+ * tvh's capmt clients */
+void dvbbuffer_caclients_changed(void);
+
 #else
 
 static inline void dvbbuffer_init(void) { }
 static inline void dvbbuffer_done(void) { }
+static inline void dvbbuffer_caclients_changed(void) { }
 
 #endif
 
