@@ -116,6 +116,12 @@ dvbbuffer_warm_weight(int lru)
   return lru ? dvbbuffer_conf.lru_weight : dvbbuffer_conf.warm_weight;
 }
 
+static inline const char *
+dvbbuffer_warm_title(int lru)
+{
+  return lru ? "dvbbuffer LRU" : "dvbbuffer";
+}
+
 static void
 dvbbuffer_warm_destroy(dvbbuffer_warm_t *dw)
 {
@@ -142,7 +148,7 @@ dvbbuffer_warm_subscribe(dvbbuffer_warm_t *dw)
 
   dw->dw_sub = subscription_create_from_mux(&dw->dw_prch, NULL,
                                             dvbbuffer_warm_weight(dw->dw_lru),
-                                            dw->dw_lru ? "dvbbuffer LRU" : "dvbbuffer",
+                                            dvbbuffer_warm_title(dw->dw_lru),
                                             SUBSCRIPTION_MINIMAL,
                                             NULL, NULL, NULL, NULL);
   if (dw->dw_sub == NULL) {
@@ -291,8 +297,13 @@ dvbbuffer_warm_set_lru(dvbbuffer_warm_t *dw, int lru)
   if (dw->dw_lru == lru)
     return;
   dw->dw_lru = lru;
-  if (dw->dw_sub)
+  if (dw->dw_sub) {
     subscription_change_weight(dw->dw_sub, dvbbuffer_warm_weight(lru));
+    /* the title follows (status page): the subscription itself stays, so
+     * the mux stays tuned; ths_title is read under global_lock only */
+    free(dw->dw_sub->ths_title);
+    dw->dw_sub->ths_title = strdup(dvbbuffer_warm_title(lru));
+  }
   tvhdebug(LS_DVBBUFFER, "%s: now kept warm as %s mux (weight %u)",
            dw->dw_mux->mm_nicename, lru ? "recently used" : "prebuffer",
            dvbbuffer_warm_weight(lru));
