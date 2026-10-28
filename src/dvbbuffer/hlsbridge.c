@@ -64,9 +64,21 @@ static streaming_ops_t dvbbuffer_hls_input_ops = {
 };
 
 /*
- * The service of a channel: a mux with a ring buffer first, then a DVB mux
- * (every DVB channel can go this way, the mux is tuned on demand), IPTV
- * last (global_lock)
+ * Among services of the same service priority: a mux with a ring buffer
+ * first, then a DVB mux (every DVB channel can go this way, the mux is
+ * tuned on demand), IPTV last
+ */
+static int
+dvbbuffer_hls_rank(const mpegts_service_t *ms)
+{
+  if (ms->s_dvb_mux->mm_dvbbuffer)
+    return 2;
+  return dvbbuffer_mux_is_dvb(ms->s_dvb_mux) ? 1 : 0;
+}
+
+/*
+ * The service of a channel: the highest service priority, then
+ * dvbbuffer_hls_rank (global_lock)
  */
 static mpegts_service_t *
 dvbbuffer_hls_service(const char *channel)
@@ -85,9 +97,9 @@ dvbbuffer_hls_service(const char *channel)
     ms = (mpegts_service_t *)s;
     if (ms->s_dvb_mux == NULL)
       continue;
-    if (ms->s_dvb_mux->mm_dvbbuffer)
-      return ms;
-    if (best == NULL || (!dvbbuffer_mux_is_dvb(best->s_dvb_mux) && dvbbuffer_mux_is_dvb(ms->s_dvb_mux)))
+    if (best == NULL || s->s_prio > ((service_t *)best)->s_prio ||
+        (s->s_prio == ((service_t *)best)->s_prio &&
+         dvbbuffer_hls_rank(ms) > dvbbuffer_hls_rank(best)))
       best = ms;
   }
   return best;
