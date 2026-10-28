@@ -547,6 +547,19 @@ service_find_instance
       if (si == NULL || next->si_prio > si->si_prio)
         si = next;
 
+  /* An already tuned mux is only cheaper, not preferred: an idle instance
+     of a service with a higher service priority wins (e.g. an IPTV HD
+     service over a SD service on a mux the dvbbuffer keeps tuned) */
+  if (si) {
+    TAILQ_FOREACH_REVERSE(next, sil, service_instance_list, si_link)
+      if (next->si_weight == 0 && next->si_error == 0 &&
+          next->si_s->s_prio > si->si_s->s_prio) {
+        tvhtrace(LS_SERVICE, "idle %p has a higher service priority than tuned %p", next, si);
+        si = next;
+        break;
+      }
+  }
+
   /* Idle */
   if (!si) {
     TAILQ_FOREACH_REVERSE(si, sil, service_instance_list, si_link)
