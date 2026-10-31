@@ -77,8 +77,16 @@ dvbbuffer_hls_rank(const mpegts_service_t *ms)
 }
 
 /*
- * The service of a channel: the highest service priority, then
- * dvbbuffer_hls_rank (global_lock)
+ * The service of a channel: a running one first, then the highest service
+ * priority, then dvbbuffer_hls_rank (global_lock)
+ *
+ * A running service is what a TS client of the channel plays right now
+ * (service_find_instance() takes a running instance first, too). Without
+ * it, tracks.json and /ttx/ for a TS client looked for the wrong mux: ORF1
+ * HD ranks a Liwest DVB-C service (priority 9) above satellite (5), but with
+ * every tuner busy the subscription plays the satellite service on its
+ * buffered mux - the cable mux has no ring buffer, "channel not buffered
+ * here". With nothing running the choice is the same as before.
  */
 static mpegts_service_t *
 dvbbuffer_hls_service(const char *channel)
@@ -87,6 +95,7 @@ dvbbuffer_hls_service(const char *channel)
   idnode_list_mapping_t *ilm;
   mpegts_service_t *ms, *best = NULL;
   service_t *s;
+  int run, best_run = 0;
 
   if (ch == NULL || !ch->ch_enabled)
     return NULL;
@@ -97,10 +106,17 @@ dvbbuffer_hls_service(const char *channel)
     ms = (mpegts_service_t *)s;
     if (ms->s_dvb_mux == NULL)
       continue;
-    if (best == NULL || s->s_prio > ((service_t *)best)->s_prio ||
-        (s->s_prio == ((service_t *)best)->s_prio &&
-         dvbbuffer_hls_rank(ms) > dvbbuffer_hls_rank(best)))
+    run = s->s_status == SERVICE_RUNNING;
+    tvhtrace(LS_DVBBUFFER, "HLS: channel %s candidate %s prio %d rank %d running %d",
+             channel_get_name(ch, ""), s->s_nicename, s->s_prio, dvbbuffer_hls_rank(ms), run);
+    if (best == NULL || run > best_run ||
+        (run == best_run &&
+         (s->s_prio > ((service_t *)best)->s_prio ||
+          (s->s_prio == ((service_t *)best)->s_prio &&
+           dvbbuffer_hls_rank(ms) > dvbbuffer_hls_rank(best))))) {
       best = ms;
+      best_run = run;
+    }
   }
   return best;
 }
