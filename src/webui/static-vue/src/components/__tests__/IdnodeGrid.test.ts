@@ -14,12 +14,15 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { defineComponent, h, markRaw, ref } from 'vue'
 import PrimeVue from 'primevue/config'
 import IdnodeGrid from '../IdnodeGrid.vue'
+import DataGrid from '../DataGrid.vue'
 import type { ColumnDef } from '@/types/column'
 import type { BaseRow } from '@/types/grid'
 import type { UiLevel } from '@/types/access'
 import { GRID_LIMIT_ALL } from '@/api/gridConstants'
+import { fmtPassword } from '@/utils/formatPassword'
 
 /* Mock the shared phone-breakpoint singleton with a test-driven
  * ref — happy-dom's matchMedia wiring can't be flipped reliably
@@ -138,8 +141,9 @@ vi.mock('@/api/client', () => ({
 }))
 
 const idnodeClassStub = {
-  /* By default, no metadata loaded — equivalent to "all columns basic". */
-  meta: null as null | {
+  /* By default, no metadata loaded — equivalent to "all columns basic".
+   * `undefined` is the store's "fetch still pending". */
+  meta: null as undefined | null | {
     props: {
       id: string
       caption?: string
@@ -1123,9 +1127,9 @@ describe('IdnodeGrid', () => {
     expect(vm.selection).toHaveLength(1)
     const summary = wrapper.find('.idnode-grid__list-header-summary')
     expect(summary.exists()).toBe(true)
-    /* "All 1 selected" because the only row is selected → all
+    /* "All selected: 1" because the only row is selected → all
      * visible selected. */
-    expect(summary.text()).toContain('All 1')
+    expect(summary.text()).toContain('All selected: 1')
 
     vm.clearSelection()
     await wrapper.vm.$nextTick()
@@ -1163,7 +1167,7 @@ describe('IdnodeGrid', () => {
     const wrapper = mountGrid()
     const summary = wrapper.find('.idnode-grid__list-header-summary')
     expect(summary.exists()).toBe(true)
-    expect(summary.text()).toContain('2 entries')
+    expect(summary.text()).toContain('Entries: 2')
   })
 
   it('phone list-header strip tristate select-all toggles all visible rows', async () => {
@@ -1186,7 +1190,7 @@ describe('IdnodeGrid', () => {
     const vm = wrapper.vm as unknown as ExposedVm
     expect(vm.selection).toHaveLength(2)
     expect(wrapper.find('.idnode-grid__list-header-summary').text()).toContain(
-      'All 2 entries selected'
+      'All selected: 2'
     )
 
     // Toggle off — clears selection.
@@ -1402,7 +1406,7 @@ describe('IdnodeGrid', () => {
     /* Open the GridSettingsMenu popover. */
     await wrapper.find('.settings-popover__btn').trigger('click')
     /* No level radios when locked; columns checkboxes still rendered. */
-    expect(wrapper.findAll('[role="menuitemradio"]')).toHaveLength(0)
+    expect(wrapper.findAll('[role="radio"]')).toHaveLength(0)
     expect(
       wrapper.findAll<HTMLInputElement>('input[type="checkbox"]').length
     ).toBeGreaterThan(0)
@@ -1468,6 +1472,300 @@ describe('IdnodeGrid', () => {
     const cardHtml = wrapper.find('.idnode-grid__card').html()
     /* No caption for `title` in metadata → falls back to col.label. */
     expect(cardHtml).toContain('Title')
+  })
+
+  /*
+   * PO_PASSWORD props (e.g. passwd_entry's `password`) arrive in
+   * the grid response with the stored value. Two layers keep it
+   * out of the DOM:
+   *   - a view that knows the column holds a password sets
+   *     `format: fmtPassword` itself (ConfigUsersPasswordsView),
+   *     so it is masked from the first render, and
+   *   - decoratedColumns masks every prop the class metadata flags
+   *     `password`, ahead of any caller `format` / `cellComponent`.
+   * Rows are never held back for the metadata.
+   */
+  describe('password masking', () => {
+    const pwRows = (): MockRow[] => [
+      { uuid: 'a', title: 'Alpha', size: 1, password: 'hunter2', secret: 's3cret' },
+      { uuid: 'b', title: 'Beta', size: 2, password: '', secret: 's3cret' },
+    ]
+    /* The Passwords view's shape: `password` masked statically. */
+    const staticCols = (extra: ColumnDef[] = []): ColumnDef[] => [
+      { field: 'title', label: 'Title', minVisible: 'phone' },
+      { field: 'password', label: 'Password', format: fmtPassword },
+      ...extra,
+    ]
+    /* Renders its raw value, so a leak through cellComponent shows.
+     * markRaw, as a column's cellComponent is never made reactive. */
+    const RawCell = markRaw(
+      defineComponent({
+        props: { value: { type: null, default: undefined } },
+        setup(props) {
+          return () => h('span', { class: 'raw-cell' }, `raw:${String(props.value)}`)
+        },
+      })
+    )
+    type Wrapper = ReturnType<typeof mountGrid>
+    const cells = (wrapper: Wrapper, field: string) =>
+      wrapper.findAll(`tbody tr td[data-field="${field}"]`).map((td) => td.text())
+    const expectNoLeak = (wrapper: Wrapper) => {
+      expect(wrapper.html()).not.toContain('hunter2')
+      expect(wrapper.html()).not.toContain('s3cret')
+    }
+    const flush = async (wrapper: Wrapper) => {
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+    }
+
+    /* Hand-driven class-metadata fetch: `get` reads a ref so the
+     * grid's computeds see the metadata land, like the real store's
+     * reactive cache, and `ensure` stays pending until the test
+     * settles it. The afterEach below restores the stub defaults. */
+    function pendingMetadata() {
+      const meta = ref<typeof idnodeClassStub.meta>(undefined)
+      const settle = {
+        resolve: (() => {}) as (m: typeof idnodeClassStub.meta) => void,
+        reject: (() => {}) as (e: unknown) => void,
+      }
+      idnodeClassStub.get.mockImplementation(() => meta.value)
+      idnodeClassStub.ensure.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            settle.resolve = resolve
+            settle.reject = reject
+          })
+      )
+      return { meta, settle }
+    }
+
+    afterEach(() => {
+      idnodeClassStub.get.mockReset()
+      idnodeClassStub.ensure.mockReset()
+    })
+
+    it('masks password props in grid cells, blank when unset', () => {
+      idnodeClassStub.meta = {
+        props: [
+          { id: 'title', type: 'str' },
+          { id: 'password', type: 'str', password: true },
+          { id: 'secret', type: 'str', password: true },
+        ] as unknown as MetaProp[],
+      }
+      mockStore = makeStore({ entries: pwRows(), total: 2, isEmpty: false })
+      const wrapper = mountGrid({}, {
+        columns: [
+          { field: 'title', label: 'Title', minVisible: 'phone' },
+          { field: 'password', label: 'Password' },
+          /* A caller format must not unmask the value. */
+          { field: 'secret', label: 'Secret', format: (v) => String(v) },
+        ],
+      })
+      expect(cells(wrapper, 'password')).toEqual(['********', ''])
+      expect(cells(wrapper, 'secret')).toEqual(['********', '********'])
+      expectNoLeak(wrapper)
+    })
+
+    it('masks password props on phone cards', () => {
+      setViewport(400)
+      idnodeClassStub.meta = {
+        props: [
+          { id: 'title', type: 'str' },
+          { id: 'password', type: 'str', password: true },
+          { id: 'secret', type: 'str', password: true },
+        ] as unknown as MetaProp[],
+      }
+      mockStore = makeStore({ entries: pwRows().slice(0, 1), total: 1, isEmpty: false })
+      const wrapper = mountGrid({}, {
+        columns: [
+          { field: 'title', label: 'Title', minVisible: 'phone' },
+          { field: 'password', label: 'Password', minVisible: 'phone' },
+          { field: 'secret', label: 'Secret', minVisible: 'phone', cellComponent: RawCell },
+        ],
+      })
+      const cardHtml = wrapper.find('.idnode-grid__card').html()
+      expect(cardHtml).toContain('********')
+      expect(wrapper.find('.raw-cell').exists()).toBe(false)
+      expectNoLeak(wrapper)
+    })
+
+    it('shows rows while the metadata is pending, the static mask holds', async () => {
+      pendingMetadata()
+      mockStore = makeStore({ entries: pwRows(), total: 2, isEmpty: false })
+      const wrapper = mountGrid({}, { columns: staticCols() })
+      await flush(wrapper)
+      /* Entries and total reach DataGrid unchanged. `loading`
+       * still follows the pending fetch, as on upstream. */
+      const grid = wrapper.findComponent(DataGrid)
+      expect(grid.props('entries')).toHaveLength(2)
+      expect(grid.props('total')).toBe(2)
+      expect(grid.props('loading')).toBe(true)
+      expect(cells(wrapper, 'title')).toEqual(['Alpha', 'Beta'])
+      expect(cells(wrapper, 'password')).toEqual(['********', ''])
+      expectNoLeak(wrapper)
+    })
+
+    it('masks a password flag that appears when the metadata lands', async () => {
+      const { meta, settle } = pendingMetadata()
+      mockStore = makeStore({ entries: pwRows(), total: 2, isEmpty: false })
+      const wrapper = mountGrid({}, {
+        columns: staticCols([{ field: 'secret', label: 'Secret' }]),
+      })
+      await flush(wrapper)
+      /* No view has such a column today: one that is not masked
+       * statically shows its value until the metadata flags it. */
+      expect(cells(wrapper, 'secret')).toEqual(['s3cret', 's3cret'])
+      expect(cells(wrapper, 'password')).toEqual(['********', ''])
+
+      meta.value = {
+        props: [
+          { id: 'title', type: 'str' },
+          { id: 'password', type: 'str', password: true },
+          { id: 'secret', type: 'str', password: true },
+        ] as unknown as MetaProp[],
+      }
+      settle.resolve(meta.value)
+      await flush(wrapper)
+      expect(wrapper.findComponent(DataGrid).props('loading')).toBe(false)
+      expect(cells(wrapper, 'secret')).toEqual(['********', '********'])
+      expect(cells(wrapper, 'password')).toEqual(['********', ''])
+      expectNoLeak(wrapper)
+
+      /* Flag gone again: the static mask does not depend on it. */
+      meta.value = { props: [{ id: 'title' }, { id: 'password' }] as unknown as MetaProp[] }
+      await flush(wrapper)
+      expect(cells(wrapper, 'password')).toEqual(['********', ''])
+      expect(wrapper.html()).not.toContain('hunter2')
+    })
+
+    it('keeps rows and the static mask when the metadata fetch fails', async () => {
+      /* The store's contract: a failed fetch resolves (and caches)
+       * null, see stores/idnodeClass.ts. */
+      const { meta, settle } = pendingMetadata()
+      mockStore = makeStore({ entries: pwRows(), total: 2, isEmpty: false })
+      const wrapper = mountGrid({}, { columns: staticCols() })
+      meta.value = null
+      settle.resolve(null)
+      await flush(wrapper)
+      const grid = wrapper.findComponent(DataGrid)
+      expect(grid.props('entries')).toHaveLength(2)
+      expect(grid.props('total')).toBe(2)
+      expect(grid.props('loading')).toBe(false)
+      expect(cells(wrapper, 'title')).toEqual(['Alpha', 'Beta'])
+      expect(cells(wrapper, 'password')).toEqual(['********', ''])
+      expectNoLeak(wrapper)
+    })
+
+    it('keeps rows and the static mask when the metadata fetch rejects', async () => {
+      const { settle } = pendingMetadata()
+      mockStore = makeStore({ entries: pwRows(), total: 2, isEmpty: false })
+      const wrapper = mountGrid({}, { columns: staticCols() })
+      settle.reject(new Error('idnode/class failed'))
+      await flush(wrapper)
+      const grid = wrapper.findComponent(DataGrid)
+      expect(grid.props('entries')).toHaveLength(2)
+      expect(grid.props('total')).toBe(2)
+      expect(grid.props('loading')).toBe(false)
+      expect(cells(wrapper, 'title')).toEqual(['Alpha', 'Beta'])
+      expect(cells(wrapper, 'password')).toEqual(['********', ''])
+      expectNoLeak(wrapper)
+    })
+
+    it('masks despite missing or malformed password metadata', () => {
+      idnodeClassStub.meta = {
+        props: [
+          { id: 'title', type: 'str' },
+          /* Flag missing: only the view's static mask covers it. */
+          { id: 'password', type: 'str' },
+          /* Truthy but not a boolean still counts. */
+          { id: 'secret', type: 'str', password: 1 },
+          /* No id: does not break the grid. */
+          { type: 'str', password: true },
+        ] as unknown as MetaProp[],
+      }
+      mockStore = makeStore({ entries: pwRows(), total: 2, isEmpty: false })
+      const wrapper = mountGrid({}, {
+        columns: staticCols([{ field: 'secret', label: 'Secret' }]),
+      })
+      expect(cells(wrapper, 'title')).toEqual(['Alpha', 'Beta'])
+      expect(cells(wrapper, 'password')).toEqual(['********', ''])
+      expect(cells(wrapper, 'secret')).toEqual(['********', '********'])
+      expectNoLeak(wrapper)
+    })
+
+    /* isInlineEditable only rejects flagged `str` props. A flagged
+     * prop of another type must not get an inline editor, which
+     * would show the stored value in edit mode. */
+    it('keeps a flagged non-str password prop out of inline editing', async () => {
+      idnodeClassStub.meta = {
+        props: [
+          { id: 'title', type: 'str' },
+          { id: 'code', type: 'int', password: true },
+        ] as unknown as MetaProp[],
+      }
+      const wrapper = await mountInEditMode({
+        columns: [
+          { field: 'title', label: 'Title', editable: true, minVisible: 'phone' },
+          { field: 'code', label: 'Code', editable: true, minVisible: 'phone' },
+        ],
+        entries: [{ uuid: 'a', title: 'Alpha', size: 1, code: 4711 }],
+        storeKey: 'edit-cell-password-int',
+      })
+      const td = (field: string) => wrapper.find(`tbody tr td[data-field="${field}"]`)
+      expect(td('title').attributes('data-editable')).toBe('')
+      expect(td('code').attributes('data-editable')).toBeUndefined()
+      expect(td('code').text()).toBe('********')
+      await td('code').trigger('click')
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('td[data-field="code"] input').exists()).toBe(false)
+      expect(wrapper.html()).not.toContain('4711')
+    })
+
+    it('masks a password column that has a cellComponent', () => {
+      idnodeClassStub.meta = {
+        props: [
+          { id: 'title', type: 'str' },
+          { id: 'secret', type: 'str', password: true },
+        ] as unknown as MetaProp[],
+      }
+      mockStore = makeStore({ entries: pwRows(), total: 2, isEmpty: false })
+      const wrapper = mountGrid({}, {
+        columns: [
+          /* Control: the same component renders on a plain column. */
+          { field: 'title', label: 'Title', minVisible: 'phone', cellComponent: RawCell },
+          { field: 'secret', label: 'Secret', cellComponent: RawCell },
+        ],
+      })
+      expect(cells(wrapper, 'title')).toEqual(['raw:Alpha', 'raw:Beta'])
+      expect(cells(wrapper, 'secret')).toEqual(['********', '********'])
+      expect(wrapper.findAll('td[data-field="secret"] .raw-cell')).toHaveLength(0)
+      expectNoLeak(wrapper)
+    })
+
+    it('masks a password column that has format and cellComponent', () => {
+      idnodeClassStub.meta = {
+        props: [
+          { id: 'title', type: 'str' },
+          { id: 'secret', type: 'str', password: true },
+        ] as unknown as MetaProp[],
+      }
+      mockStore = makeStore({ entries: pwRows(), total: 2, isEmpty: false })
+      const wrapper = mountGrid({}, {
+        columns: [
+          { field: 'title', label: 'Title', minVisible: 'phone' },
+          {
+            field: 'secret',
+            label: 'Secret',
+            format: (v) => `fmt:${String(v)}`,
+            cellComponent: RawCell,
+          },
+        ],
+      })
+      expect(cells(wrapper, 'secret')).toEqual(['********', '********'])
+      expect(wrapper.find('.raw-cell').exists()).toBe(false)
+      expect(wrapper.html()).not.toContain('fmt:')
+      expectNoLeak(wrapper)
+    })
   })
 
   /*
@@ -1711,6 +2009,42 @@ describe('IdnodeGrid', () => {
 
       expect(saveStub).toHaveBeenCalledTimes(1)
       expect(exposed.isInEditMode).toBe(false)
+    })
+
+    it('a failed Save stays in edit mode with the pending edit on screen', async () => {
+      setupBoolStrMeta()
+      const wrapper = await mountInEditMode({
+        columns: [
+          { field: 'title', label: 'Title', editable: true, minVisible: 'phone' },
+        ],
+        entries: [{ uuid: 'a', title: 'Alpha', size: 1 }],
+        storeKey: 'edit-key-save-fail',
+      })
+      const exposed = wrapper.vm as unknown as {
+        inlineEdit: { commitCell: (u: string, f: string, v: unknown) => void }
+        isInEditMode: boolean
+      }
+      exposed.inlineEdit.commitCell('a', 'title', 'Alpha-edited')
+      await wrapper.vm.$nextTick()
+
+      const saveBtn = wrapper.findAll('.idnode-grid__edit-btn')[0]
+      expect(saveBtn.text()).toBe('Save')
+      /* The real save() POSTs, shows the error dialog and
+       * re-throws. Silence the grid's console log of it. */
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      apiMock.mockRejectedValueOnce(new Error('server bad'))
+      await saveBtn.trigger('click')
+      /* Let the promise chain settle. */
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      logged.mockRestore()
+
+      /* Still editing, and the cell shows the edit with its
+       * dirty marker rather than the server value. */
+      expect(exposed.isInEditMode).toBe(true)
+      const span = wrapper.find('.idnode-grid__cell-str')
+      expect(span.classes()).toContain('idnode-grid__cell--dirty')
+      expect(span.text()).toBe('Alpha-edited')
     })
 
     it('toggling out of edit mode preserves dirty state (no destructive UI)', async () => {
@@ -2040,6 +2374,31 @@ describe('IdnodeGrid', () => {
       expect(span.text()).toBe('Important')
     })
 
+    it('drops a failed enum prefetch when entering edit mode', async () => {
+      idnodeClassStub.meta = {
+        props: [
+          {
+            id: 'channel',
+            type: 'str',
+            enum: { type: 'api', uri: 'channel/list', event: 'channel' },
+          } as unknown as MetaProp,
+        ],
+      }
+      /* The server is unreachable when the user presses Edit. The
+       * editor fetches the list again when it opens, so the grid
+       * drops the error rather than leaving it unhandled. */
+      apiMock.mockRejectedValueOnce(new Error('offline'))
+      await mountInEditMode({
+        columns: [
+          { field: 'channel', label: 'Channel', editable: true, minVisible: 'phone' },
+        ],
+        entries: [{ uuid: 'a', title: 'Alpha', size: 1, channel: 'ch-1' }],
+        storeKey: 'edit-cell-enum-prefetch-fails',
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      expect(apiMock).toHaveBeenLastCalledWith('channel/list', {})
+    })
+
     it('editable td gets data-editable attr in edit mode; read-only td does not', async () => {
       idnodeClassStub.meta = {
         props: [
@@ -2227,6 +2586,213 @@ describe('IdnodeGrid', () => {
       /* Multi-select needs richer UI than a single <select>;
        * cell stays read-only — no editable cell slot fires. */
       expect(wrapper.find('.idnode-grid__cell-str').exists()).toBe(false)
+    })
+  })
+
+  describe('editMode: cell — keys that close a cell editor', () => {
+    /* Click the cell so PrimeVue mounts its editor, then type
+     * into it. The editor commits every keystroke to the dirty
+     * store. Returns the editor's input for the closing key. */
+    async function typeInCell(wrapper: ReturnType<typeof mount>, field: string, value: string) {
+      await wrapper.find(`tbody td[data-field="${field}"]`).trigger('click')
+      const input = wrapper.find(`tbody td[data-field="${field}"] :is(input, textarea)`)
+      await input.setValue(value)
+      return input
+    }
+
+    /* Chrome blurs a focused input while it is removed, and
+     * happy-dom does not. Blur the editor as its cell drops it. */
+    function blurOnRemoval(input: ReturnType<ReturnType<typeof mount>['find']>) {
+      const td = input.element.parentNode as Node
+      const removeChild = td.removeChild.bind(td)
+      return vi.spyOn(td, 'removeChild').mockImplementation((child) => {
+        if (child === input.element) child.dispatchEvent(new FocusEvent('blur'))
+        return removeChild(child)
+      })
+    }
+
+    /* A grid with one channel number column (`intsplit`). */
+    function mountNumberGrid(number: number | string, storeKey: string) {
+      idnodeClassStub.meta = {
+        props: [{ id: 'number', type: 's64', intsplit: true } as unknown as MetaProp],
+      }
+      return mountInEditMode({
+        columns: [{ field: 'number', label: 'Number', editable: true, minVisible: 'phone' }],
+        entries: [{ uuid: 'a', title: 'Alpha', size: 1, number }],
+        storeKey,
+      })
+    }
+
+    it('Escape drops the value typed into a clean cell and stops there, Enter keeps it', async () => {
+      setupBoolStrMeta()
+      const wrapper = await mountInEditMode({
+        columns: [
+          { field: 'title', label: 'Title', editable: true, minVisible: 'phone' },
+        ],
+        entries: [{ uuid: 'a', title: 'Alpha', size: 1 }],
+        storeKey: 'edit-cell-escape-clean',
+      })
+      const exposed = wrapper.vm as unknown as {
+        inlineEdit: { isCellDirty: (u: string, f: string) => boolean }
+      }
+      /* Keys that bubble out of the grid, as a drawer around it
+       * would see them. */
+      const bubbled: string[] = []
+      wrapper.element.addEventListener('keydown', (e: Event) => {
+        bubbled.push((e as KeyboardEvent).key)
+      })
+
+      let input = await typeInCell(wrapper, 'title', 'Alpha typed')
+      expect(exposed.inlineEdit.isCellDirty('a', 'title')).toBe(true)
+      await input.trigger('keydown', { key: 'Escape', code: 'Escape' })
+      expect(exposed.inlineEdit.isCellDirty('a', 'title')).toBe(false)
+      let span = wrapper.find('.idnode-grid__cell-str')
+      expect(span.classes()).not.toContain('idnode-grid__cell--dirty')
+      expect(span.text()).toBe('Alpha')
+
+      input = await typeInCell(wrapper, 'title', 'Alpha typed')
+      await input.trigger('keydown', { key: 'Enter', code: 'Enter' })
+      span = wrapper.find('.idnode-grid__cell-str')
+      expect(span.classes()).toContain('idnode-grid__cell--dirty')
+      expect(span.text()).toBe('Alpha typed')
+      /* Escape ended at the cell, so it cannot close a drawer as
+       * well. Enter went on as before. */
+      expect(bubbled).toEqual(['Enter'])
+    })
+
+    it('Escape puts back the value and the error the cell had before', async () => {
+      idnodeClassStub.meta = {
+        props: [
+          {
+            id: 'priority',
+            type: 'int',
+            intmin: 0,
+            intmax: 100,
+          } as unknown as MetaProp,
+        ],
+      }
+      const wrapper = await mountInEditMode({
+        columns: [{ field: 'priority', label: 'Priority', editable: true, minVisible: 'phone' }],
+        entries: [{ uuid: 'a', title: 'Alpha', size: 1, priority: 50 }],
+        storeKey: 'edit-cell-escape-dirty',
+      })
+      const exposed = wrapper.vm as unknown as {
+        inlineEdit: { cellValue: (u: string, f: string, fb: unknown) => unknown }
+        cellErrors: Map<string, string>
+        hasValidationErrors: boolean
+      }
+      /* A clean cell: the typed value goes, and its error too. */
+      let input = await typeInCell(wrapper, 'priority', '200')
+      expect(exposed.cellErrors.has('a|priority')).toBe(true)
+      await input.trigger('keydown', { key: 'Escape', code: 'Escape' })
+      expect(exposed.inlineEdit.cellValue('a', 'priority', 50)).toBe(50)
+      expect(exposed.cellErrors.has('a|priority')).toBe(false)
+      expect(exposed.hasValidationErrors).toBe(false)
+
+      /* An earlier edit left 200, above the maximum. */
+      input = await typeInCell(wrapper, 'priority', '200')
+      await input.trigger('keydown', { key: 'Enter', code: 'Enter' })
+      const error = exposed.cellErrors.get('a|priority')
+      expect(error).toBeDefined()
+
+      input = await typeInCell(wrapper, 'priority', '75')
+      expect(exposed.inlineEdit.cellValue('a', 'priority', 50)).toBe(75)
+      expect(exposed.cellErrors.has('a|priority')).toBe(false)
+      await input.trigger('keydown', { key: 'Escape', code: 'Escape' })
+
+      expect(exposed.inlineEdit.cellValue('a', 'priority', 50)).toBe(200)
+      expect(exposed.cellErrors.get('a|priority')).toBe(error)
+      const span = wrapper.find('.idnode-grid__cell-str')
+      expect(span.classes()).toContain('idnode-grid__cell--dirty')
+      expect(span.classes()).toContain('idnode-grid__cell--invalid')
+      expect(span.text()).toBe('200')
+    })
+
+    it('Escape undoes a cell that opened before the previous one closed', async () => {
+      idnodeClassStub.meta = {
+        props: [
+          { id: 'title', type: 'str' } as unknown as MetaProp,
+          { id: 'comment', type: 'str' } as unknown as MetaProp,
+        ],
+      }
+      const wrapper = await mountInEditMode({
+        columns: [
+          { field: 'title', label: 'Title', editable: true, minVisible: 'phone' },
+          { field: 'comment', label: 'Comment', editable: true, minVisible: 'phone' },
+        ],
+        entries: [{ uuid: 'a', title: 'Alpha', size: 1, comment: 'c0' }],
+        storeKey: 'edit-cell-escape-late-close',
+      })
+      const exposed = wrapper.vm as unknown as {
+        inlineEdit: { isCellDirty: (u: string, f: string) => boolean }
+      }
+      await typeInCell(wrapper, 'title', 'Alpha typed')
+      /* PrimeVue closes the title cell 1 ms after a mousedown
+       * outside it. The click into the comment cell comes first. */
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      const input = await typeInCell(wrapper, 'comment', 'c1')
+      await new Promise((r) => setTimeout(r, 5))
+      expect(wrapper.find('tbody td[data-field="title"] input').exists()).toBe(false)
+
+      await input.trigger('keydown', { key: 'Escape', code: 'Escape' })
+      expect(exposed.inlineEdit.isCellDirty('a', 'comment')).toBe(false)
+      expect(exposed.inlineEdit.isCellDirty('a', 'title')).toBe(true)
+    })
+
+    it('Escape keeps an earlier edit pending when the server now has the same value', async () => {
+      const wrapper = await mountNumberGrid(5, 'edit-cell-escape-server-caught-up')
+      const exposed = wrapper.vm as unknown as {
+        inlineEdit: {
+          commitCell: (u: string, f: string, v: unknown) => void
+          isCellDirty: (u: string, f: string) => boolean
+        }
+      }
+      exposed.inlineEdit.commitCell('a', 'number', '7')
+      /* Another client sets the same number meanwhile. */
+      mockStore.entries[0].number = 7
+      const input = await typeInCell(wrapper, 'number', '12')
+      await input.trigger('keydown', { key: 'Escape', code: 'Escape' })
+
+      expect(exposed.inlineEdit.isCellDirty('a', 'number')).toBe(true)
+    })
+
+    it('Escape also undoes a channel number typed with a trailing dot', async () => {
+      const wrapper = await mountNumberGrid(5, 'edit-cell-escape-intsplit')
+      const exposed = wrapper.vm as unknown as {
+        inlineEdit: { isCellDirty: (u: string, f: string) => boolean }
+      }
+      /* "12." on the way to "12.5". The editor has committed "12",
+       * keeps the dot to itself and trims it when it loses focus,
+       * which in Chrome happens while Escape removes it. */
+      const input = await typeInCell(wrapper, 'number', '12')
+      await input.setValue('12.')
+      const removal = blurOnRemoval(input)
+      await input.trigger('keydown', { key: 'Escape', code: 'Escape' })
+
+      expect(removal).toHaveBeenCalledWith(input.element)
+      expect(exposed.inlineEdit.isCellDirty('a', 'number')).toBe(false)
+      expect(wrapper.find('.idnode-grid__cell-str').text()).toBe('5')
+    })
+
+    it.each([
+      ['Enter', '5.', '5'],
+      ['Tab', '5.', '5'],
+      ['Enter', '12.', '12'],
+    ])('%s after "%s" keeps %s in a channel number cell', async (key, typed, kept) => {
+      const wrapper = await mountNumberGrid('5.1', `edit-cell-intsplit-${key}-${kept}`)
+      const exposed = wrapper.vm as unknown as {
+        inlineEdit: { cellValue: (u: string, f: string, fb: unknown) => unknown }
+      }
+      /* "5." is what Backspace leaves of 5.1. The editor trims the
+       * dot when the key closes it. */
+      const input = await typeInCell(wrapper, 'number', typed)
+      blurOnRemoval(input)
+      await input.trigger('keydown', { key, code: key })
+
+      expect(exposed.inlineEdit.cellValue('a', 'number', '5.1')).toBe(kept)
+      const span = wrapper.find('.idnode-grid__cell-str')
+      expect(span.classes()).toContain('idnode-grid__cell--dirty')
+      expect(span.text()).toBe(kept)
     })
   })
 
@@ -2546,12 +3112,14 @@ describe('IdnodeGrid', () => {
    * is no longer on screen.
    */
   describe('comet stale-data recovery', () => {
-    it('refetches the grid on the comet disconnected -> connected transition', () => {
+    it('refetches the grid once the comet connection is back', () => {
       const wrapper = mountGrid()
       /* Isolate the reconnect-driven refetch from any mount-time call. */
       mockStore.fetch.mockClear()
 
+      /* The order the comet client reports a lost and regained poll. */
       cometStateListener!('disconnected')
+      cometStateListener!('connecting')
       cometStateListener!('connected')
       expect(mockStore.fetch).toHaveBeenCalledTimes(1)
 
@@ -2564,6 +3132,7 @@ describe('IdnodeGrid', () => {
       mockStore.fetch.mockClear()
 
       cometStateListener?.('disconnected')
+      cometStateListener?.('connecting')
       cometStateListener?.('connected')
       expect(mockStore.fetch).not.toHaveBeenCalled()
       expect(cometStateUnsub).toBe(true)

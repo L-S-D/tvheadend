@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import PrimeVue from 'primevue/config'
 import ServiceStreamsDialog from '../ServiceStreamsDialog.vue'
 import { DIALOG_PASSTHROUGH_STUB } from './__helpers__/idnodeEditorTestUtils'
 
@@ -39,12 +40,36 @@ function makeDataTableStub() {
             :data-type="row.type"
             :data-detail="row.detail"
             :data-used="row.used"
+            :data-order="row.order"
           >{{ row.type }}</div>
         </div>
       </div>
     `,
     props: ['value', 'loading', 'dataKey', 'scrollable', 'scrollHeight', 'stripedRows', 'size'],
   }
+}
+
+/* `api/service/streams` HbbTV payload as `dvb_psi_hbbtv_cb`
+ * builds it (`src/input/mpegts/dvb_psi_hbbtv.c`): section number
+ * -> applications -> titles per language. */
+const HBBTV_FIXTURE = {
+  '0': [
+    {
+      title: [
+        { name: 'CT HbbTV', lang: 'ces' },
+        { name: 'CT HbbTV EN', lang: 'eng' },
+      ],
+      url: 'https://hbbtv.example.cz/index.html',
+      visibility: 'all',
+    },
+  ],
+  '1': [
+    {
+      title: [{ name: 'Teletext', lang: 'ces' }],
+      url: 'javascript:alert(1)',
+      visibility: 'all',
+    },
+  ],
 }
 
 beforeEach(() => {
@@ -135,6 +160,58 @@ describe('ServiceStreamsDialog', () => {
     expect(rows[2].attributes('data-used')).toBe('true')
     expect(rows[3].attributes('data-type')).toBe('AC3')
     expect(rows[3].attributes('data-used')).toBe('true')
+  })
+
+  it('numbers the used streams in their filtered order', async () => {
+    /* An esfilter can reorder: here the audio stream comes first
+     * after filtering, and the second audio stream is dropped. */
+    apiMock.mockResolvedValueOnce({
+      name: 'X',
+      streams: [
+        { pid: 256, type: 'PCR' },
+        { index: 1, pid: 512, type: 'H264' },
+        { index: 2, pid: 513, type: 'AC3', language: 'eng' },
+        { index: 3, pid: 514, type: 'MPEG2AUDIO', language: 'ger' },
+      ],
+      fstreams: [
+        { index: 2, pid: 513, type: 'AC3', language: 'eng' },
+        { index: 1, pid: 512, type: 'H264' },
+      ],
+    })
+    const wrapper = mountDialog()
+    await flushPromises()
+    const rows = wrapper.findAll('.dt-stub__row')
+    expect(rows.map((r) => r.attributes('data-order'))).toEqual([undefined, '2', '1', undefined])
+    expect(rows.map((r) => r.attributes('data-used'))).toEqual(['false', 'true', 'true', 'false'])
+  })
+
+  it('appends the CAIDs in use when esfilters dropped some', async () => {
+    const all = [
+      { caid: 0x0d00, provider: 0 },
+      { caid: 0x1802, provider: 0 },
+    ]
+    apiMock.mockResolvedValueOnce({
+      name: 'X',
+      streams: [{ index: 4, pid: 1000, type: 'CA', caids: all }],
+      fstreams: [{ index: 4, pid: 1000, type: 'CA', caids: [all[1]] }],
+    })
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('.dt-stub__row').attributes('data-detail')).toBe(
+      '0x0d00 / 0x0, 0x1802 / 0x0 · Used: 0x1802 / 0x0',
+    )
+  })
+
+  it('shows the CAIDs once when all of them are in use', async () => {
+    const all = [{ caid: 0x0d00, provider: 0 }]
+    apiMock.mockResolvedValueOnce({
+      name: 'X',
+      streams: [{ index: 4, pid: 1000, type: 'CA', caids: all }],
+      fstreams: [{ index: 4, pid: 1000, type: 'CA', caids: all }],
+    })
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('.dt-stub__row').attributes('data-detail')).toBe('0x0d00 / 0x0')
   })
 
   it('synthesises video Details as WxH + aspect ratio', async () => {
@@ -228,9 +305,7 @@ describe('ServiceStreamsDialog', () => {
       name: 'X',
       streams: [],
       fstreams: [],
-      hbbtv: {
-        s1: { language: 'eng', appName: 'BBC iPlayer', url: 'https://example.com/app' },
-      },
+      hbbtv: HBBTV_FIXTURE,
     })
     const wrapper = mountDialog()
     await flushPromises()
@@ -252,5 +327,84 @@ describe('ServiceStreamsDialog', () => {
     await wrapper.setProps({ uuid: 'b' })
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith('service/streams', { uuid: 'b' })
+  })
+})
+
+/* The real PrimeVue DataTable, so the cell text and the link markup
+ * are what the user sees. */
+describe('ServiceStreamsDialog rendered tables', () => {
+  function mountReal() {
+    return mount(ServiceStreamsDialog, {
+      props: { uuid: 'svc-abc', visible: true },
+      global: {
+        plugins: [[PrimeVue, {}]],
+        stubs: { Dialog: DIALOG_PASSTHROUGH_STUB },
+      },
+    })
+  }
+
+  function hbbtvCells(wrapper: ReturnType<typeof mountReal>): string[][] {
+    return wrapper
+      .findAll('.service-streams-dialog__hbbtv-table tbody tr')
+      .map((tr) => tr.findAll('td').map((td) => td.text()))
+  }
+
+  it('lists one row per section, application and title', async () => {
+    apiMock.mockResolvedValueOnce({ name: 'X', streams: [], fstreams: [], hbbtv: HBBTV_FIXTURE })
+    const wrapper = mountReal()
+    await flushPromises()
+    expect(hbbtvCells(wrapper)).toEqual([
+      ['0', 'ces', 'CT HbbTV', 'https://hbbtv.example.cz/index.html'],
+      ['0', 'eng', 'CT HbbTV EN', 'https://hbbtv.example.cz/index.html'],
+      ['1', 'ces', 'Teletext', 'javascript:alert(1)'],
+    ])
+  })
+
+  it('links http(s) URLs in a new tab and leaves other schemes as text', async () => {
+    apiMock.mockResolvedValueOnce({ name: 'X', streams: [], fstreams: [], hbbtv: HBBTV_FIXTURE })
+    const wrapper = mountReal()
+    await flushPromises()
+    const links = wrapper.findAll('.service-streams-dialog__hbbtv-table a')
+    expect(links).toHaveLength(2)
+    for (const a of links) {
+      expect(a.attributes('href')).toBe('https://hbbtv.example.cz/index.html')
+      expect(a.attributes('target')).toBe('_blank')
+      expect(a.attributes('rel')).toBe('noopener noreferrer')
+    }
+    expect(wrapper.find('a[href^="javascript"]').exists()).toBe(false)
+  })
+
+  it('skips applications without titles', async () => {
+    apiMock.mockResolvedValueOnce({
+      name: 'X',
+      streams: [],
+      fstreams: [],
+      hbbtv: { '0': [{ url: 'https://a.example/' }] },
+    })
+    const wrapper = mountReal()
+    await flushPromises()
+    expect(wrapper.find('.service-streams-dialog__hbbtv').exists()).toBe(false)
+  })
+
+  it('shows the filtered position in the Order column', async () => {
+    apiMock.mockResolvedValueOnce({
+      name: 'X',
+      streams: [
+        { index: 1, pid: 512, type: 'H264' },
+        { index: 2, pid: 513, type: 'AC3' },
+      ],
+      fstreams: [{ index: 2, pid: 513, type: 'AC3' }, { index: 1, pid: 512, type: 'H264' }],
+    })
+    const wrapper = mountReal()
+    await flushPromises()
+    const headers = wrapper.findAll('.service-streams-dialog__table thead th').map((th) => th.text())
+    expect(headers[headers.length - 1]).toBe('Order')
+    const lastCells = wrapper
+      .findAll('.service-streams-dialog__table tbody tr')
+      .map((tr) => {
+        const tds = tr.findAll('td')
+        return tds[tds.length - 1]?.text()
+      })
+    expect(lastCells).toEqual(['2', '1'])
   })
 })

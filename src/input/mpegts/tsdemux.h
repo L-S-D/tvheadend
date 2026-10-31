@@ -21,6 +21,8 @@
 
 int ts_resync ( const uint8_t *tsb, int *len, int *idx );
 
+void ts_remux_flush(struct mpegts_service *t);
+
 void ts_recv_packet0
   (struct mpegts_service *t, elementary_stream_t *st, const uint8_t *tsb, int len);
 
@@ -38,7 +40,5 @@ void ts_skip_packet2(struct mpegts_service *t, const uint8_t *tsb, int len);
 
 void ts_recv_raw
   (struct mpegts_service *t, uint64_t tspos, const uint8_t *tsb, int len);
-
-void ts_remux_flush(struct mpegts_service *t);
 
 #endif /* TSDEMUX_H */

@@ -41,7 +41,10 @@
  * call fails (network / lost mailbox), we don't flip and return
  * false so the caller can toast. Persists across LogView mounts
  * since the store outlives the component — matches the server
- * side, which is also per-mailbox not per-mount.
+ * side, which is also per-mailbox not per-mount. A new mailbox
+ * starts with debug off, so the flag resets whenever Comet moves to
+ * a new mailbox id, and a late answer for the old mailbox does not
+ * set it again.
  */
 
 import { defineStore } from 'pinia'
@@ -192,24 +195,25 @@ export const useLogStore = defineStore('log', () => {
 
   let nextId = 0
 
-  function pushLine(payload: LogPayload): void {
-    const raw = payload.logtxt ?? ''
-    if (!raw) return
-    const parsed = parseLine(raw)
-    const severity = parseSeverityFromBody(parsed.body)
-    const line: LogLine = {
-      id: nextId++,
-      ts: parsed.ts,
-      subsys: parsed.subsys,
-      body: parsed.body,
-      severity,
-      raw,
-    }
-    lines.value.push(line)
+  function appendLine(line: Omit<LogLine, 'id'>): void {
+    lines.value.push({ id: nextId++, ...line })
     if (lines.value.length > LOG_BUFFER_MAX) {
       lines.value.splice(0, lines.value.length - LOG_BUFFER_MAX)
       bufferFull.value = true
     }
+  }
+
+  function pushLine(payload: LogPayload): void {
+    const raw = payload.logtxt ?? ''
+    if (!raw) return
+    const parsed = parseLine(raw)
+    appendLine({
+      ts: parsed.ts,
+      subsys: parsed.subsys,
+      body: parsed.body,
+      severity: parseSeverityFromBody(parsed.body),
+      raw,
+    })
   }
 
   /* No matching unsubscribe — the store lives for the SPA's
@@ -219,6 +223,13 @@ export const useLogStore = defineStore('log', () => {
      * index signature, so it structurally satisfies LogPayload's
      * optional `logtxt`; no cast needed. */
     pushLine(msg)
+  })
+
+  /* A new mailbox (server restart, idle expiry, re-login) has debug
+   * off. Parsing the localized confirmation line instead would break
+   * in every non-English locale. */
+  cometClient.onBoxIdChange(() => {
+    debugEnabled.value = false
   })
 
   function clear(): void {
@@ -232,6 +243,7 @@ export const useLogStore = defineStore('log', () => {
   async function toggleDebug(): Promise<boolean> {
     const boxid = cometClient.getBoxId()
     if (!boxid) return false
+    const wanted = !debugEnabled.value
     try {
       const body = new URLSearchParams()
       body.append('boxid', boxid)
@@ -241,6 +253,11 @@ export const useLogStore = defineStore('log', () => {
         body,
         credentials: 'include',
       })
+      /* Whatever the answer says, it is about the old mailbox if
+       * Comet has moved to a new one meanwhile. The flag was reset to
+       * off then, which is where the new mailbox stands, so the toggle
+       * worked only if the user asked for off. */
+      if (cometClient.getBoxId() !== boxid) return debugEnabled.value === wanted
       if (!res.ok) return false
       /* Server is the source of truth (the flag flips on its side
        * regardless of what the client thinks). Mirror it locally
@@ -255,11 +272,24 @@ export const useLogStore = defineStore('log', () => {
     }
   }
 
+  /* A line from the UI itself, for what the server cannot log: the
+   * Comet connection dropping and coming back. Classic writes the
+   * same messages to its log panel (static/app/comet.js). No
+   * subsystem, so it never passes for a server line. */
+  function pushLocal(body: string, severity: Severity): void {
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+    const ts = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+    appendLine({ ts, subsys: '', body, severity, raw: `${date} ${ts} ${body}` })
+  }
+
   return {
     lines,
     bufferFull,
     debugEnabled,
     clear,
     toggleDebug,
+    pushLocal,
   }
 })

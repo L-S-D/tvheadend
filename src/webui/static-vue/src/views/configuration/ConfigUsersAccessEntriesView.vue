@@ -46,6 +46,7 @@ import type { ActionDef } from '@/types/action'
 import { useEditorMode } from '@/composables/useEditorMode'
 import { useBulkAction } from '@/composables/useBulkAction'
 import { useI18n } from '@/composables/useI18n'
+import { fmtPassword } from '@/utils/formatPassword'
 import { useIdnodeMove } from '@/composables/useIdnodeMove'
 import { buildAddEditDeleteActions } from '../dvr/dvrToolbarHelpers'
 
@@ -80,18 +81,21 @@ const LANGUAGE_ENUM = {
 const PROFILE_ENUM = {
   type: 'api' as const,
   uri: 'profile/list',
+  event: 'profile',
   params: { all: 1 },
 }
 
 const DVR_CONFIG_ENUM = {
   type: 'api' as const,
   uri: 'idnode/load',
+  event: 'dvrconfig',
   params: { enum: 1, class: 'dvrconfig' },
 }
 
 const CHANNEL_TAG_ENUM = {
   type: 'api' as const,
   uri: 'channeltag/list',
+  event: 'channeltag',
   params: { all: 1 },
 }
 
@@ -134,7 +138,11 @@ const cols: ColumnDef[] = [
     phoneRole: 'primary',
     editable: true,
   },
-  { field: 'password', sortable: false, width: 250, editable: true },
+  /* `access_entry_class` has no `password` prop (the grid response
+   * carries no such key), so this column is blank today. It keeps
+   * the ExtJS column set, masked like the Passwords grid in case
+   * the server ever returns a value here. */
+  { field: 'password', sortable: false, width: 250, format: fmtPassword },
   {
     field: 'prefix',
     sortable: true,
@@ -258,7 +266,7 @@ const cols: ColumnDef[] = [
  * useEditorMode's createList equals editList. */
 const ACCESS_LIST =
   'enabled,username,password,prefix,change,' +
-  'lang,webui,themeui,langui,uilevel,uilevel_nochange,admin,' +
+  'lang,webui,themeui,langui,default_tab,uilevel,uilevel_nochange,admin,' +
   'streaming,profile,conn_limit_type,conn_limit,' +
   'dvr,htsp_anonymize,dvr_config,' +
   'channel_min,channel_max,channel_tag_exclude,' +
@@ -378,7 +386,7 @@ function buildActions(selection: BaseRow[], clearSelection: () => void): ActionD
     :create-base="creatingBase"
     :level="editorLevel"
     :list="editorList"
-    :title="editingUuid ? t('Edit Access Entry') : t('Add Access Entry')"
+    :title="creatingBase ? t('Add Access Entry') : t('Edit Access Entry')"
     @close="closeEditor"
     @created="flipToEdit"
   />

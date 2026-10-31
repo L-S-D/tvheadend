@@ -1202,6 +1202,8 @@ pvr_generate_filename(dvr_entry_t *de, const streaming_start_t *ss)
     *(dirsep - 1) = '\0';
     if (*x) {
       s = cleanup_filename(cfg, x, dir_dosubs);
+      if (s == NULL)
+        return -1;
       tvh_strlcatf(filename, sizeof(filename), j, "%s/", s);
       free(s);
     }
@@ -1551,7 +1553,12 @@ dvr_thread_global_lock(dvr_entry_t *de, int *run)
     *run = 0;
     return 0;
   }
-  tvh_mutex_lock(&global_lock);
+  while (tvh_mutex_timedlock(&global_lock, 10000)) {
+    if (atomic_get(&de->de_thread_shutdown) > 1) {
+      *run = 0;
+      return 0;
+    }
+  }
   return 1;
 }
 

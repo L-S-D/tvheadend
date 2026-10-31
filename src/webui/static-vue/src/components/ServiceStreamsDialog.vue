@@ -24,7 +24,11 @@
  * into a single table with a Used indicator column: a stream is
  * Used (✓) when it survives `esfilter` and ends up in
  * `fstreams[]`; PCR / PMT and esfilter-suppressed rows render
- * with Used=blank. Same information, one fewer table to scan.
+ * with Used=blank. The Order column gives a used stream's
+ * position in `fstreams[]`, which esfilters can reorder, and a
+ * CA row lists the CAIDs left in use when esfilters dropped
+ * some (`src/esstream.c`). Same information, one fewer table to
+ * scan.
  *
  * Per-stream "Details" column synthesises a type-specific
  * summary (video → resolution + aspect, audio → mode + lang,
@@ -92,27 +96,37 @@ watch(
  * never match → Used=blank, correct. */
 interface MergedRow extends ServiceStream {
   used: boolean
+  /* 1-based position in `fstreams[]` (the order after esfilter
+   * reordering), undefined when the stream is not used. */
+  order?: number
   detail: string
 }
 
-const fstreamsKey = computed<Set<string>>(() => {
-  const out = new Set<string>()
-  for (const s of data.value?.fstreams ?? []) {
-    out.add(`${s.index ?? -1}:${s.pid}`)
-  }
+function streamKey(s: ServiceStream): string {
+  return `${s.index ?? -1}:${s.pid}`
+}
+
+const fstreamsByKey = computed<Map<string, { order: number; stream: ServiceStream }>>(() => {
+  const out = new Map<string, { order: number; stream: ServiceStream }>()
+  const fstreams = data.value?.fstreams ?? []
+  fstreams.forEach((s, i) => out.set(streamKey(s), { order: i + 1, stream: s }))
   return out
 })
 
 const rows = computed<MergedRow[]>(() => {
-  const fset = fstreamsKey.value
-  return (data.value?.streams ?? []).map((s, i) => ({
-    ...s,
-    used: fset.has(`${s.index ?? -1}:${s.pid}`),
-    detail: synthDetail(s),
-    /* Stable v-for key — index is missing on PCR/PMT, fall back
-     * to array position. */
-    _key: `${s.index ?? 's' + i}:${s.pid}`,
-  })) as MergedRow[]
+  const fmap = fstreamsByKey.value
+  return (data.value?.streams ?? []).map((s, i) => {
+    const f = fmap.get(streamKey(s))
+    return {
+      ...s,
+      used: f !== undefined,
+      order: f?.order,
+      detail: synthDetail(s, f?.stream),
+      /* Stable v-for key — index is missing on PCR/PMT, fall back
+       * to array position. */
+      _key: `${s.index ?? 's' + i}:${s.pid}`,
+    }
+  }) as MergedRow[]
 })
 
 /* ---- Cell formatters ---- */
@@ -142,7 +156,9 @@ const AUDIO_TYPE_LABELS: Record<number, string> = {
   3: 'Visual impaired commentary',
 }
 
-function synthDetail(s: ServiceStream): string {
+/* `used` is the matching `fstreams[]` entry, which for a CA stream
+ * carries only the CAIDs in use (see caidDetail). */
+function synthDetail(s: ServiceStream, used?: ServiceStream): string {
   if (typeof s.width === 'number' && typeof s.height === 'number' && s.width > 0) {
     const base = `${s.width}x${s.height}`
     if (
@@ -165,9 +181,22 @@ function synthDetail(s: ServiceStream): string {
     return `Comp: ${c} Anc: ${a}`
   }
   if (Array.isArray(s.caids) && s.caids.length > 0) {
-    return s.caids.map((c: ServiceCaid) => fmtCaid(c)).join(', ')
+    return caidDetail(s.caids, used?.caids)
   }
   return ''
+}
+
+/* The CAIDs of a CA stream. When esfilters dropped some, the ones
+ * still in use follow, like Classic's filtered table shows them. */
+function caidDetail(caids: ServiceCaid[], inUse?: ServiceCaid[]): string {
+  const all = fmtCaids(caids)
+  if (!Array.isArray(inUse)) return all
+  const used = fmtCaids(inUse)
+  return used === all ? all : `${all} · ${t('Used')}: ${used || t('None')}`
+}
+
+function fmtCaids(caids: ServiceCaid[]): string {
+  return caids.map((c) => fmtCaid(c)).join(', ')
 }
 
 function fmtCaid(c: ServiceCaid): string {
@@ -178,23 +207,45 @@ function fmtCaid(c: ServiceCaid): string {
 
 /* ---- HbbTV section ---- */
 
+/* One row per section, application and title (language), like
+ * Classic (`mpegts.js:226-250`). Applications without a title are
+ * skipped there too. */
 interface HbbTvRow {
+  key: string
   section: string
-  language?: string
-  appName?: string
-  url?: string
+  language: string
+  name: string
+  url: string
 }
 
 const hbbtvRows = computed<HbbTvRow[]>(() => {
   const hb = data.value?.hbbtv
-  if (!hb) return []
-  return Object.entries(hb).map(([section, payload]) => ({
-    section,
-    language: typeof payload?.language === 'string' ? payload.language : undefined,
-    appName: typeof payload?.appName === 'string' ? payload.appName : undefined,
-    url: typeof payload?.url === 'string' ? payload.url : undefined,
-  }))
+  if (!hb || typeof hb !== 'object') return []
+  const out: HbbTvRow[] = []
+  for (const [section, apps] of Object.entries(hb)) {
+    if (!Array.isArray(apps)) continue
+    apps.forEach((app, appIdx) => {
+      if (!Array.isArray(app?.title)) return
+      const url = typeof app.url === 'string' ? app.url : ''
+      app.title.forEach((title, titleIdx) => {
+        out.push({
+          key: `${section}:${appIdx}:${titleIdx}`,
+          section,
+          language: typeof title?.lang === 'string' ? title.lang : '',
+          name: typeof title?.name === 'string' ? title.name : '',
+          url,
+        })
+      })
+    })
+  }
+  return out
 })
+
+/* The URL comes from the broadcast, so only http(s) URLs become
+ * links. Anything else (e.g. a `javascript:` URL) stays text. */
+function isWebUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url)
+}
 </script>
 
 <template>
@@ -245,21 +296,42 @@ const hbbtvRows = computed<HbbTvRow[]>(() => {
           {{ fmtUsed((row as MergedRow).used) }}
         </template>
       </Column>
+      <Column style="width: 70px; text-align: center">
+        <template #header>
+          <span :title="t('After filtering and reordering (without PCR and PMT)')">
+            {{ t('Order') }}
+          </span>
+        </template>
+        <template #body="{ data: row }">
+          {{ (row as MergedRow).order ?? '' }}
+        </template>
+      </Column>
     </DataTable>
 
     <details v-if="hbbtvRows.length > 0" class="service-streams-dialog__hbbtv" open>
       <summary>{{ t('HbbTV') }}</summary>
       <DataTable
         :value="hbbtvRows"
-        data-key="section"
+        data-key="key"
         striped-rows
         size="small"
         class="service-streams-dialog__hbbtv-table"
       >
         <Column field="section" :header="t('Section')" style="width: 100px" />
         <Column field="language" :header="t('Language')" style="width: 80px" />
-        <Column field="appName" :header="t('App name')" style="width: 220px" />
-        <Column field="url" :header="t('URL')" />
+        <Column field="name" :header="t('Name')" style="width: 200px" />
+        <Column :header="t('Link')">
+          <template #body="{ data: row }">
+            <a
+              v-if="isWebUrl((row as HbbTvRow).url)"
+              :href="(row as HbbTvRow).url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="service-streams-dialog__hbbtv-link"
+            >{{ (row as HbbTvRow).url }}</a>
+            <span v-else>{{ (row as HbbTvRow).url }}</span>
+          </template>
+        </Column>
       </DataTable>
     </details>
   </Dialog>
@@ -300,5 +372,9 @@ const hbbtvRows = computed<HbbTvRow[]>(() => {
 .service-streams-dialog__hbbtv-table {
   width: 100%;
   margin-top: var(--tvh-space-2);
+}
+
+.service-streams-dialog__hbbtv-link {
+  overflow-wrap: anywhere;
 }
 </style>

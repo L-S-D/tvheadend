@@ -45,6 +45,7 @@ import { GRID_LIMIT_ALL } from '@/api/gridConstants'
 import { useIdnodeClassStore } from '@/stores/idnodeClass'
 import { createDebounce } from '@/utils/debounce'
 import { fmtDate } from '@/utils/formatTime'
+import { fmtPassword } from '@/utils/formatPassword'
 import { reorderRowsBySlot } from '@/utils/slotReorder'
 import GridSettingsMenu from './GridSettingsMenu.vue'
 import NumericFilterControls, {
@@ -1086,9 +1087,34 @@ const timeFields = computed<Set<string>>(() => {
 })
 
 /*
+ * Set of property ids flagged `password` (PO_PASSWORD). The grid
+ * endpoint still carries the stored value, so `decoratedColumns`
+ * masks these cells with `fmtPassword`. Only the drawer's
+ * IdnodeFieldString can reveal it, behind its show/hide toggle.
+ *
+ * Defense in depth: the set is empty until the class metadata
+ * arrives (and stays empty if the fetch fails), and rows are not
+ * held back for it. Until then only columns a view masks itself
+ * are masked, so a view that knows a column holds a password
+ * (Users -> Passwords) sets `format: fmtPassword` on it, and that
+ * column is masked from the first render.
+ */
+const passwordFields = computed<Set<string>>(() => {
+  const meta = idnodeClass.get(entityClass.value)
+  if (!meta) return new Set()
+  return new Set(meta.props.filter((p) => p.password).map((p) => p.id))
+})
+
+/*
  * Caller-supplied columns decorated with a generated `format`
- * function. Caller's own `format` always wins (e.g. `fmtSize` on
- * filesize, `fmtDuration` on a duration column). Otherwise:
+ * function. Password columns are masked first, overriding any
+ * caller `format` / `cellComponent` so a caller cannot unmask the
+ * stored value. They also drop `editable`: `isInlineEditable` only
+ * rejects flagged `str` props, and every PO_PASSWORD prop is a
+ * PT_STR today, so this guards a flagged prop of another type
+ * whose inline editor would show the value. Otherwise the caller's
+ * own `format` always wins (e.g. `fmtSize` on filesize,
+ * `fmtDuration` on a duration column), and:
  *   1. enum columns get a key→label mapper (server's localised
  *      label rather than the raw int).
  *   2. PT_TIME columns get `fmtDate` (epoch → locale string,
@@ -1103,6 +1129,9 @@ const decoratedColumns = computed<ColumnDef[]>(() =>
    * the user's persisted column-order rides through the format /
    * edit-gate decoration into the eventual DataGrid render. */
   orderedColumns.value.map((col) => {
+    if (passwordFields.value.has(col.field)) {
+      return { ...col, format: fmtPassword, cellComponent: undefined, editable: false }
+    }
     if (col.format || col.cellComponent) return col
     const labels = enumLabels.value[col.field]
     if (labels) {
@@ -1127,7 +1156,14 @@ onMounted(async () => {
     metadataReady.value = true
     return
   }
-  await idnodeClass.ensure(entityClass.value)
+  /* `ensure` resolves null on a failed fetch. Should it ever reject,
+   * treat it the same (no metadata, defaults apply) rather than
+   * leave the grid in its loading state for good. */
+  try {
+    await idnodeClass.ensure(entityClass.value)
+  } catch {
+    /* fall through */
+  }
   metadataReady.value = true
 })
 
@@ -1875,7 +1911,9 @@ function toggleEditMode() {
  * cells whose props lack a deferred descriptor (inline
  * arrays, no enum, multi-select) are skipped. The fetch
  * cache de-dupes across columns sharing a URI, so each
- * descriptor incurs at most one round-trip per session. */
+ * descriptor incurs at most one round-trip until its list
+ * changes. A failed prefetch is dropped, and the editor
+ * fetches the list again when it opens. */
 watch(isInEditMode, (entering) => {
   if (entering) {
     /* Comet auto-refresh stays live during edit mode. The
@@ -1894,7 +1932,7 @@ function prefetchEditableEnums(): void {
     if (!col.editable) continue
     const prop = propFor(col)
     if (prop && isDeferredEnum(prop.enum)) {
-      void fetchDeferredEnum(prop.enum)
+      fetchDeferredEnum(prop.enum).catch(() => {})
     }
     /* Also prefetch the column's enumSource (e.g.
      * CHANNEL_ENUM on autorec's `channel` field) — even
@@ -1906,7 +1944,7 @@ function prefetchEditableEnums(): void {
      * cache can't share (e.g. same URI, different
      * params). */
     if (col.enumSource && isDeferredEnum(col.enumSource)) {
-      void fetchDeferredEnum(col.enumSource)
+      fetchDeferredEnum(col.enumSource).catch(() => {})
     }
   }
 }
@@ -2222,6 +2260,7 @@ function commitCellWithValidation(
   if (!inlineEdit) return
   const uuid = row.uuid as string | undefined
   if (!uuid) return
+  if (escapedCell !== null && escapedCell.uuid === uuid && escapedCell.field === col.field) return
   const prop = propFor(col)
   const next = new Map(cellErrors.value)
   if (prop) {
@@ -2324,10 +2363,9 @@ async function onSaveEdits() {
       isInEditMode.value = false
     }
   } catch (err) {
-    /* Keep the dirty state — user can fix and retry. The
-     * error toast is the consumer view's responsibility once
-     * a higher-level error surface lands; for now the
-     * console-level log is enough to debug. */
+    /* save() has already shown the error dialog and kept the
+     * dirty store. Stay in edit mode with the pending edits on
+     * screen so the user can fix them and press Save again. */
     console.error('inline-edit save failed:', err)
   }
 }
@@ -2413,16 +2451,30 @@ function onRowReorder(event: {
  * and the sort recomputes — the row snaps to its final spot.
  * scrollToUuid then keeps the row in view at its new home so
  * the user sees where it landed. cell-edit-cancel (Escape)
- * also clears the flag without a snap because useInlineEdit's
- * commit hadn't actually fired by Escape (PrimeVue's editor
- * discards on cancel). */
+ * also clears the flag, and onCellEditCancel puts back the
+ * cell's click-in state, so the row stays where it was.
+ *
+ * `wasDirty`, `dirtyValue` and `error` complete that click-in
+ * snapshot for Escape: whether the cell was dirty, its dirty
+ * value and its validation error. */
 const activelyEditingRowField = ref<{
   uuid: string
   field: string
   pinnedValue: unknown
+  wasDirty: boolean
+  dirtyValue: unknown
+  error: string | undefined
 } | null>(null)
 
+/* The cell whose editor Escape closed, until a cell editor opens
+ * again. An editor can still emit while Vue removes it: Chrome
+ * blurs the focused input on removal, and the channel number
+ * editor commits a trimmed "12." on blur. That value would undo
+ * the Escape, so commitCellWithValidation drops it. */
+let escapedCell: { uuid: string; field: string } | null = null
+
 function onCellEditInit(event: { data: Row; field: string }): void {
+  escapedCell = null
   const uuid = (event.data as { uuid?: string }).uuid
   if (!uuid) return
   /* Snapshot the row's current effective sort value — dirty
@@ -2434,12 +2486,26 @@ function onCellEditInit(event: { data: Row; field: string }): void {
   const pinnedValue = fieldMap?.has(event.field)
     ? fieldMap.get(event.field)
     : (event.data as Record<string, unknown>)[event.field]
-  activelyEditingRowField.value = { uuid, field: event.field, pinnedValue }
+  activelyEditingRowField.value = {
+    uuid,
+    field: event.field,
+    pinnedValue,
+    wasDirty: fieldMap?.has(event.field) ?? false,
+    dirtyValue: fieldMap?.get(event.field),
+    error: cellErrors.value.get(errorKey(uuid, event.field)),
+  }
 }
 
 function onCellEditComplete(event: { data: Row; field: string }): void {
   const uuid = (event.data as { uuid?: string }).uuid
-  activelyEditingRowField.value = null
+  /* Clear the flag only when it belongs to this cell. PrimeVue
+   * completes a cell 1 ms after a mousedown outside it. A click
+   * that lands within that time opens the next cell first, and
+   * the next cell's click-in state must stay for Escape. */
+  const active = activelyEditingRowField.value
+  if (active !== null && active.uuid === uuid && active.field === event.field) {
+    activelyEditingRowField.value = null
+  }
   /* Re-evaluate smart-clear now that the user has actually
    * finished editing. Per-keystroke commits skipped this; the
    * final value might match the server (the user backspaced
@@ -2461,8 +2527,39 @@ function onCellEditComplete(event: { data: Row; field: string }): void {
   }
 }
 
-function onCellEditCancel(): void {
+/* Escape. PrimeVue only closes the editor here — its own
+ * discard works for editors bound to its row copy, but ours
+ * commit every keystroke straight into the dirty store. Put
+ * the cell back as it was at click-in: dirty or not, the same
+ * dirty value (kept dirty even if it matches the server value
+ * now) and the same validation error. Enum pickers (PrimeVue
+ * Select) stop Escape themselves, so it gets here from the
+ * text and number editors only.
+ *
+ * The key stops at the cell. Bubbling on, it would also reach
+ * an enclosing drawer (ChannelManageDrawer), whose unsaved-
+ * changes check would find nothing pending after the restore
+ * and close without asking. A second Escape closes the drawer. */
+function onCellEditCancel(event: { originalEvent?: Event; data: Row; field: string }): void {
+  event.originalEvent?.stopPropagation()
+  const before = activelyEditingRowField.value
   activelyEditingRowField.value = null
+  const uuid = (event.data as { uuid?: string }).uuid
+  if (!inlineEdit || !before) return
+  if (before.uuid !== uuid || before.field !== event.field) return
+  if (before.wasDirty) {
+    inlineEdit.commitCell(before.uuid, before.field, before.dirtyValue, {
+      skipSmartClear: true,
+    })
+  } else {
+    inlineEdit.revertCell(before.uuid, before.field)
+  }
+  const m = new Map(cellErrors.value)
+  const key = errorKey(before.uuid, before.field)
+  if (before.error === undefined) m.delete(key)
+  else m.set(key, before.error)
+  cellErrors.value = m
+  escapedCell = { uuid: before.uuid, field: before.field }
 }
 
 /* Project dirty values for the reorder field onto each row, then

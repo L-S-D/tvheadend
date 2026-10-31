@@ -672,6 +672,65 @@ describe('DataGrid', () => {
     })
   })
 
+  describe('column header tooltip', () => {
+    /* The th title is where a clipped header can be read in full,
+     * so it names the column before explaining it. */
+    function headerTitles(resolveDescription?: (col: ColumnDef) => string): string[] {
+      const wrapper = mountGrid({
+        entries: [{ uuid: 'a', title: 'A', bytes: 1 }],
+        resolveDescription,
+      })
+      return wrapper.findAll('thead th').map((th) => th.attributes('title') ?? '')
+    }
+
+    it('reads "Label: description" when the column has a description', () => {
+      const titles = headerTitles((col) =>
+        col.field === 'title' ? 'Title of the programme.' : '',
+      )
+      expect(titles).toEqual(['Title: Title of the programme.', 'Bytes'])
+    })
+
+    it('falls back to the label without a resolver', () => {
+      expect(headerTitles()).toEqual(['Title', 'Bytes'])
+    })
+
+    it('does not repeat a description that only restates the label', () => {
+      /* "Title: Title" would add nothing. */
+      expect(headerTitles((col) => ` ${col.label} `)).toEqual(['Title', 'Bytes'])
+    })
+  })
+
+  describe('column header title', () => {
+    /* Titles may take two lines, and a lone "#" on the first line of
+     * "# Services" says nothing. Only the visible title ties it to the
+     * next word, the tooltip and the column menu keep the plain label. */
+    const hashCols: ColumnDef[] = [
+      { field: 'num_svc', label: '# Services' },
+      { field: 'scanq_length', label: 'Scan queue length' },
+      { field: 'number', label: '#' },
+    ]
+
+    function mountHashGrid() {
+      return mountGrid({ columns: hashCols, entries: [{ uuid: 'a', num_svc: 1 }] })
+    }
+
+    it('ties a leading one-character word to the next word', () => {
+      const titles = mountHashGrid()
+        .findAll('.p-datatable-column-title')
+        .map((s) => s.text())
+      expect(titles).toEqual(['# Services', 'Scan queue length', '#'])
+    })
+
+    it('keeps the plain label in the tooltip and the column menu', () => {
+      const wrapper = mountHashGrid()
+      const plain = ['# Services', 'Scan queue length', '#']
+      expect(wrapper.findAll('thead th').map((th) => th.attributes('title'))).toEqual(plain)
+      expect(
+        wrapper.findAllComponents(ColumnHeaderMenu).map((m) => m.props('label')),
+      ).toEqual(plain)
+    })
+  })
+
   describe('metaKeySelection gating', () => {
     it('defaults to false (clicks select rows for normal grids)', () => {
       const wrapper = mountGrid({
@@ -694,6 +753,74 @@ describe('DataGrid', () => {
       })
       const dataTable = wrapper.findComponent({ name: 'DataTable' })
       expect(dataTable.props('metaKeySelection')).toBe(true)
+    })
+  })
+
+  describe('desktop empty state on a grid wider than its viewport', () => {
+    /* PrimeVue renders the empty message in one cell spanning every
+     * column, so a centred message sat in the middle of the full
+     * table width, mostly off-screen. The frame around it takes the
+     * scroll viewport's width (and sticks to its left edge in CSS). */
+    const RealResizeObserver = globalThis.ResizeObserver
+    let roCallbacks: Array<() => void> = []
+    const observe = vi.fn()
+    const unobserve = vi.fn()
+    const disconnect = vi.fn()
+
+    beforeEach(() => {
+      roCallbacks = []
+      observe.mockClear()
+      unobserve.mockClear()
+      disconnect.mockClear()
+      globalThis.ResizeObserver = class {
+        observe = observe
+        unobserve = unobserve
+        disconnect = disconnect
+        constructor(cb: () => void) {
+          roCallbacks.push(cb)
+        }
+      } as unknown as typeof ResizeObserver
+    })
+
+    afterEach(() => {
+      globalThis.ResizeObserver = RealResizeObserver
+    })
+
+    it('observes the table shell until the grid unmounts', async () => {
+      const wrapper = mountGrid({ entries: [] })
+      await nextTick()
+      expect(observe).toHaveBeenCalledWith(wrapper.find('.data-grid__table-shell').element)
+      expect(disconnect).not.toHaveBeenCalled()
+      wrapper.unmount()
+      expect(disconnect).toHaveBeenCalledTimes(1)
+    })
+
+    it('sizes the empty-state frame to the scroll viewport', async () => {
+      const wrapper = mountGrid(
+        { entries: [] },
+        { empty: '<p class="my-empty">Nothing here yet</p>' }
+      )
+      await nextTick()
+      const scroller = wrapper.find('.p-datatable-table-container').element
+      Object.defineProperty(scroller, 'clientWidth', { configurable: true, value: 640 })
+      for (const cb of roCallbacks) cb()
+      await nextTick()
+      const frame = wrapper.find('.data-grid__empty-frame')
+      expect(frame.exists()).toBe(true)
+      expect(frame.find('.my-empty').exists()).toBe(true)
+      expect((frame.element as HTMLElement).style.width).toBe('640px')
+    })
+
+    it('runs the default empty text through t(), as the phone path does', () => {
+      const g = globalThis as { tvh_locale?: Record<string, string> }
+      const saved = g.tvh_locale
+      g.tvh_locale = { 'No entries.': 'Žádné položky.' }
+      try {
+        const wrapper = mountGrid({ entries: [] })
+        expect(wrapper.find('.data-grid__empty-frame').text()).toBe('Žádné položky.')
+      } finally {
+        g.tvh_locale = saved
+      }
     })
   })
 })

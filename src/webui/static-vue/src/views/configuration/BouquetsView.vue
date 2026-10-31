@@ -42,12 +42,13 @@ import type { BaseRow } from '@/types/grid'
 import type { ActionDef } from '@/types/action'
 import { useEditorMode } from '@/composables/useEditorMode'
 import { useBulkAction } from '@/composables/useBulkAction'
-import { useToastNotify } from '@/composables/useToastNotify'
-import { apiCall } from '@/api/client'
 import { useI18n } from '@/composables/useI18n'
+import { useIdnodeClassStore } from '@/stores/idnodeClass'
+import { listEnumFormat } from '@/utils/listEnumFormat'
 import { buildAddEditDeleteActions } from '../dvr/dvrToolbarHelpers'
 
 const { t } = useI18n()
+const idnodeClass = useIdnodeClassStore()
 
 /* Column declaration — order matches the Classic UI's grid
  * columns (`cteditor.js:78-89`). The advanced-only `ext_url`
@@ -56,14 +57,15 @@ const { t } = useI18n()
  * remaining ten match Classic.
  *
  * `mapopt` and `chtag` are PT_INT islist with idnode_slist
- * enums — the server's `.rend` callbacks render them as
- * comma-joined localised strings in the grid response (e.g.
- * "Tag bouquet, Tag type"), so the grid cells are plain
- * strings here; the drawer's IdnodeFieldEnumMulti picks them
- * up as multi-checkbox controls via the prop's inline enum
- * metadata. Both are PO_ADVANCED, so the columns are hidden
- * by default and the user toggles them on via the column
- * menu (or bumps the grid's view level). */
+ * enums. The grid response carries the raw option ids (e.g.
+ * `["mapradio", "encrypted"]`); the server's `.rend` strings
+ * only feed its sort and filter. The cells map the ids to the
+ * localised labels of the prop's inline enum in the class
+ * metadata (`listEnumFormat`); the drawer's
+ * IdnodeFieldEnumMulti renders the same enum as checkboxes.
+ * Both are PO_ADVANCED, so the columns are hidden by default
+ * and the user toggles them on via the column menu (or bumps
+ * the grid's view level). */
 /* Phone-card: bouquet name as bold headline; enabled +
  * services_count (count of channels in the bouquet — natural
  * size indicator) as the 2-up row. Mapping knobs (maptoch /
@@ -97,8 +99,22 @@ const cols: ColumnDef[] = [
     editable: true,
   },
   { field: 'lcn_off', sortable: true, filterType: 'numeric', width: 130, editable: true },
-  { field: 'mapopt', sortable: true, filterType: 'string', width: 220, editable: true },
-  { field: 'chtag', sortable: true, filterType: 'string', width: 220, editable: true },
+  {
+    field: 'mapopt',
+    sortable: true,
+    filterType: 'string',
+    width: 220,
+    format: listEnumFormat(() => idnodeClass.get('bouquet'), 'mapopt'),
+    editable: true,
+  },
+  {
+    field: 'chtag',
+    sortable: true,
+    filterType: 'string',
+    width: 220,
+    format: listEnumFormat(() => idnodeClass.get('bouquet'), 'chtag'),
+    editable: true,
+  },
   { field: 'source', sortable: true, filterType: 'string', width: 240, editable: true },
   /* services_count + services_seen are PT_RDONLY counters
    * server-side; the framework's isInlineEditable strips
@@ -147,36 +163,16 @@ const remove = useBulkAction({
   failPrefix: t('Failed to delete'),
 })
 
-/* Force Scan — POST `api/bouquet/scan` with `uuid: <list>`.
- * `useBulkAction` would handle error toasts + inflight, but
- * Force Scan also wants a success toast (the operation
- * completes silently otherwise) and `useBulkAction` is
- * deliberately success-silent. Writing it inline is cleaner
- * than working around that — same shape as the helper, plus
- * a final `toast.success`. */
-const scanInflight = ref(false)
-const toast = useToastNotify()
-
-async function onForceScan(selection: BaseRow[], clearSelection: () => void) {
-  const uuids = selection.map((r) => r.uuid).filter((u): u is string => !!u)
-  if (uuids.length === 0) return
-  scanInflight.value = true
-  try {
-    await apiCall('bouquet/scan', { uuid: JSON.stringify(uuids) })
-    toast.success(
-      uuids.length === 1
-        ? t('Bouquet scan triggered.')
-        : t('Scan triggered for {0} bouquets.', uuids.length),
-    )
-    clearSelection()
-  } catch (err) {
-    toast.error(
-      t('Failed to trigger scan: {0}', err instanceof Error ? err.message : String(err)),
-    )
-  } finally {
-    scanInflight.value = false
-  }
-}
+/* Force Scan — POST `api/bouquet/scan` with `uuid: <list>`. The
+ * request only triggers the re-fetch (`bouquet_scan`), the grid
+ * shows nothing until it is done, so a toast says it started. Same
+ * shape as Force Scan on Networks. */
+const scan = useBulkAction({
+  endpoint: 'bouquet/scan',
+  failPrefix: t('Failed to trigger scan'),
+  successText: (n) =>
+    n === 1 ? t('Bouquet scan triggered.') : t('Scan triggered for {0} bouquets.', n),
+})
 
 function buildActions(selection: BaseRow[], clearSelection: () => void): ActionDef[] {
   const base = buildAddEditDeleteActions({
@@ -193,10 +189,12 @@ function buildActions(selection: BaseRow[], clearSelection: () => void): ActionD
   const insertAt = deleteIdx === -1 ? base.length : deleteIdx
   const forceScan: ActionDef = {
     id: 'force-scan',
-    label: scanInflight.value ? t('Scanning…') : t('Force Scan'),
+    /* Static label: the request returns as soon as the scan is
+     * triggered, so "Scanning…" would only flash for that moment. */
+    label: t('Force Scan'),
     tooltip: t('Re-fetch and re-apply mapping for the selected bouquets'),
-    disabled: selection.length === 0 || scanInflight.value,
-    onClick: () => onForceScan(selection, clearSelection),
+    disabled: selection.length === 0 || scan.inflight.value,
+    onClick: () => scan.run(selection, clearSelection),
   }
   return [...base.slice(0, insertAt), forceScan, ...base.slice(insertAt)]
 }
@@ -233,7 +231,7 @@ function buildActions(selection: BaseRow[], clearSelection: () => void): ActionD
     :subclass="creatingSubclass"
     :level="editorLevel"
     :list="editorList"
-    :title="editingUuid ? t('Edit Bouquet') : t('Add Bouquet')"
+    :title="creatingBase ? t('Add Bouquet') : t('Edit Bouquet')"
     @close="closeEditor"
     @created="flipToEdit"
   />

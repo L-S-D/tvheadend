@@ -203,6 +203,7 @@ comet_access_info_build(struct access *aa, const char *peer_ipstr)
 
   }
   htsmsg_add_str(m, "theme", access_get_theme(aa));
+  htsmsg_add_str(m, "server_name", config_get_server_name());
   htsmsg_add_u32(m, "page_size", config.page_size_ui);
   htsmsg_add_u32(m, "quicktips", config.ui_quicktips);
   htsmsg_add_u32(m, "chname_num", config.chname_num);
@@ -401,34 +402,37 @@ comet_mailbox_dbg(http_connection_t *hc, const char *remain, void *opaque)
   const char *cometid = http_arg_get(&hc->hc_req_args, "boxid");
   const char *lang = hc->hc_access->aa_lang_ui;
   const char *s;
+  char buf[64];
 
   if(cometid == NULL)
     return HTTP_STATUS_BAD_REQUEST;
 
   tvh_mutex_lock(&comet_mutex);
   cmb = comet_find_mailbox(hc, cometid, lang, 0);
-  if (cmb) {
-    char buf[64];
-    cmb->cmb_debug = !cmb->cmb_debug;
-
-    if(cmb->cmb_messages == NULL)
-      cmb->cmb_messages = htsmsg_create_list();
-
-    if(cmb->cmb_restricted || http_access_verify(hc, ACCESS_ADMIN))
-      s = N_("Only admin can watch the realtime log.");
-    else if(cmb->cmb_debug)
-      s = N_("Loglevel debug: enabled");
-    else
-      s = N_("Loglevel debug: disabled");
-    snprintf(buf, sizeof(buf), "%s", tvh_gettext_lang(lang, s));
-
-    htsmsg_t *m = htsmsg_create_map();
-    htsmsg_add_str(m, "notificationClass", "logmessage");
-    htsmsg_add_str(m, "logtxt", buf);
-    htsmsg_add_msg(cmb->cmb_messages, NULL, m);
-
-    tvh_cond_signal(&comet_cond, 1);
+  if (cmb == NULL) {
+    tvh_mutex_unlock(&comet_mutex);
+    return HTTP_STATUS_NOT_FOUND;
   }
+
+  cmb->cmb_debug = !cmb->cmb_debug;
+
+  if(cmb->cmb_messages == NULL)
+    cmb->cmb_messages = htsmsg_create_list();
+
+  if(cmb->cmb_restricted || http_access_verify(hc, ACCESS_ADMIN))
+    s = N_("Only admin can watch the realtime log.");
+  else if(cmb->cmb_debug)
+    s = N_("Loglevel debug: enabled");
+  else
+    s = N_("Loglevel debug: disabled");
+  snprintf(buf, sizeof(buf), "%s", tvh_gettext_lang(lang, s));
+
+  htsmsg_t *m = htsmsg_create_map();
+  htsmsg_add_str(m, "notificationClass", "logmessage");
+  htsmsg_add_str(m, "logtxt", buf);
+  htsmsg_add_msg(cmb->cmb_messages, NULL, m);
+
+  tvh_cond_signal(&comet_cond, 1);
   tvh_mutex_unlock(&comet_mutex);
 
   http_output_content(hc, "text/plain; charset=UTF-8");

@@ -27,7 +27,7 @@
  * via `:deep()`). This avoids changing every existing test selector
  * while keeping DataGrid's scoped styles applicable.
  */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from '@/composables/useI18n'
 import { useIsPhone } from '@/composables/useIsPhone'
 import DataTable, {
@@ -438,7 +438,7 @@ const emit = defineEmits<{
    * `cell-edit-cancel`   — user pressed Escape. */
   cellEditInit: [event: { data: Row; field: string; index: number }]
   cellEditComplete: [event: { data: Row; field: string; index: number }]
-  cellEditCancel: [event: { data: Row; field: string; index: number }]
+  cellEditCancel: [event: { originalEvent?: Event; data: Row; field: string; index: number }]
 
   /* Group-by control — emitted when the user clicks the ✕ in
    * the "grouped by X ✕" suffix of the summary line. Wrappers
@@ -1179,6 +1179,15 @@ function labelFor(col: ColumnDef): string {
   return col.label ?? col.field
 }
 
+/* The visible header title. Titles may wrap onto a second line
+ * (`.p-datatable-column-title` in primevue.css), and a lone "#" on
+ * the first line of "# Services" says nothing, so a leading
+ * one-character word is tied to the next word with a no-break
+ * space. The tooltip and the column menus keep the plain label. */
+function headerTitleFor(col: ColumnDef): string {
+  return labelFor(col).replace(/^(\S) (?=\S)/, '$1 ')
+}
+
 /* Resolves the column-header hover tooltip text. Prefers the
  * caller-supplied `resolveDescription` result (which IdnodeGrid
  * wires to the idnode-class metadata's `prop.description`),
@@ -1186,10 +1195,14 @@ function labelFor(col: ColumnDef): string {
  * available — the `<th>` always gets a `title=` so it stays
  * accessible to screen readers and remains useful when the
  * label is truncated by the `.p-datatable-column-title` shrink
- * rule. */
+ * rule. With a description the label leads ("Enabled: Enable/
+ * Disable service."), because a clipped header is exactly when
+ * the user needs the full name as well as the explanation. */
 function tooltipFor(col: ColumnDef): string {
-  const desc = props.resolveDescription?.(col)
-  return desc && desc.length > 0 ? desc : labelFor(col)
+  const label = labelFor(col)
+  const desc = props.resolveDescription?.(col)?.trim()
+  if (!desc || desc === label) return label
+  return label ? `${label}: ${desc}` : desc
 }
 
 /* Per-column sort state read from the controlled props. The
@@ -1558,6 +1571,43 @@ function onTableColumnReorder(event: unknown) {
  *      via re-export from their own defineExpose). ---- */
 
 const tableShellEl = ref<HTMLElement | null>(null)
+
+/* Width of the table's scroll viewport. PrimeVue renders the empty
+ * message in one cell spanning every column, so on a grid wider
+ * than its viewport a centred message sat in the middle of the full
+ * table width, mostly off-screen. The empty-state frame takes this
+ * width and sticks to the left edge (see `.data-grid__empty-frame`).
+ * The scroller is `.p-virtualscroller` on virtualised grids and
+ * `.p-datatable-table-container` otherwise. */
+const scrollViewportWidth = ref<number | null>(null)
+let shellResizeObserver: ResizeObserver | null = null
+
+function measureScrollViewport(): void {
+  const shell = tableShellEl.value
+  const scroller =
+    shell?.querySelector('.p-virtualscroller') ??
+    shell?.querySelector('.p-datatable-table-container')
+  scrollViewportWidth.value =
+    scroller instanceof HTMLElement && scroller.clientWidth > 0 ? scroller.clientWidth : null
+}
+
+watch(tableShellEl, (el) => {
+  shellResizeObserver?.disconnect()
+  shellResizeObserver = null
+  if (!el || typeof ResizeObserver === 'undefined') return
+  shellResizeObserver = new ResizeObserver(measureScrollViewport)
+  shellResizeObserver.observe(el)
+  measureScrollViewport()
+})
+
+onBeforeUnmount(() => {
+  shellResizeObserver?.disconnect()
+  shellResizeObserver = null
+})
+
+const emptyFrameStyle = computed(() =>
+  scrollViewportWidth.value === null ? undefined : { width: `${scrollViewportWidth.value}px` }
+)
 
 /* Scroll a specific row index into the centre of the viewport.
  * Used by parent grids that drive imperative reorderings (e.g.
@@ -2112,9 +2162,11 @@ defineExpose({
           <ChevronRightIcon v-else :size="14" :stroke-width="2" />
         </template>
         <template #empty>
-          <slot name="empty">
-            <p :class="['data-grid__empty', `${bemPrefix}__empty`]">No entries.</p>
-          </slot>
+          <div class="data-grid__empty-frame" :style="emptyFrameStyle">
+            <slot name="empty">
+              <p :class="['data-grid__empty', `${bemPrefix}__empty`]">{{ t('No entries.') }}</p>
+            </slot>
+          </div>
         </template>
         <!--
           Drag-handle column for PrimeVue's row-reorder mode.
@@ -2178,7 +2230,7 @@ defineExpose({
           v-for="col in visibleColumns"
           :key="col.field"
           :field="col.field"
-          :header="col.hideHeaderLabel ? '' : labelFor(col)"
+          :header="col.hideHeaderLabel ? '' : headerTitleFor(col)"
           :sortable="(col.sortable ?? false) && !(sortLockedByGroup && groupField)"
           :filter="!!col.filterType"
           :show-filter-match-modes="false"
@@ -2305,6 +2357,27 @@ defineExpose({
   color: var(--tvh-text);
 }
 
+/* Empty state on desktop: the cell spans the whole table, which can
+ * be far wider than the viewport. The frame is as wide as the
+ * scroll viewport (inline width from the script) and sticks to its
+ * left edge, so a centred message stays in view. The cell padding
+ * moves into the frame, or the frame would overhang the viewport by
+ * that much, and the cell must not clip (PrimeVue's resizable-table
+ * rule sets `overflow: hidden`, which would turn off the sticky
+ * offset). */
+.data-grid__table :deep(.p-datatable-empty-message > td) {
+  padding: 0;
+  overflow: visible;
+  white-space: normal;
+}
+
+.data-grid__empty-frame {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+  padding: var(--p-datatable-body-cell-padding);
+}
+
 .data-grid__empty {
   /* `display: block` so the rule still works for the loading-state
      <output> (default inline) — `text-align` and full-width padding
@@ -2331,6 +2404,18 @@ defineExpose({
 
 .data-grid__table :deep(.p-datatable-tbody td) {
   text-overflow: ellipsis;
+}
+
+/* One row rhythm for every grid. The padding used to set the row
+ * height, so a cell with a 28 px Play or Info button made a 45 px
+ * row next to 36 px text rows, and those grids no longer matched
+ * the `itemSize: 36` their virtual scroller assumes. The cell now
+ * takes its height from the token and centres its content (table
+ * cells default to `vertical-align: middle`). Anything taller than
+ * the token still grows the row. */
+.data-grid__table :deep(.p-datatable-tbody > tr > td) {
+  height: var(--tvh-row-height);
+  padding-block: 0;
 }
 
 /* Reset the move-cursor PrimeVue paints on every column header

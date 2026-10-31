@@ -29,12 +29,16 @@
  */
 import type { ColumnDef } from '@/types/column'
 import type { GroupableFieldDef } from '@/types/grid'
+import type { IdnodeClassMeta } from '@/types/idnode'
 import BooleanCell from '@/components/BooleanCell.vue'
 import DrillDownCell from '@/components/DrillDownCell.vue'
+import DvrStateCell from '@/components/DvrStateCell.vue'
 import EnumNameCell from '@/components/EnumNameCell.vue'
 import { getResolvedDeferredEnum } from '@/components/idnode-fields/deferredEnum'
 import { fmtDate, fmtGroupDate } from '@/utils/formatTime'
 import { t } from '@/composables/useI18n'
+import { useAccessStore } from '@/stores/access'
+import { makeKodiPlainFmt } from '@/views/epg/kodiText'
 
 /* ---- Shared enum descriptors ----
  *
@@ -45,11 +49,12 @@ import { t } from '@/composables/useI18n'
  * resolve the UUID → channel name via `EnumNameCell`. Mirrors what
  * the editor dropdown does via `IdnodeFieldEnum` / `deferredEnum`.
  *
- * `all: 1, sort: 'name'` matches the same params the class metadata
- * advertises at `api/idnode/class?name=dvrtimerec`. */
+ * `all: 1, sort: 'name'` and the `channel` event match what the class
+ * metadata advertises at `api/idnode/class?name=dvrtimerec`. */
 const CHANNEL_ENUM = {
   type: 'api' as const,
   uri: 'channel/list',
+  event: 'channel',
   params: { all: 1, sort: 'name' },
 }
 
@@ -66,6 +71,7 @@ const CHANNEL_ENUM = {
 const DVR_CONFIG_ENUM = {
   type: 'api' as const,
   uri: 'idnode/load',
+  event: 'dvrconfig',
   params: { enum: 1, class: 'dvrconfig' },
 }
 
@@ -76,6 +82,7 @@ const DVR_CONFIG_ENUM = {
 const CHANNEL_TAG_ENUM = {
   type: 'api' as const,
   uri: 'channeltag/list',
+  event: 'channeltag',
   params: { all: 1 },
 }
 
@@ -100,13 +107,18 @@ const CONTENT_TYPE_ENUM = {
 
 /* Inline option list for the DVR Priority enum (`pri` field).
  * Mirrors the server's `dvr_entry_class_pri_list` callback at
- * `src/dvr/dvr_db.c:3733-3742` — same order, same key→label
+ * `src/dvr/dvr_db.c:3768-3779` — same order, same key→label
  * pairing. Inline (not deferred) because the set is small,
  * bounded, and stable across the session.
  *
+ * These labels have no msgid in the web UI catalog, so they stay
+ * English. They are only the fallback until the class metadata
+ * arrives — see `withServerPriEnum` below, which swaps in the
+ * server's localized list.
+ *
  * `5 = DVR_PRIO_NOTSET` is intentionally absent: the server's
  * list callback hides it and any value of 5 is coerced to 6
- * (Default) on set (`dvr_db.c:3727-3728`). */
+ * (Default) on set (`dvr_db.c:3762-3763`). */
 const DVR_PRI_ENUM = [
   { key: 6, val: t('Default') },
   { key: 0, val: t('Important') },
@@ -115,6 +127,24 @@ const DVR_PRI_ENUM = [
   { key: 3, val: t('Low') },
   { key: 4, val: t('Unimportant') },
 ]
+
+/* Swap the inline priority options of a `pri` column for the
+ * class metadata's `pri` enum once that has loaded. The server
+ * localizes those labels (`dvr_entry_class_pri_list` builds them
+ * with `strtab2htsmsg(tab, 1, lang)`), which is what the cells
+ * already show through IdnodeGrid's metadata enum lookup. The
+ * header filter, its tooltip and the active-filter chip read
+ * `enumSource`, so without the swap they stayed English.
+ * dvrentry, dvrautorec and dvrtimerec all use the same list
+ * callback. Returns `cols` unchanged while metadata is missing. */
+export function withServerPriEnum(
+  cols: ColumnDef[],
+  meta: IdnodeClassMeta | null | undefined,
+): ColumnDef[] {
+  const serverEnum = meta?.props.find((p) => p.id === 'pri')?.enum
+  if (!Array.isArray(serverEnum) || serverEnum.length === 0) return cols
+  return cols.map((c) => (c.field === 'pri' ? { ...c, enumSource: serverEnum } : c))
+}
 
 /* ---- Formatters ---- */
 
@@ -135,11 +165,11 @@ const fmtSize = (v: unknown) => {
 /* Weekdays renderer for autorec / timerec. The C-side `weekdays`
  * field is PT_U32 with `islist: 1`, so it arrives as an array of
  * day numbers (1=Mon … 7=Sun, ISO 8601). All seven → "Every day";
- * empty/missing → empty string. English-only for now; vue-i18n via
- * the existing /locale.js infrastructure (ADR 0007) will swap the
- * day names for localised ones when wired. ExtJS uses
+ * empty/missing → empty string. The day names go through t(), so
+ * they come from the Vue UI catalog at /redir/locale-vue.js like
+ * every other string. ExtJS uses
  * `tvheadend.weekdaysRenderer(st)` against the enum store; we
- * hard-code the names here and revisit when i18n lands. */
+ * hard-code the English names here as the msgids. */
 const fmtWeekdays = (v: unknown) => {
   if (!Array.isArray(v) || v.length === 0) return ''
   if (v.length === 7) return t('Every day')
@@ -278,18 +308,25 @@ export const DVR_FIELDS = {
   stop_real: { sortable: true, format: fmtDate, minVisible: 'desktop', width: 170 },
   duration: { sortable: true, format: fmtDuration, minVisible: 'desktop', phoneOrder: 4, width: 100 },
 
-  /* Schedule and operational status. `phoneOrder: 99` parks
-   * `sched_status` and the failure-reason `status` at the very
-   * end of the secondary list so consumers that promote either
-   * to phone-visible (UpcomingView for sched_status, FailedView
-   * for status) get them as the trailing odd-positioned secondary
-   * — i.e. a full-width row at the bottom of the card. */
+  /* Recording state icon (DvrStateCell), the leading column of
+   * the four dvr_entry list views, like Classic's per-row
+   * `sched_status` icon (`dvr.js` dvrRowActions). The value is a
+   * raw token (`dvr_db.c:704-735`), so the cell draws an icon
+   * named by the row's localized `status` text. The server flags
+   * the property PO_HIDDEN, which the grid would honour, hence
+   * `hiddenByDefault: false`; the column picker can still hide it.
+   * Icon-only header: the picker and the header tooltip use the
+   * server caption. Not sortable or filterable on raw tokens.
+   * Desktop-only, like the EPG Table's state column: an icon-only
+   * phone-card field would pair with the promoted `status` text
+   * on Failed and halve it. */
   sched_status: {
-    sortable: true,
-    filterType: 'string',
+    hideHeaderLabel: true,
+    sortable: false,
     minVisible: 'desktop',
-    phoneOrder: 99,
-    width: 130,
+    hiddenByDefault: false,
+    width: 44,
+    cellComponent: DvrStateCell,
   },
   pri: {
     sortable: true,
@@ -331,10 +368,12 @@ export const DVR_FIELDS = {
   errors: { sortable: true, filterType: 'numeric', minVisible: 'desktop', width: 100 },
   data_errors: { sortable: true, filterType: 'numeric', minVisible: 'desktop', width: 100 },
 
-  /* Failure reason text — shown on the Failed tab. `phoneOrder:
-   * 99` parks it at the end of any phone-visible secondary set
-   * so it lands as the full-width trailer when FailedView
-   * promotes it to `minVisible: 'phone'`. */
+  /* Status text (localized by the server, PO_LOCALE) — the
+   * failure reason on Failed / Removed, and on Upcoming the
+   * current state ("Waiting for stream", no free adapter, …).
+   * `phoneOrder: 99` parks it at the end of any phone-visible
+   * secondary set so it lands as the full-width trailer when
+   * FailedView promotes it to `minVisible: 'phone'`. */
   status: {
     sortable: true,
     filterType: 'string',
@@ -344,10 +383,21 @@ export const DVR_FIELDS = {
   },
 } satisfies Record<string, FieldDefault>
 
+/* Cluster-header formatter for the title group. Same gate as the
+ * title cells (`useDvrListView` / UpcomingView): Kodi label codes
+ * are stripped only when the access flag asks for it. The store is
+ * read at render time, so no component setup is needed here. */
+const titleGroupFmt = makeKodiPlainFmt(() => !!useAccessStore().data?.label_formatting)
+
 /* ---- Group-by options for the four dvr_entry list views ----
  *
  * Shared by Upcoming / Finished / Failed / Removed. Per design
  * spec:
+ *   - Title — series grouping, Classic's groupRenderer on
+ *     `disp_title` (dvr.js:606-609, 796-799, 916-919). Classic
+ *     groups on the title without the copyright year; the Vue
+ *     title cell never appends the year, so the raw title is
+ *     already that key.
  *   - Channel — most natural grouping ("recordings for a single channel")
  *   - Config — group by DVR profile (multi-config installs)
  *   - Start date — by the SCHEDULED start date (not actual);
@@ -365,6 +415,11 @@ export const DVR_FIELDS = {
  * rule editors, not row lists; grouping isn't useful there).
  */
 export const DVR_GROUPABLE_FIELDS: GroupableFieldDef[] = [
+  {
+    field: 'disp_title',
+    label: t('Title'),
+    headerLabel: (row) => titleGroupFmt((row as { disp_title?: unknown }).disp_title),
+  },
   {
     field: 'channel',
     label: t('Channel'),

@@ -148,9 +148,8 @@ const cols: ColumnDef[] = [
      * of service UUIDs (`channel_class_services_get` →
      * `idnode_list_get2`); `EnumNameCell` joins resolved names
      * with ', '. Source matches the C-side `.list` callback
-     * (`channels.c:179-190`) so the deferred-enum cache key is
-     * shared with the side drawer's enum picker — single
-     * round-trip per session for both surfaces. No opts gating
+     * (`channels.c:179-190`), `service` event included, so the
+     * names refresh when services change. No opts gating
      * server-side (`channels.c:552-562`), so visible at every
      * uilevel. */
     field: 'services',
@@ -161,6 +160,7 @@ const cols: ColumnDef[] = [
     enumSource: {
       type: 'api',
       uri: 'service/list',
+      event: 'service',
       params: { enum: 1 },
     },
     /* Drill-down: 1 mapped service → chevron opens that service's
@@ -196,6 +196,7 @@ const cols: ColumnDef[] = [
     enumSource: {
       type: 'api',
       uri: 'channeltag/list',
+      event: 'channeltag',
       params: { all: 1 },
     },
     /* Drill-down: 1 tag → chevron opens that Channel Tag's
@@ -220,6 +221,7 @@ const cols: ColumnDef[] = [
     enumSource: {
       type: 'api',
       uri: 'idnode/load',
+      event: 'bouquet',
       params: { class: 'bouquet', enum: 1 },
     },
     /* Server-side rdonly; isInlineEditable strips at runtime. */
@@ -240,6 +242,7 @@ const cols: ColumnDef[] = [
     enumSource: {
       type: 'api',
       uri: 'idnode/load',
+      event: 'channel',
       params: { class: 'channel', enum: 1 },
     },
     editable: true,
@@ -254,11 +257,12 @@ const cols: ColumnDef[] = [
 const editList = ref('')
 /* Service Mapper modal state. Channels has no service uuids in
  * scope (channels are mapped TO, not FROM), so the dialog opens
- * with no preselect — the user picks services on the dialog's
- * services field. Mirrors Classic's `mapall` /
- * `mapsel: service_mapper_none` toolbar entries
- * (`chconf.js:163-165`) which both open the form fresh. */
+ * either with every service preselected (`mapperAll`, Classic's
+ * `mapall: service_mapper_all`) or with none, for the user to
+ * pick on the dialog's services field (Classic's
+ * `mapsel: service_mapper_none`, `chconf.js:163-165`). */
 const mapperOpen = ref(false)
+const mapperAll = ref(false)
 
 const {
   editingUuid,
@@ -361,13 +365,14 @@ async function onResetIcon(selection: BaseRow[], clearSelection: () => void) {
 
 /* Map services — opens the ServiceMapperDialog modal in-place.
  * Channels grid has no service-uuids in scope (channels are
- * mapped TO, not FROM), so the dialog opens with no preselect;
- * the user picks services from the dialog's services field.
- * Mirrors Classic's `chconf.js:163-165` where the Channels page
- * wires the same "Map all" / "Map selected" buttons against
- * `service_mapper_all` / `service_mapper_none` (both open the
- * form fresh — Channels selection isn't relevant). */
-function onMapServices() {
+ * mapped TO, not FROM), so the dialog opens with every service
+ * preselected (`all`) or with none. Mirrors Classic's
+ * `chconf.js:163-165` where the Channels page wires the same
+ * "Map all" / "Map selected" buttons against
+ * `service_mapper_all` / `service_mapper_none` (Channels
+ * selection isn't relevant). */
+function onMapServices(all: boolean) {
+  mapperAll.value = all
   mapperOpen.value = true
 }
 
@@ -403,9 +408,9 @@ function buildActions(selection: BaseRow[], clearSelection: () => void): ActionD
     onClick: () => onResetIcon(selection, clearSelection),
   }
   /* Map services — parent submenu mirroring Classic's
-   * `chconf.js:133-168` shape (minus the "Map all services"
-   * variant which would need ServiceMapperDialog select-all-on-
-   * open support; deferred). Two children:
+   * `chconf.js:133-168` shape. Three children:
+   *   - Map all services : open the mapper dialog with every
+   *                        service preselected. Always enabled.
    *   - Map services… : open the mapper dialog and let the user
    *                     pick services to map. Always enabled.
    *   - Detach from bouquet : POST `api/bouquet/detach` with the
@@ -417,10 +422,16 @@ function buildActions(selection: BaseRow[], clearSelection: () => void): ActionD
     tooltip: t('Service-mapping shortcuts'),
     children: [
       {
+        id: 'map-services-all',
+        label: t('Map all services'),
+        tooltip: t('Map all services to channels'),
+        onClick: () => onMapServices(true),
+      },
+      {
         id: 'map-services-open',
         label: t('Map services…'),
         tooltip: t('Open the Service Mapper to add channels from services'),
-        onClick: () => onMapServices(),
+        onClick: () => onMapServices(false),
       },
       {
         id: 'map-services-detach',
@@ -498,7 +509,8 @@ watch(
 )
 
 /* Auto-open the Service Mapper modal when Cmd-K pushes us here
- * with `?openMapper=true`. Same read+clear pattern as the manage
+ * with `?openMapper=true` (empty picker) or `?openMapper=all` (Map
+ * all services). Same read+clear pattern as the manage
  * drawer above — the user typed "map services" in the palette,
  * hit Enter, and expects to land directly in the mapper dialog
  * rather than on the Channels grid + having to click another
@@ -506,8 +518,8 @@ watch(
 watch(
   () => route.query.openMapper,
   (mode) => {
-    if (mode !== 'true') return
-    mapperOpen.value = true
+    if (mode !== 'true' && mode !== 'all') return
+    onMapServices(mode === 'all')
     const rest = { ...route.query }
     delete rest.openMapper
     router.replace({ query: rest }).catch(() => { /* nav cancellation is fine */ })
@@ -549,11 +561,15 @@ watch(
     :subclass="creatingSubclass"
     :level="editorLevel"
     :list="editorList"
-    :title="editingUuid ? t('Edit Channel') : t('Add Channel')"
+    :title="creatingBase ? t('Add Channel') : t('Edit Channel')"
     @close="closeEditor"
     @created="flipToEdit"
   />
-  <ServiceMapperDialog v-model:visible="mapperOpen" @started="onMappingStarted" />
+  <ServiceMapperDialog
+    v-model:visible="mapperOpen"
+    :map-all="mapperAll"
+    @started="onMappingStarted"
+  />
 </template>
 
 <style scoped>
