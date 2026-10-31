@@ -360,6 +360,9 @@ struct streaming_queue {
 
   size_t      sq_maxsize;  /* Max queue size (bytes) */
   size_t      sq_size;     /* Actual queue size (bytes) - only data */
+#if ENABLE_DVBBUFFER
+  int64_t     sq_start_until; /* start reserve active until (mono), 0 = not started */
+#endif
 
   struct streaming_message_queue sq_queue;
 
@@ -428,6 +431,27 @@ void streaming_target_init(streaming_target_t *st,
 
 void streaming_queue_init
   (streaming_queue_t *sq, int reject_filter, size_t maxsize);
+
+#if ENABLE_DVBBUFFER
+/*
+ * Instant zapping: the start of a stream may come as a burst from the
+ * ring buffer. For the first streaming_start_reserve_time (mono) after the
+ * first data, output queues accept streaming_start_reserve more bytes
+ * before they drop. Set by the dvbbuffer module, 0 = off.
+ */
+extern size_t  streaming_start_reserve;
+extern int64_t streaming_start_reserve_time;
+
+static inline size_t
+streaming_start_reserve_get(int64_t *until, int64_t now)
+{
+  if (streaming_start_reserve == 0)
+    return 0;
+  if (*until == 0)
+    *until = now + streaming_start_reserve_time;
+  return now < *until ? streaming_start_reserve : 0;
+}
+#endif
 
 void streaming_queue_clear(struct streaming_message_queue *q);
 

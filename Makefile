@@ -524,6 +524,16 @@ endif
 SRCS-AVAHI = \
 	src/avahi.c
 SRCS-$(CONFIG_AVAHI) += $(SRCS-AVAHI)
+
+# libdvbbuffer (instant channel switching)
+SRCS-DVBBUFFER = \
+	src/dvbbuffer/dvbbuffer.c \
+	src/dvbbuffer/conf.c \
+	src/dvbbuffer/mux.c \
+	src/dvbbuffer/svc.c \
+	src/dvbbuffer/warm.c \
+	src/dvbbuffer/hlsbridge.c
+SRCS-$(CONFIG_DVBBUFFER) += $(SRCS-DVBBUFFER)
 I18N-C += $(SRCS-AVAHI)
 
 # Bonjour

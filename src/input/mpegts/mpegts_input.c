@@ -23,6 +23,7 @@
 #include "notify.h"
 #include "dbus.h"
 #include "memoryinfo.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 memoryinfo_t mpegts_input_queue_memoryinfo = { .my_name = "MPEG-TS input queue" };
 memoryinfo_t mpegts_input_table_memoryinfo = { .my_name = "MPEG-TS table queue" };
@@ -1458,6 +1459,10 @@ mpegts_input_process
   /* Process */
   tspos = mm->mm_input_pos;
   assert((len % 188) == 0);
+#if ENABLE_DVBBUFFER
+  /* Instant zapping: whole mux into the ring buffer, before any dispatch */
+  dvbbuffer_mux_input(mm, tspos, tsb, len, mpkt->mp_cc_restart);
+#endif
   while (len > 0) {
 
     /*

@@ -27,6 +27,7 @@
 #include "input.h"
 #include "input/mpegts/tsdemux.h"
 #include "dvbcam.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #include "streaming.h"
 
 #if 0
@@ -856,6 +857,11 @@ cont:
     dr->dr_ecm_last_key_time = mclk();
     descrambler_change_keystate(td, DS_RESOLVED, 0);
     td->td_service->s_descrambler = td;
+#if ENABLE_DVBBUFFER
+    /* Instant zapping: read-only hint, the backlog may be injected now */
+    dvbbuffer_service_key(t, type, pid, even, odd, tk->key_csa.csa_keylen,
+                          tk->key_csa.csa_ecm);
+#endif
   } else {
     tvhdebug(LS_DESCRAMBLER,
              "Empty %s keys%s received from %s for service \"%s\"%s",
@@ -1295,6 +1301,157 @@ end:
   return dr->dr_ca_count;
 }
 
+/*
+ * An ECM went to the CA client: mark the ECM start of its parity and the
+ * ICAM ecm mode of the keys (s_stream_mutex held)
+ */
+static void
+descrambler_ecm_sent_locked(mpegts_service_t *t, th_descrambler_runtime_t *dr,
+                            int pid, const uint8_t *ptr, int64_t clk)
+{
+  th_descrambler_key_t *tk;
+  elementary_stream_t *st;
+  caid_t *ca;
+  uint8_t ki;
+  int i, j;
+
+  if ((ptr[0] & 0xfe) == 0x80) { /* 0x80 = even, 0x81 = odd */
+    j = ptr[0] & 1;
+    if (dr->dr_ecm_parity == ECM_PARITY_81EVEN_80ODD)
+      j ^= 1;
+    dr->dr_ecm_start[j] = clk;
+    ki = 1 << (j + 6); /* 0x40 = even, 0x80 = odd */
+    for (i = 0; i < DESCRAMBLER_MAX_KEYS; i++) {
+      tk = &dr->dr_keys[i];
+      if (dr->dr_quick_ecm)
+        tk->key_valid &= ~ki;
+      TAILQ_FOREACH(st, &t->s_components.set_filter, es_filter_link) {
+        if (st->es_pid != pid) continue;
+          LIST_FOREACH(ca, &st->es_caids, link) {
+          if (ca->use == 0) continue;
+          tk->key_csa.csa_ecm = (caid_is_videoguard(ca->caid) && (ptr[4] != 0 && (ptr[2] - ptr[4]) == 4)) ? 4 : 0;
+          tvhtrace(LS_DESCRAMBLER, "key ecm=%X (caid=%04X)", tk->key_csa.csa_ecm, ca->caid);
+        }
+      }
+      if (tk->key_pid == 0) break;
+    }
+  }
+}
+
+#if ENABLE_DVBBUFFER
+/*
+ * Instant zapping (H6): an ECM from the ring buffer history went to the CA
+ * client - same bookkeeping as for an ECM on air (s_stream_mutex held)
+ */
+void
+descrambler_ecm_from_buffer(service_t *t, int pid, const uint8_t *ptr, int len)
+{
+  th_descrambler_runtime_t *dr = t->s_descramble;
+
+  lock_assert(&t->s_stream_mutex);
+  if (dr && len > 4)
+    descrambler_ecm_sent_locked((mpegts_service_t *)t, dr, pid, ptr, mclk());
+}
+
+/*
+ * Instant zapping (H7): descramble and deliver what the CSA batches hold,
+ * before another subscriber gets the backlog up to here (s_stream_mutex held)
+ */
+void
+descrambler_flush_csa(service_t *t)
+{
+  th_descrambler_runtime_t *dr = t->s_descramble;
+  th_descrambler_key_t *tk;
+  int i;
+
+  lock_assert(&t->s_stream_mutex);
+  if (dr == NULL)
+    return;
+  for (i = 0; i < DESCRAMBLER_MAX_KEYS; i++) {
+    tk = &dr->dr_keys[i];
+    if (tk->key_csa.csa_flush)
+      tk->key_csa.csa_flush(&tk->key_csa, (mpegts_service_t *)t);
+    if (!dr->dr_key_multipid) break;
+  }
+}
+
+/*
+ * Instant zapping (H6): does the CA system on this ECM PID answer an ECM
+ * with the key of one crypto period only (VideoGuard)? The others answer
+ * with both, the current and the next key (s_stream_mutex held).
+ */
+int
+descrambler_ecm_one_key(service_t *t, int pid)
+{
+  elementary_stream_t *st;
+  caid_t *ca;
+
+  lock_assert(&t->s_stream_mutex);
+  TAILQ_FOREACH(st, &t->s_components.set_filter, es_filter_link) {
+    if (st->es_pid != pid) continue;
+    LIST_FOREACH(ca, &st->es_caids, link)
+      if (ca->use && caid_is_videoguard(ca->caid))
+        return 1;
+  }
+  return 0;
+}
+
+/*
+ * Instant zapping (H6): key parity of an ECM table id, counted like
+ * descrambler_ecm_sent_locked() does (s_stream_mutex held).
+ * 0 = even, 1 = odd, -1 = not a 0x80/0x81 ECM or no descrambler.
+ */
+int
+descrambler_ecm_parity(service_t *t, uint8_t table_id)
+{
+  th_descrambler_runtime_t *dr = t->s_descramble;
+  int j;
+
+  lock_assert(&t->s_stream_mutex);
+  if (dr == NULL || (table_id & 0xfe) != 0x80)
+    return -1;
+  j = table_id & 1;
+  if (dr->dr_ecm_parity == ECM_PARITY_81EVEN_80ODD)
+    j ^= 1;
+  return j;
+}
+
+/*
+ * Instant zapping (H6): a key that only opened the backlog of the previous
+ * crypto period. It came after the key on air, so key_late() takes it for
+ * the newer one: at the next switch to its parity tvh descrambles with it
+ * - garbage - until the key of the new period arrives. Make it older than
+ * the key of the other parity, then key_late() sees it as late and tvh
+ * waits for the new key instead. A key of this parity received since is
+ * left alone (s_stream_mutex held).
+ */
+void
+descrambler_age_key(service_t *t, int parity, const uint8_t *cw, int keylen)
+{
+  th_descrambler_runtime_t *dr = t->s_descramble;
+  th_descrambler_key_t *tk;
+  int i;
+
+  lock_assert(&t->s_stream_mutex);
+  if (dr == NULL || parity < 0 || parity > 1 || keylen <= 0 ||
+      keylen > (int)sizeof(dr->dr_keys[0].key_data[0]))
+    return;
+  for (i = 0; i < DESCRAMBLER_MAX_KEYS; i++) {
+    tk = &dr->dr_keys[i];
+    if (tk->key_csa.csa_keylen == keylen &&
+        memcmp(tk->key_data[parity], cw, keylen) == 0 &&
+        tk->key_timestamp[parity ^ 1] > 1 &&
+        tk->key_timestamp[parity] >= tk->key_timestamp[parity ^ 1]) {
+      tk->key_timestamp[parity] = tk->key_timestamp[parity ^ 1] - 1;
+      tvhdebug(LS_DESCRAMBLER, "%s key[%d] of the previous crypto period (instant "
+               "zapping backlog) aged for service \"%s\"", parity ? "odd" : "even",
+               tk->key_pid, ((mpegts_service_t *)t)->s_dvb_svcname);
+    }
+    if (!dr->dr_key_multipid) break;
+  }
+}
+#endif
+
 static int
 descrambler_table_callback
   (mpegts_table_t *mt, const uint8_t *ptr, int len, int tableid)
@@ -1308,10 +1465,7 @@ descrambler_table_callback
   int emm = (mt->mt_flags & MT_FAST) == 0;
   mpegts_service_t *t;
   int64_t clk, clk2, clk3;
-  uint8_t ki;
   int i, j;
-  caid_t *ca;
-  elementary_stream_t *st;
 
   if (len < 6)
     return 0;
@@ -1369,27 +1523,7 @@ descrambler_table_callback
                 tvhdebug(LS_DESCRAMBLER, "quick ECM enabled for service '%s'",
                          t->s_dvb_svcname);
             }
-            if ((ptr[0] & 0xfe) == 0x80) { /* 0x80 = even, 0x81 = odd */
-              j = ptr[0] & 1;
-              if (dr->dr_ecm_parity == ECM_PARITY_81EVEN_80ODD)
-                j ^= 1;
-              dr->dr_ecm_start[j] = clk;
-              ki = 1 << (j + 6); /* 0x40 = even, 0x80 = odd */
-              for (i = 0; i < DESCRAMBLER_MAX_KEYS; i++) {
-                tk = &dr->dr_keys[i];
-                if (dr->dr_quick_ecm)
-                  tk->key_valid &= ~ki;
-                TAILQ_FOREACH(st, &mt->mt_service->s_components.set_filter, es_filter_link) {
-                  if (st->es_pid != mt->mt_pid) continue;
-                    LIST_FOREACH(ca, &st->es_caids, link) {
-                    if (ca->use == 0) continue;
-                    tk->key_csa.csa_ecm = (caid_is_videoguard(ca->caid) && (ptr[4] != 0 && (ptr[2] - ptr[4]) == 4)) ? 4 : 0;
-                    tvhtrace(LS_DESCRAMBLER, "key ecm=%X (caid=%04X)", tk->key_csa.csa_ecm, ca->caid);
-                  }
-                }
-                if (tk->key_pid == 0) break;
-              }
-            }
+            descrambler_ecm_sent_locked(mt->mt_service, dr, mt->mt_pid, ptr, clk);
             tvhtrace(LS_DESCRAMBLER, "ECM message %02x:%02x (section %d, len %d, pid %d) for service \"%s\"",
                      ptr[0], ptr[1], des->number, len, mt->mt_pid, t->s_dvb_svcname);
           }

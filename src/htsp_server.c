@@ -196,6 +196,9 @@ typedef struct htsp_subscription {
   int hs_90khz;
 
   int hs_queue_depth;
+#if ENABLE_DVBBUFFER
+  int64_t hs_start_until;  /* instant zapping start reserve (streaming.h) */
+#endif
 
 #define NUM_FILTERED_STREAMS (64*8)
 
@@ -4154,6 +4157,7 @@ htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
   int64_t ts;
   int qlen = hs->hs_q.hmq_payload;
   int video = SCT_ISVIDEO(pkt->pkt_type);
+  int64_t depth = hs->hs_queue_depth, reserve = 0;
   size_t payloadlen;
 
   if (pkt->pkt_err)
@@ -4167,10 +4171,15 @@ htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
     return;
   }
 
+#if ENABLE_DVBBUFFER
+  /* a start from the ring buffer comes as a burst */
+  reserve = streaming_start_reserve_get(&hs->hs_start_until, mclk());
+#endif
+
   if(video &&
-     ((qlen > hs->hs_queue_depth     && pkt->v.pkt_frametype == PKT_B_FRAME) ||
-      (qlen > hs->hs_queue_depth * 2 && pkt->v.pkt_frametype == PKT_P_FRAME) ||
-      (qlen > hs->hs_queue_depth * 3))) {
+     ((qlen > depth + reserve     && pkt->v.pkt_frametype == PKT_B_FRAME) ||
+      (qlen > depth * 2 + reserve && pkt->v.pkt_frametype == PKT_P_FRAME) ||
+      (qlen > depth * 3 + reserve))) {
 
     hs->hs_dropstats[pkt->v.pkt_frametype]++;
 

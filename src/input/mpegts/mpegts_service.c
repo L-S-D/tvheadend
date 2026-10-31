@@ -28,6 +28,7 @@
 #include "config.h"
 #include "epggrab.h"
 #include "descrambler/dvbcam.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 /* **************************************************************************
  * Class definition
@@ -489,6 +490,10 @@ mpegts_service_start(service_t *t, int instance, int weight, int flags)
     /* Open service */
     s->s_dvb_subscription_flags = flags;
     s->s_dvb_subscription_weight = weight;
+#if ENABLE_DVBBUFFER
+    /* Instant zapping: backlog injection before the PIDs deliver data */
+    dvbbuffer_service_start(s);
+#endif
     mmi->mmi_input->mi_open_service(mmi->mmi_input, s, flags, 1, weight);
   }
 
@@ -511,6 +516,10 @@ mpegts_service_stop(service_t *t)
   /* Stop */
   if (i)
     i->mi_close_service(i, s);
+
+#if ENABLE_DVBBUFFER
+  dvbbuffer_service_stop(s);
+#endif
 
   /* Save some memory */
   sbuf_free(&s->s_tsbuf);

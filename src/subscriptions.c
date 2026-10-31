@@ -18,6 +18,7 @@
 
 #include "tvheadend.h"
 #include "subscriptions.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #include "streaming.h"
 #include "parsers/parsers.h"
 #include "channels.h"
@@ -96,6 +97,11 @@ subscription_link_service(th_subscription_t *s, service_t *t)
     s->ths_start_message = streaming_msg_create_data(SMT_START, ss);
   }
 
+#if ENABLE_DVBBUFFER
+  /* Instant zapping (H7): what was collected goes to the others first */
+  dvbbuffer_service_link_pre(t);
+#endif
+
   // Link to service output
   streaming_target_connect(&t->s_streaming_pad, &s->ths_input);
 
@@ -115,6 +121,10 @@ subscription_link_service(th_subscription_t *s, service_t *t)
     sm = streaming_msg_create_code(SMT_SERVICE_STATUS, 
 				   t->s_streaming_status);
     streaming_target_deliver(s->ths_output, sm);
+#if ENABLE_DVBBUFFER
+    /* Instant zapping (H7): this subscriber starts at the last keyframe */
+    dvbbuffer_service_link(t, s);
+#endif
   }
 
   tvh_mutex_unlock(&t->s_stream_mutex);
@@ -136,6 +146,10 @@ subscription_unlink_service0(th_subscription_t *s, int reason, int resched)
   tvh_mutex_lock(&t->s_stream_mutex);
 
   streaming_target_disconnect(&t->s_streaming_pad, &s->ths_input);
+#if ENABLE_DVBBUFFER
+  /* Instant zapping (H7): no backlog for it any more */
+  dvbbuffer_service_unlink(t, s);
+#endif
 
   if(!resched && t->s_running) {
     // Send a STOP message to the subscription client
