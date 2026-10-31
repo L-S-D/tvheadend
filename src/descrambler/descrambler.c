@@ -1374,6 +1374,82 @@ descrambler_flush_csa(service_t *t)
     if (!dr->dr_key_multipid) break;
   }
 }
+
+/*
+ * Instant zapping (H6): does the CA system on this ECM PID answer an ECM
+ * with the key of one crypto period only (VideoGuard)? The others answer
+ * with both, the current and the next key (s_stream_mutex held).
+ */
+int
+descrambler_ecm_one_key(service_t *t, int pid)
+{
+  elementary_stream_t *st;
+  caid_t *ca;
+
+  lock_assert(&t->s_stream_mutex);
+  TAILQ_FOREACH(st, &t->s_components.set_filter, es_filter_link) {
+    if (st->es_pid != pid) continue;
+    LIST_FOREACH(ca, &st->es_caids, link)
+      if (ca->use && caid_is_videoguard(ca->caid))
+        return 1;
+  }
+  return 0;
+}
+
+/*
+ * Instant zapping (H6): key parity of an ECM table id, counted like
+ * descrambler_ecm_sent_locked() does (s_stream_mutex held).
+ * 0 = even, 1 = odd, -1 = not a 0x80/0x81 ECM or no descrambler.
+ */
+int
+descrambler_ecm_parity(service_t *t, uint8_t table_id)
+{
+  th_descrambler_runtime_t *dr = t->s_descramble;
+  int j;
+
+  lock_assert(&t->s_stream_mutex);
+  if (dr == NULL || (table_id & 0xfe) != 0x80)
+    return -1;
+  j = table_id & 1;
+  if (dr->dr_ecm_parity == ECM_PARITY_81EVEN_80ODD)
+    j ^= 1;
+  return j;
+}
+
+/*
+ * Instant zapping (H6): a key that only opened the backlog of the previous
+ * crypto period. It came after the key on air, so key_late() takes it for
+ * the newer one: at the next switch to its parity tvh descrambles with it
+ * - garbage - until the key of the new period arrives. Make it older than
+ * the key of the other parity, then key_late() sees it as late and tvh
+ * waits for the new key instead. A key of this parity received since is
+ * left alone (s_stream_mutex held).
+ */
+void
+descrambler_age_key(service_t *t, int parity, const uint8_t *cw, int keylen)
+{
+  th_descrambler_runtime_t *dr = t->s_descramble;
+  th_descrambler_key_t *tk;
+  int i;
+
+  lock_assert(&t->s_stream_mutex);
+  if (dr == NULL || parity < 0 || parity > 1 || keylen <= 0 ||
+      keylen > (int)sizeof(dr->dr_keys[0].key_data[0]))
+    return;
+  for (i = 0; i < DESCRAMBLER_MAX_KEYS; i++) {
+    tk = &dr->dr_keys[i];
+    if (tk->key_csa.csa_keylen == keylen &&
+        memcmp(tk->key_data[parity], cw, keylen) == 0 &&
+        tk->key_timestamp[parity ^ 1] > 1 &&
+        tk->key_timestamp[parity] >= tk->key_timestamp[parity ^ 1]) {
+      tk->key_timestamp[parity] = tk->key_timestamp[parity ^ 1] - 1;
+      tvhdebug(LS_DESCRAMBLER, "%s key[%d] of the previous crypto period (instant "
+               "zapping backlog) aged for service \"%s\"", parity ? "odd" : "even",
+               tk->key_pid, ((mpegts_service_t *)t)->s_dvb_svcname);
+    }
+    if (!dr->dr_key_multipid) break;
+  }
+}
 #endif
 
 static int

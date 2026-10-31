@@ -195,6 +195,10 @@ int  descrambler_multi_pid     ( th_descrambler_t *t );
 #if ENABLE_DVBBUFFER
 void descrambler_ecm_from_buffer(struct service *t, int pid, const uint8_t *ptr, int len);
 void descrambler_flush_csa     ( struct service *t );
+int  descrambler_ecm_one_key   ( struct service *t, int pid );
+int  descrambler_ecm_parity    ( struct service *t, uint8_t table_id );
+void descrambler_age_key       ( struct service *t, int parity,
+                                 const uint8_t *cw, int keylen );
 #endif
 void descrambler_keys          ( th_descrambler_t *t, int type, uint16_t pid,
                                  const uint8_t *even, const uint8_t *odd );

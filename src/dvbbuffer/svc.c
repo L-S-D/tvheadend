@@ -53,6 +53,10 @@ typedef struct dvbbuffer_svc {
   int64_t          ds_retry_at;     /* next start attempt (mono) */
   uint32_t         ds_ecm_replayed; /* H6: ECMs from the history given to the CA client */
   uint64_t         ds_ecm_ids[8];   /* H6: ... their history ids (each once per start) */
+  uint8_t          ds_old_ecm;      /* H6: parities (bit 0 even, bit 1 odd) of an ECM of
+                                       the previous crypto period whose answer is due */
+  uint8_t          ds_stale_cw[2][8]; /* H6: ... the keys it brought: backlog only */
+  uint8_t          ds_stale_valid[2];
   th_subscription_t *ds_join[DVBBUFFER_SVC_JOIN_MAX]; /* H7: joining subscribers, */
   int              ds_njoin;        /* served by the next live run (input thread) */
   uint32_t         ds_joins;        /* H7: subscribers started from the backlog */
@@ -91,10 +95,31 @@ dvbbuffer_svc_cw_hist(dvbbuffer_svc_t *ds, int parity, const uint8_t *cw)
   ds->ds_cw_hist_n[parity] = n;
 }
 
+/*
+ * H6: the keys from ECMs of the previous crypto period have done their job
+ * (the backlog). They arrived after the key on air, so tvh would take them
+ * for the newer keys at the next switch to their parity and descramble the
+ * new period with an old key until its own key comes (a block of garbage
+ * some seconds after the start). Age them in tvh's descrambler, so it waits
+ * for the new key instead (s_stream_mutex held).
+ */
+static void
+dvbbuffer_svc_age_stale(service_t *t, dvbbuffer_svc_t *ds)
+{
+  int i;
+
+  for (i = 0; i < 2; i++)
+    if (ds->ds_stale_valid[i]) {
+      ds->ds_stale_valid[i] = 0;
+      descrambler_age_key(t, i, ds->ds_stale_cw[i], 8);
+    }
+}
+
 static void
 dvbbuffer_svc_go_live(mpegts_service_t *t, dvbbuffer_svc_t *ds, const char *why)
 {
   ds->ds_state = DVBBUFFER_SVC_LIVE;
+  dvbbuffer_svc_age_stale((service_t *)t, ds);
   tvhdebug(LS_DVBBUFFER, "%s: live (%s), injected %"PRIu64" packets, "
            "held back %"PRIu64" live packets, %"PRId64" ms after start",
            service_nicename((service_t *)t), why, ds->ds_injected, ds->ds_dropped,
@@ -278,8 +303,20 @@ dvbbuffer_service_key(service_t *t, int type, uint16_t pid,
       memcpy(ds->ds_cw[i], cw[i], 8);
       ds->ds_cw_valid[i] = 1;
       dvbbuffer_svc_cw_hist(ds, i, cw[i]);
+      /* the answer to an ECM of the previous crypto period (H6): for the
+       * backlog only, aged once the service is live */
+      if (ds->ds_old_ecm & (1 << i)) {
+        ds->ds_old_ecm &= ~(1 << i);
+        memcpy(ds->ds_stale_cw[i], cw[i], 8);
+        ds->ds_stale_valid[i] = 1;
+        tvhdebug(LS_DVBBUFFER, "%s: %s key of the previous crypto period (backlog only)",
+                 service_nicename(t), i ? "odd" : "even");
+      }
     }
   ds->ds_cw_ecm = ecm;
+  /* it came after the service went live: age it right away */
+  if (ds->ds_state == DVBBUFFER_SVC_LIVE)
+    dvbbuffer_svc_age_stale(t, ds);
   if (ds->ds_state != DVBBUFFER_SVC_WAIT)
     return;
   r = dvbbuf_raw_set_cw(ds->ds_raw, ds->ds_cw_valid[0] ? ds->ds_cw[0] : NULL,
@@ -340,8 +377,15 @@ dvbbuffer_service_ecm(mpegts_service_t *t, uint16_t pid,
       continue;
     /* an older ECM than the one on air only while a key parity is missing
      * (one key per answer, e.g. VideoGuard): its answer would otherwise
-     * overwrite tvh's key of the next period with an old one */
-    if (i != n - 1 && ds->ds_cw_valid[0] && ds->ds_cw_valid[1])
+     * overwrite tvh's key of the next period with an old one.
+     * Only for CA systems with one key per answer at all: OSCam sets the
+     * filters of both table ids at once, before any answer is in, so the
+     * check above cannot hold back a CA system that answers with the current
+     * and the next key (Nagra on HD+: the answer to the older ECM came last
+     * and replaced the next key - a block of garbage at the next key change,
+     * 2-10 s after the start, seen on ProSieben/RTL/NITRO HD) */
+    if (i != n - 1 && (!descrambler_ecm_one_key((service_t *)t, pid) ||
+                       (ds->ds_cw_valid[0] && ds->ds_cw_valid[1])))
       goto end;
     /* the newest match only, and each ECM once: OSCam re-sets its filter
      * after every section, a second delivery would loop */
@@ -351,6 +395,13 @@ dvbbuffer_service_ecm(mpegts_service_t *t, uint16_t pid,
     if (ds->ds_ecm_replayed >= ARRAY_SIZE(ds->ds_ecm_ids))
       goto end;
     ds->ds_ecm_ids[ds->ds_ecm_replayed++] = e[i].id;
+    /* an ECM older than the one on air: its key opens the backlog only and
+     * must not pass for the newer key later (dvbbuffer_svc_age_stale()) */
+    if (i != n - 1) {
+      int parity = descrambler_ecm_parity((service_t *)t, out[0]);
+      if (parity >= 0)
+        ds->ds_old_ecm |= 1 << parity;
+    }
     /* tvh's descrambler: ECM start of the parity, ICAM ecm mode of the keys */
     descrambler_ecm_from_buffer((service_t *)t, pid, out, len);
     tvhdebug(LS_DVBBUFFER, "%s: ECM table %02X on pid %d from the buffer (%"PRId64" ms old) "
