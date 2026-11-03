@@ -36,6 +36,8 @@ typedef struct dvbbuffer_conf {
   uint32_t keyframe_back;     /* start keyframe: 1 newest, 2 the one before */
   uint32_t ts_start_ms;       /* raw TS streaming clients start this far back
                                  (they pre-buffer before playing), 0 = as above */
+  uint32_t htsp_audio_ms;     /* start only at a keyframe whose sound is in the
+                                 ring this far past it, 0 = off */
   uint32_t key_wait_ms;       /* pay-TV: wait for tvh's key, then live */
   uint32_t start_reserve_kb;  /* extra output queue room at stream start */
   uint32_t start_reserve_sec; /* ... for this long after the first data */

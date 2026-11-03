@@ -205,6 +205,7 @@ dvbbuffer_service_start(mpegts_service_t *t)
   cfg.burst_bytes = dvbbuffer_conf.burst_kb * 1000;
   cfg.pace_factor = dvbbuffer_conf.pace_factor;
   cfg.keyframe_back = dvbbuffer_conf.keyframe_back;
+  cfg.audio_cover_ms = dvbbuffer_conf.htsp_audio_ms;
   if (dvbbuf_raw_open(dm->dm_lib, &cfg, &raw) != DVBBUF_OK) {
     tvherror(LS_DVBBUFFER, "%s: raw reader: %s",
              service_nicename((service_t *)t), dvbbuf_last_error());
@@ -647,6 +648,7 @@ dvbbuffer_svc_join(mpegts_service_t *ms, dvbbuffer_svc_t *ds,
   cfg.service_id    = service_id16(t);
   cfg.max_age_ms    = dvbbuffer_conf.max_age_ms;
   cfg.keyframe_back = dvbbuffer_conf.keyframe_back;
+  cfg.audio_cover_ms = dvbbuffer_conf.htsp_audio_ms;
   cfg.decrypt       = encrypted ? 1 : 0;
   if (dvbbuf_raw_open(ds->ds_mux->dm_lib, &cfg, &raw) != DVBBUF_OK) {
     why = "raw reader";

@@ -218,6 +218,20 @@ const idclass_t dvbbuffer_conf_class = {
     },
     {
       .type   = PT_U32,
+      .id     = "htsp_audio_ms",
+      .name   = N_("Start with sound (ms)"),
+      .desc   = N_("A broadcast sends the sound up to about a second after "
+                   "its picture: started at the newest keyframe, a player "
+                   "waits for the sound. The start keyframe is the newest "
+                   "one whose sound is in the buffer already, at least this "
+                   "far past it (HTSP, e.g. Kodi or TVF; second viewers "
+                   "too). 0 = off (start keyframe as above)."),
+      .off    = offsetof(dvbbuffer_conf_t, htsp_audio_ms),
+      .opts   = PO_EXPERT,
+      .group  = 2,
+    },
+    {
+      .type   = PT_U32,
       .id     = "start_reserve_kb",
       .name   = N_("Start queue reserve (kB)"),
       .desc   = N_("A start from the buffer comes as a burst. HTSP and HTTP "
@@ -516,6 +530,7 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.max_age_ms       = 5000;
   dvbbuffer_conf.keyframe_back    = 1;
   dvbbuffer_conf.ts_start_ms      = 5000;
+  dvbbuffer_conf.htsp_audio_ms    = 200;
   dvbbuffer_conf.key_wait_ms      = 3000;
   dvbbuffer_conf.start_reserve_kb  = 8000;
   dvbbuffer_conf.start_reserve_sec = 5;
