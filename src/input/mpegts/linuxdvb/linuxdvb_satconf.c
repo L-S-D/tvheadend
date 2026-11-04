@@ -1172,6 +1172,9 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
   }
   if (!lse->lse_en50494) {
     vol = pol;
+    /* an LNB may need a fixed voltage (external polarizer) */
+    if (lse->lse_lnb->lnb_vol && (r = lse->lse_lnb->lnb_vol(lse->lse_lnb, lm)) >= 0)
+      vol = r;
   } else {
     vol  = 0; /* 13V */
   }
