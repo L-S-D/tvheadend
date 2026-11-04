@@ -222,6 +222,10 @@ dvb_mux_class_type_list ( void *o, const char *lang )
     { N_("DAB-ETI"),                  MM_TYPE_DAB_ETI },
     { N_("DAB-TSNI"),                 MM_TYPE_DAB_TSNI },
 #endif
+#if ENABLE_LINUXDVB_NEUMO && ENABLE_DVBDAB
+    { N_("DAB-GSE"),                  MM_TYPE_DAB_GSE },
+    { N_("GSE"),                      MM_TYPE_GSE },
+#endif
   };
   (void) o;
   return strtab2htsmsg(tab, 1, lang);
