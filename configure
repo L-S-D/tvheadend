@@ -25,6 +25,7 @@ OPTIONS=(
   "capmt:yes"
   "constcw:yes"
   "linuxdvb:yes"
+  "linuxdvb_neumo:auto"
   "satip_server:yes"
   "satip_client:yes"
   "hdhomerun_client:no"
@@ -484,6 +485,42 @@ if enabled linuxdvb; then
   fi
 else
   disable ddci
+fi
+
+#
+# Neumo DVB driver extensions: need the uapi headers of the Neumo driver.
+# Note that these headers are not ABI compatible with mainline - enum fe_code_rate
+# differs from 13 (FEC_1_3) on, enum fe_modulation from 15 - and every
+# linuxdvb file uses them, with this option or without: a tvheadend built
+# against them must run on a kernel with the Neumo driver. All that the code
+# uses is checked: older Neumo headers lack some of it.
+#
+if enabled linuxdvb && enabled_or_auto linuxdvb_neumo; then
+  if ! check_cc_snippet linuxdvb_neumo '#include <sys/types.h>
+#include <linux/dvb/frontend.h>
+#include <sys/ioctl.h>
+struct dvb_frontend_extended_info info;
+struct fe_rf_input_control ic;
+unsigned long ioc[] = { FE_GET_EXTENDED_INFO, FE_SET_RF_INPUT };
+int cmd[] = { DTV_SET_SEC_CONFIGURED, DTV_ALGORITHM, DTV_MATYPE, DTV_MAIN_MODCOD,
+              DTV_PLS_MODE, DTV_PLS_CODE, DTV_OUTPUT_BBFRAMES,
+              ALGORITHM_BLIND, ALGORITHM_COLD,
+              FE_RESERVATION_MASTER, FE_RESERVATION_SLAVE, FE_RESERVATION_UNCHANGED,
+              FE_RESERVATION_NOT_SUPPORTED, FE_RESERVATION_RETRY,
+              FE_RESERVATION_MODE_MASTER_OR_SLAVE, FE_RESERVATION_MODE_SLAVE };
+#define TEST neumo_test
+static int neumo_test(void)
+{
+  return info.supports_neumo + info.num_rf_inputs + info.default_rf_input +
+         info.supports_bbframes + (int)info.card_mac_address +
+         ic.owner + ic.config_id + ic.rf_in + ic.unicable_mode + (int)ic.mode;
+}'; then
+    enabled linuxdvb_neumo && \
+      die "Neumo DVB driver API not found (use --disable-linuxdvb_neumo)"
+    disable linuxdvb_neumo
+  fi
+else
+  disable linuxdvb_neumo
 fi
 
 #
