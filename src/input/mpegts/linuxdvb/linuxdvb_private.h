@@ -378,6 +378,8 @@ struct linuxdvb_lnb
   int       (*lnb_match)(linuxdvb_lnb_t*, dvb_mux_t*, dvb_mux_t*);
   int       (*lnb_band) (linuxdvb_lnb_t*, dvb_mux_t*);
   int       (*lnb_pol)  (linuxdvb_lnb_t*, dvb_mux_t*);
+  /* voltage to use (0 = 13 V, 1 = 18 V), -1 = from the polarisation (NULL: same) */
+  int       (*lnb_vol)  (linuxdvb_lnb_t*, dvb_mux_t*);
 };
 
 #define UNICABLE_EN50494     50494

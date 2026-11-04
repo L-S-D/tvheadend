@@ -20,6 +20,7 @@
 #include "tvheadend.h"
 #include "linuxdvb_private.h"
 #include "settings.h"
+#include "spawn.h"
 
 #include <sys/ioctl.h>
 #include <sys/types.h>
@@ -41,6 +42,11 @@ typedef struct linuxdvb_lnb_conf
   int lnb_low;
   int lnb_high;
   int lnb_switch;
+
+  /* External polarizer control */
+  int   lnb_polarizer_enabled;  /* Use external polarizer via HTTP */
+  char *lnb_polarizer_url;      /* Positioner URL (e.g., "http://192.168.1.100") */
+  int   lnb_static_voltage;     /* 0=13V, 1=18V when polarizer enabled */
 } linuxdvb_lnb_conf_t;
 
 static void
@@ -49,6 +55,16 @@ linuxdvb_lnb_class_get_title
 {
   linuxdvb_diseqc_t *ld = (linuxdvb_diseqc_t*)o;
   snprintf(dst, dstsize, tvh_gettext_lang(lang, N_("LNB: %s")), ld->ld_type);
+}
+
+static htsmsg_t *
+linuxdvb_lnb_voltage_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("13V (Vertical/Right)"),   0 },
+    { N_("18V (Horizontal/Left)"),  1 },
+  };
+  return strtab2htsmsg(tab, 1, lang);
 }
 
 extern const idclass_t linuxdvb_diseqc_class;
@@ -80,6 +96,32 @@ const idclass_t linuxdvb_lnb_class =
       .name     = N_("Switch frequency offset"),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(linuxdvb_lnb_conf_t, lnb_switch),
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "polarizer_enabled",
+      .name     = N_("Use external polarizer"),
+      .desc     = N_("Control polarization via external HTTP-controlled positioner "
+                     "instead of LNB voltage switching. When enabled, LNB voltage "
+                     "stays static and polarization is set via HTTP API."),
+      .off      = offsetof(linuxdvb_lnb_conf_t, lnb_polarizer_enabled),
+    },
+    {
+      .type     = PT_STR,
+      .id       = "polarizer_url",
+      .name     = N_("Positioner URL"),
+      .desc     = N_("URL of the positioner HTTP API (e.g., http://192.168.1.100). "
+                     "Polarization will be set via POST to /api/polarizer with type=H|V|L|R."),
+      .off      = offsetof(linuxdvb_lnb_conf_t, lnb_polarizer_url),
+    },
+    {
+      .type     = PT_INT,
+      .id       = "static_voltage",
+      .name     = N_("Static LNB voltage"),
+      .desc     = N_("Voltage to apply to LNB when external polarizer is enabled. "
+                     "Some LNBs need 18V for proper signal, others work fine with 13V."),
+      .list     = linuxdvb_lnb_voltage_list,
+      .off      = offsetof(linuxdvb_lnb_conf_t, lnb_static_voltage),
     },
     {}
   }
@@ -158,15 +200,6 @@ linuxdvb_lnb_inverted_pol
   return !linuxdvb_lnb_standard_pol(l, lm);
 }
 
-static int 
-linuxdvb_lnb_standard_tune
-  ( linuxdvb_diseqc_t *ld, dvb_mux_t *lm,
-    linuxdvb_satconf_t *lsp, linuxdvb_satconf_ele_t *ls,
-    int vol, int pol, int band, int freq )
-{
-  return linuxdvb_diseqc_set_volt(ls->lse_parent, vol);
-}
-
 /*
  * Bandstacked polarity switch LNB
  */
@@ -204,6 +237,105 @@ linuxdvb_lnb_bandstack_pol
   return 0;
 }
 
+/*
+ * External polarizer control via HTTP
+ */
+
+static void
+linuxdvb_lnb_set_polarizer
+  ( linuxdvb_lnb_conf_t *lnb, dvb_mux_t *lm )
+{
+  const char *type;
+  char url[512];
+  char post_data[16];
+  char *argv[16];
+  const char *p, *at;
+  pid_t pid;
+
+  if (!lnb->lnb_polarizer_enabled || !lnb->lnb_polarizer_url)
+    return;
+
+  /* Determine polarization type for API */
+  switch (lm->lm_tuning.u.dmc_fe_qpsk.polarisation) {
+  case DVB_POLARISATION_HORIZONTAL:
+    type = "H";
+    break;
+  case DVB_POLARISATION_VERTICAL:
+    type = "V";
+    break;
+  case DVB_POLARISATION_CIRCULAR_LEFT:
+    type = "L";
+    break;
+  case DVB_POLARISATION_CIRCULAR_RIGHT:
+    type = "R";
+    break;
+  default:
+    tvhwarn(LS_LINUXDVB, "polarizer: unknown polarisation %d",
+            lm->lm_tuning.u.dmc_fe_qpsk.polarisation);
+    return;
+  }
+
+  /* Build URL: http://host/api/polarizer */
+  snprintf(url, sizeof(url), "%s/api/polarizer", lnb->lnb_polarizer_url);
+  snprintf(post_data, sizeof(post_data), "type=%s", type);
+
+  /* log without user:password@ */
+  p = strstr(url, "://");
+  at = p ? strchr(p + 3, '@') : NULL;
+  if (at && !memchr(p + 3, '/', at - (p + 3)))
+    tvhdebug(LS_LINUXDVB, "polarizer: POST %.*s***%s %s", (int)(p + 3 - url), url, at, post_data);
+  else
+    tvhdebug(LS_LINUXDVB, "polarizer: POST %s %s", url, post_data);
+
+  /* Spawn curl to POST - fire and forget: at most 5 s, http(s) only, the URL
+   * after "--" (never an option), no answer in the log */
+  argv[0]  = (char *)"curl";
+  argv[1]  = (char *)"-s";
+  argv[2]  = (char *)"--fail";
+  argv[3]  = (char *)"-m";
+  argv[4]  = (char *)"5";
+  argv[5]  = (char *)"--proto";
+  argv[6]  = (char *)"=http,https";
+  argv[7]  = (char *)"-o";
+  argv[8]  = (char *)"/dev/null";
+  argv[9]  = (char *)"-X";
+  argv[10] = (char *)"POST";
+  argv[11] = (char *)"-d";
+  argv[12] = post_data;
+  argv[13] = (char *)"--";
+  argv[14] = url;
+  argv[15] = NULL;
+
+  if (spawnv(argv[0], argv, &pid, 1, 1) < 0) {
+    tvherror(LS_LINUXDVB, "polarizer: failed to spawn curl");
+  }
+}
+
+/* with the external polarizer the LNB gets a fixed voltage: the satconf asks
+ * for it (lnb_vol) before it sets any voltage, so vol below is already it */
+static int
+linuxdvb_lnb_static_vol ( linuxdvb_lnb_t *l, dvb_mux_t *lm )
+{
+  linuxdvb_lnb_conf_t *lnb = (linuxdvb_lnb_conf_t*)l;
+  return lnb->lnb_polarizer_enabled ? (lnb->lnb_static_voltage ? 1 : 0) : -1;
+}
+
+static int
+linuxdvb_lnb_polarizer_tune
+  ( linuxdvb_diseqc_t *ld, dvb_mux_t *lm,
+    linuxdvb_satconf_t *lsp, linuxdvb_satconf_ele_t *ls,
+    int vol, int pol, int band, int freq )
+{
+  linuxdvb_lnb_conf_t *lnb = (linuxdvb_lnb_conf_t*)ld;
+
+  /* If polarizer is enabled, send the HTTP command (vol is the static one) */
+  if (lnb->lnb_polarizer_enabled) {
+    tvhdebug(LS_LINUXDVB, "polarizer: using static voltage %dV", vol ? 18 : 13);
+    linuxdvb_lnb_set_polarizer(lnb, lm);
+  }
+  return linuxdvb_diseqc_set_volt(ls->lse_parent, vol);
+}
+
 /* **************************************************************************
  * Static list
  * *************************************************************************/
@@ -212,7 +344,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Universal",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -226,7 +358,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Standard",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -240,7 +372,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Enhanced",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -254,7 +386,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "C-Band",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -268,7 +400,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "C-Band (bandstack)",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_bandstack_freq,
       .lnb_match  = linuxdvb_lnb_bandstack_match,
@@ -282,7 +414,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Ku 10750",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -296,7 +428,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Ku 10750 (Hi-Band)",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -310,7 +442,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Ku 10750 (Hi-Band, Inverted-Polar.)",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -324,7 +456,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Ku 11300",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -338,7 +470,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Ku 11300 (Hi-Band)",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -352,7 +484,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
      { {
        .ld_type    = "C 5150/Ku 10750 (22kHz switch)",
-       .ld_tune    = linuxdvb_lnb_standard_tune,
+       .ld_tune    = linuxdvb_lnb_polarizer_tune,
        },
        .lnb_freq   = linuxdvb_lnb_standard_freq,
        .lnb_band   = linuxdvb_lnb_standard_band,
@@ -365,7 +497,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "DBS",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -379,7 +511,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "DBS Bandstack",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_bandstack_freq,
       .lnb_match  = linuxdvb_lnb_bandstack_match,
@@ -393,7 +525,7 @@ linuxdvb_lnb_conf_t linuxdvb_lnb_all[] = {
   {
     { {
       .ld_type    = "Ku 10700 (Australia)",
-      .ld_tune    = linuxdvb_lnb_standard_tune,
+      .ld_tune    = linuxdvb_lnb_polarizer_tune,
       },
       .lnb_freq   = linuxdvb_lnb_standard_freq,
       .lnb_match  = linuxdvb_lnb_standard_match,
@@ -438,6 +570,7 @@ linuxdvb_lnb_create0
 
   lsc2 = malloc(sizeof(linuxdvb_lnb_conf_t));
   *lsc2 = *lsc;
+  lsc2->lnb_vol = linuxdvb_lnb_static_vol;
   return (linuxdvb_lnb_t *)
             linuxdvb_diseqc_create0((linuxdvb_diseqc_t *)lsc2,
                                     NULL, &linuxdvb_lnb_class,
@@ -448,6 +581,7 @@ void
 linuxdvb_lnb_destroy ( linuxdvb_lnb_t *lnb )
 {
   linuxdvb_diseqc_destroy((linuxdvb_diseqc_t *)lnb);
+  free(((linuxdvb_lnb_conf_t *)lnb)->lnb_polarizer_url);
   free(lnb);
 }
 

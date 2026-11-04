@@ -185,7 +185,10 @@ linuxdvb_switch_tune
 
     lsp->ls_last_switch = NULL;
 
-    if (linuxdvb_satconf_start(lsp, MINMAX(ls->ls_powerup_time, 10, 500), pol))
+    /* the voltage of the LNB: a fixed one for an external polarizer (vol);
+     * with Unicable as before */
+    if (linuxdvb_satconf_start(lsp, MINMAX(ls->ls_powerup_time, 10, 500),
+                               sc->lse_en50494 ? pol : vol))
       return -1;
 
     com = 0xF0 | (ls->ls_committed << 2) | (pol << 1) | band;
