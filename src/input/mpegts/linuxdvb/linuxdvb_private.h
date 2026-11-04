@@ -154,6 +154,27 @@ struct linuxdvb_frontend
   uint32_t                  lfe_grace_period;
 
   /*
+   * Neumo DVB driver support
+   * Set when RF input is configured, to include DTV_SET_SEC_CONFIGURED in tune
+   */
+  int                       lfe_sec_configured;
+
+  /*
+   * Neumo DVB driver detection (from FE_GET_EXTENDED_INFO)
+   */
+  int                       lfe_neumo_detected;     /* 1 if detection was done */
+  int                       lfe_neumo_supported;    /* 1 if driver supports Neumo extensions */
+  uint8_t                   lfe_num_rf_inputs;      /* Number of RF inputs available */
+  int8_t                    lfe_default_rf_input;   /* Default RF input */
+
+  /*
+   * Virtual frontend RF input binding (for multi-RF-input adapters)
+   * -1 = not bound (legacy/standard frontend)
+   * 0+ = bound to specific RF input
+   */
+  int8_t                    lfe_rf_input;
+
+  /*
    * Satconf (DVB-S only)
    */
   linuxdvb_satconf_t       *lfe_satconf;
@@ -253,6 +274,7 @@ struct linuxdvb_satconf
    */
   mtimer_t               ls_diseqc_timer;
   int                    ls_diseqc_idx;
+  int                    ls_rf_retries;    /* FE_SET_RF_INPUT: RF input busy, tried again */
   int                    ls_diseqc_repeats;
   int                    ls_diseqc_full;
   int                    ls_switch_rotor;
@@ -443,7 +465,7 @@ linuxdvb_frontend_t *
 linuxdvb_frontend_create
   ( htsmsg_t *conf, linuxdvb_adapter_t *la, int number,
     const char *fe_path, const char *dmx_path, const char *dvr_path,
-    dvb_fe_type_t type, const char *name );
+    dvb_fe_type_t type, const char *name, int8_t rf_input );
 
 void linuxdvb_frontend_save ( linuxdvb_frontend_t *lfe, htsmsg_t *m );
 

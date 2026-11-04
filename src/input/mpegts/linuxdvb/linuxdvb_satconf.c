@@ -53,7 +53,9 @@ linuxdvb_satconf_class_active_get ( void *obj )
   linuxdvb_satconf_t *ls = obj;
   linuxdvb_satconf_ele_t *lse;
   active = 0;
-  if (*(int *)linuxdvb_frontend_class_active_get(ls->ls_frontend)) {
+  /* Use mpegts_input_class_active_get to check only THIS frontend's enabled status,
+   * not linuxdvb_frontend_class_active_get which also considers grouped frontends */
+  if (*(int *)mpegts_input_class_active_get(ls->ls_frontend)) {
     TAILQ_FOREACH(lse, &ls->ls_elements, lse_link) {
       if (lse->lse_enabled) {
         active = 1;
@@ -949,6 +951,7 @@ static linuxdvb_satconf_ele_t *
 linuxdvb_satconf_find_ele( linuxdvb_satconf_t *ls, mpegts_mux_t *mux )
 {
   linuxdvb_satconf_ele_t *lse;
+
   TAILQ_FOREACH(lse, &ls->ls_elements, lse_link) {
     if (idnode_set_exists(lse->lse_networks, &mux->mm_network->mn_id))
       return lse;
@@ -1034,6 +1037,10 @@ linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol )
 
 static void linuxdvb_satconf_ele_tune_cb ( void *o );
 
+/* FE_SET_RF_INPUT answered "busy": try again this often, this far apart */
+#define LINUXDVB_RF_RETRIES  8
+#define LINUXDVB_RF_RETRY_MS 250
+
 static int
 linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
 {
@@ -1063,6 +1070,97 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     (linuxdvb_diseqc_t*)lse->lse_en50494,
     (linuxdvb_diseqc_t*)lse->lse_lnb
   };
+
+#if ENABLE_LINUXDVB_NEUMO
+  /*
+   * RF Input selection (Neumo DVB driver): the RF input of a virtual
+   * frontend (-1 = the frontend has none, the driver default stays)
+   */
+  int8_t rf_input_to_use = lfe->lfe_rf_input;
+
+  tvhtrace(LS_DISEQC, "tune: lfe_rf_input=%d, neumo_supported=%d",
+           lfe->lfe_rf_input, lfe->lfe_neumo_supported);
+
+  /* Only attempt RF input selection if Neumo driver is supported and RF input is specified */
+  if (rf_input_to_use >= 0 && lfe->lfe_fe_fd > 0 && lfe->lfe_neumo_supported) {
+    struct dtv_property prop;
+    struct dtv_properties props;
+    struct dvb_frontend_event ev;
+    struct fe_rf_input_control ic;
+    int drained;
+
+    /* Clear frontend and drain events - repeat until fully drained */
+    prop.cmd = DTV_CLEAR;
+    props.num = 1;
+    props.props = &prop;
+
+    do {
+      ioctl(lfe->lfe_fe_fd, FE_SET_PROPERTY, &props);
+      drained = 0;
+      while (ioctl(lfe->lfe_fe_fd, FE_GET_EVENT, &ev) >= 0)
+        drained++;
+    } while (drained > 0);
+
+    /* Set RF input */
+    memset(&ic, 0, sizeof(ic));
+    ic.owner = 0xffffffff;                /* Legacy owner */
+    /*
+     * config_id must be the same for all adapters sharing an RF input
+     * to allow proper master/slave sharing. Use config_id=1 to match
+     * the driver's legacy path which always uses config_id=1.
+     */
+    ic.config_id = 1;
+    ic.rf_in = rf_input_to_use;
+    ic.mode = FE_RESERVATION_MODE_MASTER_OR_SLAVE;
+
+    /* Unicable: set unicable_mode=1 to allow DiSEqC from slaves */
+    ic.unicable_mode = lse->lse_en50494 ? 1 : 0;
+
+    int rf_result = ioctl(lfe->lfe_fe_fd, FE_SET_RF_INPUT, &ic);
+    int rf_errno = errno;
+    /* FE_SET_RF_INPUT returns enum fe_ioctl_result. Unless it succeeded, the
+     * driver did not switch: the demod would still listen on the previous RF
+     * input (another LNB/satellite), so the tune must not go on */
+    switch (rf_result) {
+    case FE_RESERVATION_MASTER:
+    case FE_RESERVATION_SLAVE:
+      /* RF input changed: the driver turned voltage/tone off on the old one,
+       * so re-apply them even if they look unchanged; a slave must send its
+       * FE_SET_VOLTAGE too, the driver decides (veto) */
+      ls->ls_last_vol = 0;
+      ls->ls_last_tone_off = 0;
+      /* fall through */
+    case FE_RESERVATION_UNCHANGED:
+      tvhtrace(LS_DISEQC, "set RF input %d (unicable=%d, config_id=%d, result=%d)",
+               rf_input_to_use, ic.unicable_mode, ic.config_id, rf_result);
+      /* Signal frontend to include DTV_SET_SEC_CONFIGURED in tune */
+      lfe->lfe_sec_configured = 1;
+      ls->ls_rf_retries = 0;
+      break;
+    case FE_RESERVATION_NOT_SUPPORTED:
+      /* this demod has no RF input selection: tune as without it */
+      tvhtrace(LS_DISEQC, "RF input selection not supported, tuning without");
+      break;
+    case FE_RESERVATION_RETRY:
+    case FE_UNICABLE_DISEQC_RETRY:
+      /* RF input busy (e.g. its master demod has not configured it yet) */
+      if (++ls->ls_rf_retries <= LINUXDVB_RF_RETRIES) {
+        tvhdebug(LS_DISEQC, "RF input %d busy, trying again (%d/%d)",
+                 rf_input_to_use, ls->ls_rf_retries, LINUXDVB_RF_RETRIES);
+        mtimer_arm_rel(&ls->ls_diseqc_timer, linuxdvb_satconf_ele_tune_cb, lse,
+                       ms2mono(LINUXDVB_RF_RETRY_MS));
+        return 0;
+      }
+      tvherror(LS_DISEQC, "RF input %d still busy, tuning failed", rf_input_to_use);
+      return -1;
+    default:
+      /* FE_RESERVATION_FAILED, RELEASED (only for a release request), errors */
+      tvherror(LS_DISEQC, "FE_SET_RF_INPUT %d failed: result=%d%s%s", rf_input_to_use,
+               rf_result, rf_result < 0 ? ", " : "", rf_result < 0 ? strerror(rf_errno) : "");
+      return -1;
+    }
+  }
+#endif
 
   if (lse->lse_lnb) {
     pol  = lse->lse_lnb->lnb_pol (lse->lse_lnb, lm) & 0x1;
@@ -1218,6 +1316,7 @@ linuxdvb_satconf_start_mux
   /* Diseqc */
   ls->ls_mmi        = mmi;
   ls->ls_diseqc_idx = 0;
+  ls->ls_rf_retries = 0;
   if (lse->lse_rotor)
     if (lse->lse_rotor->ld_start(lse->lse_rotor, (dvb_mux_t *)mmi->mmi_mux, ls, lse))
       return 0;
@@ -1380,7 +1479,7 @@ linuxdvb_satconf_save ( linuxdvb_satconf_t *ls, htsmsg_t *m )
   htsmsg_add_str(m, "type", ls->ls_type);
   idnode_save(&ls->ls_id, m);
   l = htsmsg_create_list();
-  TAILQ_FOREACH(lse, &ls->ls_elements, lse_link){ 
+  TAILQ_FOREACH(lse, &ls->ls_elements, lse_link){
     e = htsmsg_create_map();
     idnode_save(&lse->lse_id, e);
     htsmsg_add_str(e, "uuid", idnode_uuid_as_str(&lse->lse_id, ubuf));
@@ -1606,7 +1705,9 @@ linuxdvb_satconf_ele_class_active_get ( void *obj )
   static int active;
   linuxdvb_satconf_ele_t *lse = obj;
   active = 0;
-  if (*(int *)linuxdvb_frontend_class_active_get(lse->lse_parent->ls_frontend))
+  /* Use mpegts_input_class_active_get to check only THIS frontend's enabled status,
+   * not linuxdvb_frontend_class_active_get which also considers grouped frontends */
+  if (*(int *)mpegts_input_class_active_get(lse->lse_parent->ls_frontend))
     active = lse->lse_enabled;
   return &active;
 }
