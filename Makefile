@@ -473,6 +473,9 @@ SRCS-IPTV = \
 SRCS-${CONFIG_IPTV} += $(SRCS-IPTV)
 I18N-C += $(SRCS-IPTV)
 
+# ISI probe (multistream detection, Neumo driver)
+SRCS-yes += src/input/mpegts/dab/isi_probe.c
+
 # DAB (Digital Audio Broadcasting) probe and streaming - libdvbdab
 # (configure: dvbdab, flags come from pkg-config)
 SRCS-DAB = \

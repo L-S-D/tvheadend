@@ -231,6 +231,9 @@ mpegts_network_scan_mux_done0
    * or its tuner taken), the mux may be going away */
   dab_found = mpegts_dab_probe_complete(mm, result != MM_SCAN_NONE);
 
+  /* Complete ISI probe */
+  mpegts_isi_probe_complete(mm, result != MM_SCAN_NONE);
+
   /* Override result if DAB probe found content */
   if (dab_found > 0 && result == MM_SCAN_FAIL) {
     result = MM_SCAN_OK;
@@ -339,6 +342,9 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
 
   /* Start DAB probe in parallel with SI scanning */
   mpegts_dab_probe_start(mm);
+
+  /* Start ISI probe (no-op if not DVB-S2 with Neumo driver) */
+  mpegts_isi_probe_start(mm);
 }
 
 /* Mux has been reactivated */
