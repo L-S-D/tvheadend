@@ -430,7 +430,7 @@ enum mpegts_mux_type
 /* a DAB ensemble converted to a TS (libdvbdab) */
 #define mpegts_mux_is_dab(mm) \
   ((mm)->mm_type == MM_TYPE_DAB_MPE || (mm)->mm_type == MM_TYPE_DAB_ETI || \
-   (mm)->mm_type == MM_TYPE_DAB_TSNI)
+   (mm)->mm_type == MM_TYPE_DAB_GSE || (mm)->mm_type == MM_TYPE_DAB_TSNI)
 
 enum mpegts_mux_epg_flag
 {
@@ -550,6 +550,11 @@ struct mpegts_mux
    * ISI probe context (for Neumo driver ISI scanning on DVB-S2)
    */
   void                       *mm_isi_probe_ctx;
+
+  /*
+   * GSE-DAB probe context (for DAB detection in GSE streams)
+   */
+  void                       *mm_gse_dab_probe_ctx;
 
   /*
    * Functions
@@ -1276,6 +1281,18 @@ void mpegts_isi_probe_start(mpegts_mux_t *mm);
 int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate);
 int  mpegts_isi_probe_is_done(mpegts_mux_t *mm);
 
+/*
+ * GSE-DAB probe (DAB detection in GSE streams, libdvbdab)
+ */
+#if ENABLE_DVBDAB
+void mpegts_gse_dab_probe_start(mpegts_mux_t *mm);
+int  mpegts_gse_dab_probe_complete(mpegts_mux_t *mm, int evaluate);
+int  mpegts_gse_dab_probe_is_done(mpegts_mux_t *mm);
+#else
+static inline void mpegts_gse_dab_probe_start(mpegts_mux_t *mm) { }
+static inline int  mpegts_gse_dab_probe_complete(mpegts_mux_t *mm, int evaluate) { return 0; }
+static inline int  mpegts_gse_dab_probe_is_done(mpegts_mux_t *mm) { return 1; }
+#endif
 
 #endif /* __TVH_MPEGTS_H__ */
 

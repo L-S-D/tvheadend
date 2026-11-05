@@ -480,7 +480,8 @@ SRCS-yes += src/input/mpegts/dab/isi_probe.c
 # (configure: dvbdab, flags come from pkg-config)
 SRCS-DAB = \
 	src/input/mpegts/dab/dab_probe.c \
-	src/input/mpegts/dab/dab_stream.c
+	src/input/mpegts/dab/dab_stream.c \
+	src/input/mpegts/dab/gse_dab_probe.c
 SRCS-${CONFIG_DVBDAB} += $(SRCS-DAB)
 
 # TSfile
