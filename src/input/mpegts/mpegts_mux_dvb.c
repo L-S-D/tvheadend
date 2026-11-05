@@ -142,7 +142,7 @@ dvb_mux_class_dab_ip_opts(void *o, uint32_t opts)
   (void) opts;
   if (mm == NULL)
     return PO_HIDDEN;
-  if (mm->mm_type == MM_TYPE_DAB_MPE)
+  if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE)
     return 0;
   return PO_NOUI | PO_NOSAVE;
 }
@@ -1543,9 +1543,11 @@ dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
         snprintf(buf, len, " %s / PID %u", lm->lm_dab_ensemble, dmc->dmc_fe_pid);
       else
         snprintf(buf, len, " %s", lm->lm_dab_ensemble);
-    } else if (mm->mm_type == MM_TYPE_DAB_MPE)
-      snprintf(buf, len, " DAB-MPE %u.%u.%u.%u:%u", (ip >> 24) & 0xFF,
-               (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, dmc->dmc_dab_port);
+    } else if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE)
+      snprintf(buf, len, " %s %u.%u.%u.%u:%u",
+               mm->mm_type == MM_TYPE_DAB_MPE ? "DAB-MPE" : "DAB-GSE",
+               (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
+               dmc->dmc_dab_port);
     else if (mm->mm_type == MM_TYPE_DAB_ETI)
       snprintf(buf, len, " ETI-NA %u", dmc->dmc_fe_pid);
     else
