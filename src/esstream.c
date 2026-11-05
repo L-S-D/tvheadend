@@ -291,7 +291,7 @@ filter:
         if (esf->esf_type && (esf->esf_type & SCT_MASK(st->es_type)) == 0)
           continue;
         if (esf->esf_language[0] &&
-            strncmp(esf->esf_language, st->es_lang, 4))
+            !lang_code_match(esf->esf_language, st->es_lang))
           continue;
         if (esf->esf_service[0]) {
           if (strcmp(esf->esf_service, service_ubuf))
@@ -390,7 +390,9 @@ ignore:
                 continue;
               if ((mask & SCT_MASK(st2->es_type)) == 0)
                 continue;
-              if (esf->esf_language[0] != '\0' && strcmp(st2->es_lang, st->es_lang))
+              /* a stream of the language of the rule, as st */
+              if (esf->esf_language[0] != '\0' &&
+                  !lang_code_match(esf->esf_language, st2->es_lang))
                 continue;
               break;
             }
