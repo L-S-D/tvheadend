@@ -43,6 +43,7 @@
 #define PMT_REORDERED                 (1<<16)
 #define PMT_UPDATE_SUBTITLE_TYPE      (1<<17)
 #define PMT_UPDATE_TELETEXT_PAGE      (1<<18)
+#define PMT_UPDATE_COMPONENT_TAG      (1<<19)
 
 uint32_t dvb_psi_parse_pmt
   (mpegts_table_t *mt, const char *nicename, elementary_set_t *set,
