@@ -690,6 +690,7 @@ struct mpegts_mux_instance
 
   void           *mmi_decap;      /* decapsulation of a sub-mux (DAB), see below */
   sbuf_t          mmi_decap_out;  /* its output: the TS of the sub-mux */
+  void           *mmi_submux;     /* the sub-mux input's state (mpegts_submux.c) */
 };
 
 /*

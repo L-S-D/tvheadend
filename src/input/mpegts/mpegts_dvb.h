@@ -117,6 +117,11 @@ dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
 
+/* the input that runs the sub-muxes (mpegts_submux.c) */
+void mpegts_submux_init ( void );
+void mpegts_submux_done ( void );
+void mpegts_submux_create_instance ( mpegts_mux_t *mm );
+
 void dvb_network_scanfile_set ( dvb_network_t *ln, const char *id );
 
 htsmsg_t * dvb_network_class_scanfile_list ( void *o, const char *lang );

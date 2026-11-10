@@ -839,6 +839,10 @@ mpegts_mux_create_instances ( mpegts_mux_t *mm )
     if (mi->mi_is_enabled(mi, mm, 0, -1) != MI_IS_ENABLED_NEVER)
       mi->mi_create_mux_instance(mi, mm);
   }
+#if ENABLE_MPEGTS_DVB
+  /* a sub-mux runs on the sub-mux input, which serves all networks */
+  mpegts_submux_create_instance(mm);
+#endif
 }
 
 static int
