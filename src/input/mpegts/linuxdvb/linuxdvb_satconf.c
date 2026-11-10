@@ -972,6 +972,10 @@ linuxdvb_satconf_post_stop_mux
   ( linuxdvb_satconf_t *ls )
 {
   ls->ls_mmi = NULL;
+  ls->ls_drive = NULL;
+  /* no other try for the RF input of a mux that is gone */
+  mtimer_disarm(&ls->ls_rf_timer);
+  ls->ls_rf_retries = 0;
 }
 
 int
@@ -1036,6 +1040,9 @@ linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol )
 }
 
 static void linuxdvb_satconf_ele_tune_cb ( void *o );
+#if ENABLE_LINUXDVB_NEUMO
+static void linuxdvb_satconf_rf_retry_cb ( void *o );
+#endif
 
 /* FE_SET_RF_INPUT answered "busy": try again this often, this far apart */
 #define LINUXDVB_RF_RETRIES  8
@@ -1059,8 +1066,11 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     linuxdvb_satconf_power_save(ls);
     return 0;
   }
+  /* the mux stopped while a timer was pending: nothing to tune */
+  if (mmi == NULL)
+    return 0;
 
-  linuxdvb_frontend_t   *lfe   = (linuxdvb_frontend_t*)ls->ls_frontend;
+  linuxdvb_frontend_t   *lfe   = (linuxdvb_frontend_t*)(ls->ls_drive ?: ls->ls_frontend);
   dvb_mux_t             *lm    = (dvb_mux_t*)mmi->mmi_mux;
   linuxdvb_diseqc_t     *lds[] = {
     ls->ls_switch_rotor ? (linuxdvb_diseqc_t*)lse->lse_switch :
@@ -1118,11 +1128,29 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
 
     int rf_result = ioctl(lfe->lfe_fe_fd, FE_SET_RF_INPUT, &ic);
     int rf_errno = errno;
+    /* this tuner sets up the input (tvh found it free), yet the driver makes
+     * it a slave: an idle demod still holds the input (its device stayed
+     * open) - close it and reserve again. With Unicable a slave is normal */
+    if (rf_result == FE_RESERVATION_SLAVE && !lse->lse_en50494 &&
+        ls->ls_rf_retries < LINUXDVB_RF_RETRIES &&
+        linuxdvb_frontend_rf_input_release(lfe, 1) > 0) {
+      ls->ls_rf_retries++;
+      tvhdebug(LS_DISEQC, "RF input %d still held by an idle tuner, released, trying again",
+               rf_input_to_use);
+      mtimer_arm_rel(&ls->ls_rf_timer, linuxdvb_satconf_rf_retry_cb, ls,
+                     ms2mono(LINUXDVB_RF_RETRY_MS));
+      return 0;
+    }
     /* FE_SET_RF_INPUT returns enum fe_ioctl_result. Unless it succeeded, the
      * driver did not switch: the demod would still listen on the previous RF
      * input (another LNB/satellite), so the tune must not go on */
     switch (rf_result) {
     case FE_RESERVATION_MASTER:
+      /* the input was free: the driver turned voltage and tone off, a
+       * DiSEqC switch may have lost its position - send everything again */
+      ls->ls_last_switch = NULL;
+      ls->ls_last_toneburst = 0;
+      /* fall through */
     case FE_RESERVATION_SLAVE:
       /* RF input changed: the driver turned voltage/tone off on the old one,
        * so re-apply them even if they look unchanged; a slave must send its
@@ -1146,7 +1174,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
       if (++ls->ls_rf_retries <= LINUXDVB_RF_RETRIES) {
         tvhdebug(LS_DISEQC, "RF input %d busy, trying again (%d/%d)",
                  rf_input_to_use, ls->ls_rf_retries, LINUXDVB_RF_RETRIES);
-        mtimer_arm_rel(&ls->ls_diseqc_timer, linuxdvb_satconf_ele_tune_cb, lse,
+        mtimer_arm_rel(&ls->ls_rf_timer, linuxdvb_satconf_rf_retry_cb, ls,
                        ms2mono(LINUXDVB_RF_RETRY_MS));
         return 0;
       }
@@ -1245,12 +1273,42 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
   return linuxdvb_frontend_tune1(lfe, mmi, f);
 }
 
+/* a tune from a timer failed (the start of the mux had already returned):
+ * the subscriptions of the mux take another tuner */
+static void
+linuxdvb_satconf_tune_failed ( linuxdvb_satconf_t *ls )
+{
+  mpegts_mux_instance_t *mmi = ls->ls_mmi;
+
+  if (mmi && mmi->mmi_input)
+    mmi->mmi_input->mi_error(mmi->mmi_input, mmi->mmi_mux, TSS_TUNING);
+}
+
 static void
 linuxdvb_satconf_ele_tune_cb ( void *o )
 {
-  (void)linuxdvb_satconf_ele_tune(o);
-  // TODO: how to signal error
+  linuxdvb_satconf_ele_t *lse = o;
+
+  if (linuxdvb_satconf_ele_tune(lse))
+    linuxdvb_satconf_tune_failed(lse->lse_parent);
 }
+
+#if ENABLE_LINUXDVB_NEUMO
+/* the RF input was busy: try again, for the mux being tuned now (its
+ * element is looked up again, the configuration may have changed) */
+static void
+linuxdvb_satconf_rf_retry_cb ( void *o )
+{
+  linuxdvb_satconf_t *ls = o;
+  linuxdvb_satconf_ele_t *lse;
+
+  if (ls->ls_mmi == NULL)
+    return;
+  lse = linuxdvb_satconf_find_ele(ls, ls->ls_mmi->mmi_mux);
+  if (lse == NULL || linuxdvb_satconf_ele_tune(lse))
+    linuxdvb_satconf_tune_failed(ls);
+}
+#endif
 
 int
 linuxdvb_satconf_lnb_freq
@@ -1284,7 +1342,12 @@ linuxdvb_satconf_start_mux
 {
   int r, f;
   linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mmi->mmi_mux);
-  linuxdvb_frontend_t    *lfe = (linuxdvb_frontend_t*)ls->ls_frontend;
+  linuxdvb_frontend_t    *lfe;
+
+  /* skip_diseqc: the frontend of the satconf joins an RF input in use (its
+   * LNB settings are set), else the tuner setting it up (ls_drive) */
+  lfe = (linuxdvb_frontend_t*)(skip_diseqc ? ls->ls_frontend :
+                               (ls->ls_drive ?: ls->ls_frontend));
 
   /* Not fully configured */
   if (!lse) return SM_CODE_TUNING_FAILED;
@@ -1301,6 +1364,11 @@ linuxdvb_satconf_start_mux
     f = linuxdvb_satconf_lnb_freq(ls, mmi);
     if (f < 0)
       return SM_CODE_TUNING_FAILED;
+#if ENABLE_LINUXDVB_NEUMO
+    /* the input is set up by another tuner: listen on it, as its slave */
+    if (linuxdvb_frontend_rf_port(lfe) && linuxdvb_frontend_rf_input_slave(lfe))
+      return SM_CODE_TUNING_FAILED;
+#endif
     return linuxdvb_frontend_tune1(lfe, mmi, f);
   }
   if (ls->ls_early_tune) {
@@ -1319,6 +1387,7 @@ linuxdvb_satconf_start_mux
   ls->ls_mmi        = mmi;
   ls->ls_diseqc_idx = 0;
   ls->ls_rf_retries = 0;
+  mtimer_disarm(&ls->ls_rf_timer);
   if (lse->lse_rotor)
     if (lse->lse_rotor->ld_start(lse->lse_rotor, (dvb_mux_t *)mmi->mmi_mux, ls, lse))
       return 0;
@@ -1872,6 +1941,7 @@ linuxdvb_satconf_destroy ( linuxdvb_satconf_t *ls, int delconf )
   if (delconf)
     hts_settings_remove("input/linuxdvb/satconfs/%s", idnode_uuid_as_str(&ls->ls_id, ubuf));
   mtimer_disarm(&ls->ls_diseqc_timer);
+  mtimer_disarm(&ls->ls_rf_timer);
   for (lse = TAILQ_FIRST(&ls->ls_elements); lse != NULL; lse = nxt) {
     nxt = TAILQ_NEXT(lse, lse_link);
     linuxdvb_satconf_ele_destroy(lse);

@@ -68,6 +68,16 @@ static inline int lfe_group ( linuxdvb_frontend_t *lfe1,
          strcmp(lfe1->lfe_fe_path, lfe2->lfe_fe_path) == 0;
 }
 
+/* lfe2 can be the master tuner of lfe: for a tuner on an RF input of a
+ * Neumo card a tuner of another demod on the same input of the card (the
+ * slave joins the input the master set up, on its own demod) */
+static int
+linuxdvb_frontend_master_ok ( linuxdvb_frontend_t *lfe, linuxdvb_frontend_t *lfe2 )
+{
+  return !linuxdvb_frontend_rf_port(lfe) ||
+         (linuxdvb_frontend_same_rf_input(lfe, lfe2) && !lfe_group(lfe, lfe2));
+}
+
 /* **************************************************************************
  * Class definition
  * *************************************************************************/
@@ -75,7 +85,15 @@ static inline int lfe_group ( linuxdvb_frontend_t *lfe1,
 static void
 linuxdvb_frontend_class_changed ( idnode_t *in )
 {
-  linuxdvb_adapter_t *la = ((linuxdvb_frontend_t*)in)->lfe_adapter;
+  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)in, *master;
+  linuxdvb_adapter_t *la = lfe->lfe_adapter;
+
+  if (lfe->lfe_master &&
+      (master = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL)) &&
+      !linuxdvb_frontend_master_ok(lfe, master))
+    tvhwarn(LS_LINUXDVB, "%s - the master tuner %s is not a tuner of another demod "
+            "on the same RF input: the inputs it sets up cannot be joined",
+            lfe->mi_name ?: "", master->mi_name ?: "");
   linuxdvb_adapter_changed(la);
 }
 
@@ -345,7 +363,12 @@ linuxdvb_frontend_dvbs_class_master_enum( void * self, const char *lang )
     la = (linuxdvb_adapter_t*)th;
     LIST_FOREACH(lfe2, &la->la_frontends, lfe_link) {
       if (lfe2 != lfe && lfe2->lfe_type == lfe->lfe_type) {
-        e = htsmsg_create_key_val(idnode_uuid_as_str(&lfe2->ti_id, ubuf), lfe2->mi_name);
+        idnode_uuid_as_str(&lfe2->ti_id, ubuf);
+        /* the tuners that can be its master (and the one set, to show it) */
+        if (!linuxdvb_frontend_master_ok(lfe, lfe2) &&
+            (lfe->lfe_master == NULL || strcmp(lfe->lfe_master, ubuf)))
+          continue;
+        e = htsmsg_create_key_val(ubuf, lfe2->mi_name);
         htsmsg_add_msg(m, NULL, e);
       }
     }
@@ -621,6 +644,19 @@ linuxdvb_frontend_get_grace ( mpegts_input_t *mi, mpegts_mux_t *mm )
   return lfe->lfe_satconf ? linuxdvb_satconf_get_grace(lfe->lfe_satconf, mm) : lfe->lfe_grace_period;
 }
 
+#if ENABLE_LINUXDVB_NEUMO
+/* the tuner setting up the RF input of the master tuner (the master or one
+ * of its slaves, ls_drive) has not tuned yet: the driver lets a tuner join
+ * the input as a slave only after that (DTV_SET_SEC_CONFIGURED) */
+static int
+linuxdvb_frontend_rf_input_in_setup ( linuxdvb_frontend_t *master )
+{
+  linuxdvb_satconf_t *ls = master->lfe_satconf;
+
+  return ((linuxdvb_frontend_t *)(ls->ls_drive ?: ls->ls_frontend))->lfe_in_setup;
+}
+#endif
+
 static int
 linuxdvb_frontend_is_enabled
   ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags, int weight )
@@ -655,8 +691,18 @@ linuxdvb_frontend_is_enabled
       if (lfe->lfe_master && !strcmp(lfe->lfe_master, idnode_uuid_as_str(&lfe2->ti_id, ubuf))) {
         if (lfe2->lfe_satconf == NULL)
           return MI_IS_ENABLED_NEVER; /* invalid master */
-        if (lfe2->lfe_refcount <= 0)
+        if (lfe2->lfe_refcount <= 0) {
+          /* a free RF input of a Neumo card: this tuner sets it up itself
+           * (the master's demod may be busy on another input) */
+          if (linuxdvb_frontend_rf_port(lfe))
+            goto ok;
           return MI_IS_ENABLED_RETRY; /* prefer master */
+        }
+#if ENABLE_LINUXDVB_NEUMO
+        /* not while the input is being set up (rotor, RF input busy) */
+        if (linuxdvb_frontend_rf_port(lfe) && linuxdvb_frontend_rf_input_in_setup(lfe2))
+          return MI_IS_ENABLED_RETRY;
+#endif
         if (linuxdvb_satconf_match_mux(lfe2->lfe_satconf, mm))
           goto ok;
         return MI_IS_ENABLED_RETRY;
@@ -666,6 +712,11 @@ linuxdvb_frontend_is_enabled
           lfe2->lfe_refcount > 0) {
         if (lfe->lfe_satconf == NULL)
           return MI_IS_ENABLED_NEVER;
+#if ENABLE_LINUXDVB_NEUMO
+        /* the master joins a slave's input: not while it is being set up */
+        if (linuxdvb_frontend_rf_port(lfe) && linuxdvb_frontend_rf_input_in_setup(lfe))
+          return MI_IS_ENABLED_RETRY;
+#endif
         if (linuxdvb_satconf_match_mux(lfe->lfe_satconf, mm))
           goto ok;
         return MI_IS_ENABLED_RETRY;
@@ -685,6 +736,91 @@ ok:
 
   return MI_IS_ENABLED_OK;
 }
+
+#if ENABLE_LINUXDVB_NEUMO
+/* a master tuner: other tuners have it as their master */
+static int
+linuxdvb_frontend_has_slaves ( linuxdvb_frontend_t *lfe )
+{
+  tvh_hardware_t *th;
+  linuxdvb_adapter_t *la;
+  linuxdvb_frontend_t *lfe2;
+  char ubuf[UUID_HEX_SIZE];
+
+  idnode_uuid_as_str(&lfe->ti_id, ubuf);
+  LIST_FOREACH(th, &tvh_hardware, th_link) {
+    if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class)) continue;
+    la = (linuxdvb_adapter_t*)th;
+    LIST_FOREACH(lfe2, &la->la_frontends, lfe_link)
+      if (lfe2->lfe_master && !strcmp(lfe2->lfe_master, ubuf))
+        return 1;
+  }
+  return 0;
+}
+
+/* close the frontend device of an idle demod: none of its virtual frontends
+ * is in use (they share the device). Returns 1 when a device was open */
+static int
+linuxdvb_frontend_demod_close ( linuxdvb_frontend_t *lfe )
+{
+  linuxdvb_frontend_t *lfe2;
+  int open = 0;
+
+  LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link)
+    if (lfe_group(lfe, lfe2) && lfe2->lfe_refcount > 0)
+      return 0;
+  LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link)
+    if (lfe_group(lfe, lfe2)) {
+      open |= lfe2->lfe_fe_fd > 0;
+      mtimer_disarm(&lfe2->lfe_monitor_timer);
+      linuxdvb_frontend_close_fd(lfe2, NULL);
+    }
+  return open;
+}
+
+/*
+ * The driver releases the reservation of an RF input by a demod only when its
+ * frontend device is closed (the frontend sleeps): an idle demod that set up
+ * the input or joined it keeps it, and the next tuner setting up the input
+ * only becomes its slave - its LNB and DiSEqC commands fail (EPERM). Closes
+ * the idle demods of the tuners sharing the RF input of lfe (its master and
+ * the master's slaves), lfe's own too unless except_own. For a tuner setting
+ * up the input (except_own) also those of the other tuners of the card on
+ * the input: without a master tuner set they know nothing of each other.
+ * Returns the number of devices closed.
+ */
+int
+linuxdvb_frontend_rf_input_release ( linuxdvb_frontend_t *lfe, int except_own )
+{
+  tvh_hardware_t *th;
+  linuxdvb_adapter_t *la;
+  linuxdvb_frontend_t *master = lfe, *lfe2;
+  char ubuf[UUID_HEX_SIZE];
+  int n = 0;
+
+  if (!linuxdvb_frontend_rf_port(lfe))
+    return 0;
+  if (lfe->lfe_master) {
+    master = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL);
+    if (master == NULL)
+      return 0;
+  }
+  idnode_uuid_as_str(&master->ti_id, ubuf);
+  LIST_FOREACH(th, &tvh_hardware, th_link) {
+    if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class)) continue;
+    la = (linuxdvb_adapter_t*)th;
+    LIST_FOREACH(lfe2, &la->la_frontends, lfe_link) {
+      if (lfe2 != master && (lfe2->lfe_master == NULL || strcmp(lfe2->lfe_master, ubuf)) &&
+          !(except_own && linuxdvb_frontend_same_rf_input(lfe, lfe2)))
+        continue;
+      if (lfe2->lfe_fe_fd <= 0 || (except_own && lfe_group(lfe, lfe2)))
+        continue;
+      n += linuxdvb_frontend_demod_close(lfe2);
+    }
+  }
+  return n;
+}
+#endif
 
 static void
 linuxdvb_frontend_stop_mux
@@ -752,22 +888,18 @@ linuxdvb_frontend_stop_mux
   mpegts_pid_done(&lfe->lfe_pids);
 
 #if ENABLE_LINUXDVB_NEUMO
-  /* A slave's demod keeps its reservation of the RF input until its
-   * frontend device is closed (the driver releases it when the frontend
-   * sleeps): while it stays, the master cannot change the LNB settings any
-   * more (EPERM). An idle demod is closed - all its virtual frontends, they
-   * share the device */
-  if (lfe->lfe_master && lfe->lfe_rf_input >= 0 && lfe->lfe_neumo_supported &&
-      lfe->lfe_refcount <= 0) {
-    LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link)
-      if (lfe_group(lfe, lfe2) && lfe2->lfe_refcount > 0)
-        break;
-    if (lfe2 == NULL)
-      LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link)
-        if (lfe_group(lfe, lfe2)) {
-          mtimer_disarm(&lfe2->lfe_monitor_timer);
-          linuxdvb_frontend_close_fd(lfe2, NULL);
-        }
+  /* An idle demod of a shared input (master and slaves) is closed - all its
+   * virtual frontends, they share the device; when the input is free, every
+   * idle demod that set it up or joined it (linuxdvb_frontend_rf_input_release:
+   * the master's demod stays reserved after the master was stopped while a
+   * slave still used the input) */
+  if (linuxdvb_frontend_rf_port(lfe) && lfe->lfe_refcount <= 0 &&
+      (lfe->lfe_master || linuxdvb_frontend_has_slaves(lfe))) {
+    linuxdvb_frontend_demod_close(lfe);
+    lfe2 = lfe->lfe_master ?
+      (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL) : lfe;
+    if (lfe2 && lfe2->lfe_refcount <= 0)
+      linuxdvb_frontend_rf_input_release(lfe, 0);
   }
 #endif
 }
@@ -1080,26 +1212,25 @@ linuxdvb_gse_done ( linuxdvb_frontend_t *lfe )
 #endif /* LINUXDVB_GSE - GSE support */
 
 #if ENABLE_LINUXDVB_NEUMO
-/* tries for the RF input of a slave tuner, 25 ms apart (its master may still
- * be configuring the input) */
-#define LINUXDVB_SLAVE_RF_TRIES 20
-
 /*
- * A slave tuner (Master tuner set) uses the LNB and DiSEqC settings of its
- * master and sends none of its own. A virtual frontend of a Neumo multi-RF
- * adapter still has to listen on its own RF input - otherwise the demod
- * stays on the driver's default input (another cable): it reserves the input
- * as a slave of the master that configured it. 0 = ok, -1 = failed
+ * A tuner joining an RF input of a Neumo card that another tuner set up
+ * sends no LNB or DiSEqC commands of its own, but it still has to listen
+ * on that input - otherwise the demod stays on the driver's default input
+ * (another cable): it reserves the input as a slave. 0 = ok, -1 = failed
+ *
+ * One try: the driver answers RETRY until the tuner setting up the input
+ * has tuned (DTV_SET_SEC_CONFIGURED), which needs global_lock - waiting
+ * here cannot help, is_enabled() keeps the slaves out until then.
  */
-static int
-linuxdvb_frontend_slave_rf_input ( linuxdvb_frontend_t *lfe )
+int
+linuxdvb_frontend_rf_input_slave ( linuxdvb_frontend_t *lfe )
 {
   struct fe_rf_input_control ic;
   struct dtv_property prop;
   struct dtv_properties props;
   struct dvb_frontend_event ev;
   char name[256];
-  int i, r = FE_RESERVATION_RETRY;
+  int r;
 
   if (lfe->lfe_rf_input < 0 || !lfe->lfe_neumo_supported)
     return 0;
@@ -1118,11 +1249,7 @@ linuxdvb_frontend_slave_rf_input ( linuxdvb_frontend_t *lfe )
   ic.config_id = 1;
   ic.rf_in = lfe->lfe_rf_input;
   ic.mode = FE_RESERVATION_MODE_SLAVE;
-  for (i = 0; i < LINUXDVB_SLAVE_RF_TRIES && r == FE_RESERVATION_RETRY; i++) {
-    if (i)
-      tvh_safe_usleep(25000);
-    r = ioctl(lfe->lfe_fe_fd, FE_SET_RF_INPUT, &ic);
-  }
+  r = ioctl(lfe->lfe_fe_fd, FE_SET_RF_INPUT, &ic);
   switch (r) {
   case FE_RESERVATION_MASTER:
   case FE_RESERVATION_SLAVE:
@@ -1131,6 +1258,11 @@ linuxdvb_frontend_slave_rf_input ( linuxdvb_frontend_t *lfe )
     tvhtrace(LS_LINUXDVB, "%s - slave tuner on RF input %d (result=%d)",
              name, lfe->lfe_rf_input, r);
     return 0;
+  case FE_RESERVATION_RETRY:
+    tvherror(LS_LINUXDVB, "%s - RF input %d is not set up by a tuner yet, the slave "
+             "tuner cannot join (its master tuner has to be on the same RF input)",
+             name, lfe->lfe_rf_input);
+    return -1;
   default:
     tvherror(LS_LINUXDVB, "%s - RF input %d for the slave tuner failed: result=%d",
              name, lfe->lfe_rf_input, r);
@@ -1143,7 +1275,7 @@ static int
 linuxdvb_frontend_start_mux
   ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int weight )
 {
-  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2;
+  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2, *master = NULL;
   int res, f;
 
   assert(lfe->lfe_in_setup == 0);
@@ -1176,7 +1308,17 @@ linuxdvb_frontend_start_mux
       f = linuxdvb_satconf_lnb_freq(lfe2->lfe_satconf, mmi);
       if (f <= 0)
         goto end;
+      master = lfe2;
       if (lfe2->lfe_refcount++ == 0) {
+#if ENABLE_LINUXDVB_NEUMO
+        if (linuxdvb_frontend_rf_port(lfe)) {
+          /* a free RF input of a Neumo card: this tuner sets it up with the
+           * configuration of the master (the input's) and tunes */
+          lfe2->lfe_satconf->ls_drive = (mpegts_input_t *)lfe;
+          res = linuxdvb_satconf_start_mux(lfe2->lfe_satconf, mmi, 0);
+          goto end;
+        }
+#endif
         lfe2->lfe_in_setup = 1;
         lfe2->lfe_ioctls   = 0;
         res = linuxdvb_satconf_start_mux(lfe2->lfe_satconf, mmi, 0);
@@ -1184,7 +1326,7 @@ linuxdvb_frontend_start_mux
           goto end;
       }
 #if ENABLE_LINUXDVB_NEUMO
-      if (linuxdvb_frontend_slave_rf_input(lfe)) {
+      if (linuxdvb_frontend_rf_input_slave(lfe)) {
         res = SM_CODE_TUNING_FAILED;
         goto end;
       }
@@ -1194,8 +1336,11 @@ linuxdvb_frontend_start_mux
     goto end;
   }
 
-  if (lfe->lfe_satconf)
+  if (lfe->lfe_satconf) {
+    if (lfe->lfe_refcount <= 1)
+      lfe->lfe_satconf->ls_drive = NULL;
     res = linuxdvb_satconf_start_mux(lfe->lfe_satconf, mmi, lfe->lfe_refcount > 1);
+  }
   else
     res = linuxdvb_frontend_tune1((linuxdvb_frontend_t*)mi, mmi, -1);
 
@@ -1203,10 +1348,23 @@ end:
   if (res) {
     lfe->lfe_in_setup = 0;
     lfe->lfe_refcount--;
+    /* a slave counted itself on its master (the input) */
+    if (master && --master->lfe_refcount <= 0) {
+      master->lfe_refcount = 0;
+      master->lfe_in_setup = 0;
+      if (master->lfe_satconf)
+        linuxdvb_satconf_post_stop_mux(master->lfe_satconf);
+    }
 #if LINUXDVB_GSE
     /* the mux does not run: no GSE streaming left behind */
     if (mmi->mmi_mux->mm_type == MM_TYPE_DAB_GSE)
       linuxdvb_gse_done(lfe);   /* its demux (FE_STREAM) and streamer */
+#endif
+#if ENABLE_LINUXDVB_NEUMO
+    /* the failed tuner may have reserved the input: free it again when no
+     * tuner uses it (or every following tuner only becomes its slave) */
+    if (lfe->lfe_refcount <= 0 && (master ? master->lfe_refcount : lfe->lfe_refcount) <= 0)
+      linuxdvb_frontend_rf_input_release(lfe, 0);
 #endif
   }
   return res;
@@ -2966,6 +3124,7 @@ linuxdvb_frontend_create
         lfe->lfe_neumo_supported = 1;
         lfe->lfe_num_rf_inputs = ext_info.num_rf_inputs;
         lfe->lfe_default_rf_input = ext_info.default_rf_input;
+        lfe->lfe_card_id = ext_info.card_mac_address;
         tvhinfo(LS_LINUXDVB, "%s Neumo driver detected: %d RF inputs, default=%d",
                 fe_path, ext_info.num_rf_inputs, ext_info.default_rf_input);
       } else {
