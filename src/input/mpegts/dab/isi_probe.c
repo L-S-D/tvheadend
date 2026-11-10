@@ -23,6 +23,7 @@
 #include "input/mpegts/mpegts_dvb.h"
 #include "input/mpegts/linuxdvb/linuxdvb_private.h"
 #include "isi_probe.h"
+#include "input/mpegts/bbframe.h"
 #include <linux/dvb/frontend.h>
 #include <sys/ioctl.h>
 
@@ -41,7 +42,40 @@
  */
 typedef struct isi_probe_ctx {
   const mpegts_input_t *mi;
+  /* a multistream transponder: the streams of the BBFrame headers (the
+   * input thread writes them, under mi_output_lock) */
+  int                   tap;
+  uint8_t               seen[32];
+  uint8_t               matype[256];
 } isi_probe_ctx_t;
+
+/* the frame headers in the packets of the transponder */
+static void
+isi_probe_packet_cb(void *aux, const uint8_t *pkt, int len)
+{
+  isi_probe_ctx_t *ctx = aux;
+  uint8_t isi, matype;
+
+  for ( ; len >= 188; pkt += 188, len -= 188)
+    if ((((pkt[1] & 0x1f) << 8) | pkt[2]) == DVB_BBFRAMES_PID &&
+        bbframe_packet_header(pkt, &isi, &matype) == 0) {
+      ctx->seen[isi >> 3] |= 1 << (isi & 7);
+      ctx->matype[isi] = matype;
+    }
+}
+
+static void
+isi_probe_set_cb(mpegts_mux_t *mm, isi_probe_ctx_t *ctx)
+{
+  mpegts_input_t *mi = mm->mm_active ? mm->mm_active->mmi_input : NULL;
+
+  if (mi)
+    tvh_mutex_lock(&mi->mi_output_lock);
+  mm->mm_secondary_ctx = ctx;
+  mm->mm_secondary_cb  = ctx ? isi_probe_packet_cb : NULL;
+  if (mi)
+    tvh_mutex_unlock(&mi->mi_output_lock);
+}
 
 /*
  * Parse ISI bitfield from driver buffer
@@ -338,6 +372,15 @@ mpegts_isi_probe_start(mpegts_mux_t *mm)
   ctx->mi = mmi->mmi_input;
   mm->mm_isi_probe_ctx = ctx;
 
+  /* a multistream transponder in BBFrame mode: the headers tell the streams
+   * too (the driver list may be empty), from the PID of the BBFrames */
+  if (lfe->lfe_bbframes && mm->mm_secondary_cb == NULL) {
+    ctx->tap = 1;
+    isi_probe_set_cb(mm, ctx);
+    mm->mm_update_pids_flag = 1;
+    mpegts_mux_update_pids(mm);
+  }
+
   tvhdebug(LS_MPEGTS, "mux %s: ISI probe started on %s", mm->mm_nicename, lfe->lfe_fe_path);
 }
 
@@ -358,6 +401,12 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
     return 0;
 
   mm->mm_isi_probe_ctx = NULL;
+  if (ctx->tap) {
+    if (mm->mm_secondary_ctx == ctx)
+      isi_probe_set_cb(mm, NULL);
+    mm->mm_update_pids_flag = 1;
+    mpegts_mux_update_pids(mm);
+  }
 
   /* Read ISI list from the driver of the tuner the scan ran on - only if it
    * still has the mux (its fd now, not a number saved at the start) */
@@ -375,12 +424,32 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
       tvhdebug(LS_MPEGTS, "mux %s: ISI probe skipped (tuner no longer active)", mm->mm_nicename);
   }
 
+  /* the streams of the frame headers the driver did not list */
+  if (evaluate && ctx->tap) {
+    int i, j;
+    for (i = 0; i < 256; i++) {
+      if (!(ctx->seen[i >> 3] & (1 << (i & 7))))
+        continue;
+      for (j = 0; j < isi_count && isi_list[j] != i; j++)
+        ;
+      if (j == isi_count)
+        isi_list[isi_count++] = i;
+      if (matype_list[i] == 0)
+        matype_list[i] = ctx->matype[i];
+    }
+  }
+
   /* Create muxes for GSE streams */
   if (isi_count > 0) {
     found = isi_probe_create_muxes(mm, isi_list, isi_count, matype_list);
   }
 
   free(ctx);
+
+  /* a multistream transponder has no tables of its own: its streams are
+   * the result of its scan */
+  if (((dvb_mux_t *)mm)->lm_multistream && isi_count > 0 && found == 0)
+    found = isi_count;
 
   /* every scan of a DVB-S2 mux ends here: the log gets the ones that made muxes */
   if (found > 0)
