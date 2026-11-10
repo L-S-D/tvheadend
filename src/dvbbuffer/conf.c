@@ -22,6 +22,7 @@ CLASS_DOC(dvbbuffer)
 #define DVBBUFFER_BUFFER_SEC_DEFAULT 3
 
 static void dvbbuffer_conf_slots_apply(void);
+static void dvbbuffer_conf_ecm_apply(void);
 
 static void
 dvbbuffer_conf_fixup(void)
@@ -61,8 +62,10 @@ dvbbuffer_conf_class_changed(idnode_t *self)
 {
   dvbbuffer_conf_fixup();
   dvbbuffer_conf_slots_apply();
+  dvbbuffer_conf_ecm_apply();
   /* buffer size / bitrate apply to muxes started from now on */
   dvbbuffer_warm_reconcile();
+  dvbbuffer_camd35_reconf();
 }
 
 /*
@@ -225,6 +228,234 @@ DVBBUFFER_SLOT_FUNCS(9)  DVBBUFFER_SLOT_FUNCS(10) DVBBUFFER_SLOT_FUNCS(11)
 DVBBUFFER_SLOT_FUNCS(12) DVBBUFFER_SLOT_FUNCS(13) DVBBUFFER_SLOT_FUNCS(14)
 DVBBUFFER_SLOT_FUNCS(15)
 
+/*
+ * ECM prefetch per warm mux: one field below each warm mux, a choice of
+ * the CA PIDs of its services; the same as "ECM prefetch PIDs" at the mux
+ * (nothing stored here). The options are those of the mux shown when the
+ * page was loaded: after choosing another mux, save and reload.
+ */
+static char dvbbuffer_conf_ecm_view[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+static htsmsg_t *dvbbuffer_conf_ecm_new[DVBBUFFER_MUX_SLOTS];
+static int  dvbbuffer_conf_ecm_dirty;
+
+static mpegts_mux_t *
+dvbbuffer_conf_ecm_mux(int slot)
+{
+  char view[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+
+  dvbbuffer_conf_slots_view(view);
+  return dvbbuffer_conf_slot_mux(view[slot]);
+}
+
+/* the PIDs of the mux property as a list of decimal strings */
+static htsmsg_t *
+dvbbuffer_conf_ecm_pids(const char *str)
+{
+  htsmsg_t *l = htsmsg_create_list();
+  char buf[8];
+  char *end;
+  long v;
+
+  while (str && *str) {
+    while (*str && (*str == ' ' || *str == ',' || *str == ';'))
+      str++;
+    if (!*str)
+      break;
+    v = strtol(str, &end, 0);
+    if (end == str)
+      break;
+    if (v > 0 && v < 0x1fff) {
+      snprintf(buf, sizeof(buf), "%ld", v);
+      htsmsg_add_str(l, NULL, buf);
+    }
+    str = end;
+  }
+  return l;
+}
+
+static const void *
+dvbbuffer_conf_ecm_get(int slot)
+{
+  mpegts_mux_t *mm = dvbbuffer_conf_ecm_mux(slot);
+
+  return dvbbuffer_conf_ecm_pids(mm ? mm->mm_ecm_prefetch : NULL);
+}
+
+static int
+dvbbuffer_conf_ecm_set(int slot, const void *v)
+{
+  if (!dvbbuffer_conf_ecm_dirty) {
+    dvbbuffer_conf_slots_view(dvbbuffer_conf_ecm_view);
+    dvbbuffer_conf_ecm_dirty = 1;
+  }
+  htsmsg_destroy(dvbbuffer_conf_ecm_new[slot]);
+  dvbbuffer_conf_ecm_new[slot] = v ? htsmsg_copy((htsmsg_t *)v) : htsmsg_create_list();
+  return 1;
+}
+
+/* the CA PIDs of the services of the mux in this field, one entry per PID:
+ * "CAID 0D98, PID 2501: ORF2W HD, ORF2N HD, ...", sorted by CAID and PID
+ * (regional services usually share one ECM PID) */
+#define DVBBUFFER_ECM_ENUM_MAX 64
+
+typedef struct {
+  uint16_t pid;
+  uint16_t caid;     /* the first one, for the order */
+  char     caids[48];
+  char     names[200];
+} dvbbuffer_conf_ecm_entry_t;
+
+static int
+dvbbuffer_conf_ecm_entry_cmp(const void *a, const void *b)
+{
+  const dvbbuffer_conf_ecm_entry_t *x = a, *y = b;
+
+  if (x->caid != y->caid)
+    return x->caid < y->caid ? -1 : 1;
+  return (int)x->pid - (int)y->pid;
+}
+
+/* "a, b, c", ending with "..." when the next one does not fit */
+static void
+dvbbuffer_conf_ecm_append(char *buf, size_t size, const char *sep, const char *str)
+{
+  size_t len = strlen(buf), need = (len ? strlen(sep) : 0) + strlen(str);
+
+  if (len >= 3 && !strcmp(buf + len - 3, "..."))
+    return;
+  if (len + need + 4 < size)
+    snprintf(buf + len, size - len, "%s%s", len ? sep : "", str);
+  else if (len + 5 < size)
+    strcpy(buf + len, len ? ", ..." : "...");
+}
+
+static htsmsg_t *
+dvbbuffer_conf_ecm_enum(int slot)
+{
+  mpegts_mux_t *mm = dvbbuffer_conf_ecm_mux(slot);
+  mpegts_service_t *s;
+  elementary_stream_t *st;
+  caid_t *c;
+  dvbbuffer_conf_ecm_entry_t *e = NULL;
+  htsmsg_t *l = htsmsg_create_list();
+  int i, n = 0;
+  char key[8], val[300], buf[8];
+
+  if (mm == NULL)
+    return l;
+  e = calloc(DVBBUFFER_ECM_ENUM_MAX, sizeof(*e));
+  if (e == NULL)
+    return l;
+  LIST_FOREACH(s, &mm->mm_services, s_dvb_mux_link) {
+    tvh_mutex_lock(&s->s_stream_mutex);
+    TAILQ_FOREACH(st, &s->s_components.set_all, es_link) {
+      if (st->es_type != SCT_CA)
+        continue;
+      for (i = 0; i < n; i++)
+        if (e[i].pid == st->es_pid)
+          break;
+      if (i == n) {
+        if (n == DVBBUFFER_ECM_ENUM_MAX)
+          continue;
+        n++;
+        e[i].pid = st->es_pid;
+        e[i].caid = 0xffff;
+        LIST_FOREACH(c, &st->es_caids, link) {
+          if (e[i].caid == 0xffff)
+            e[i].caid = c->caid;
+          snprintf(buf, sizeof(buf), "%04X", c->caid);
+          dvbbuffer_conf_ecm_append(e[i].caids, sizeof(e[i].caids), "/", buf);
+        }
+      }
+      if (s->s_dvb_svcname)
+        dvbbuffer_conf_ecm_append(e[i].names, sizeof(e[i].names), ", ", s->s_dvb_svcname);
+    }
+    tvh_mutex_unlock(&s->s_stream_mutex);
+  }
+  qsort(e, n, sizeof(*e), dvbbuffer_conf_ecm_entry_cmp);
+  for (i = 0; i < n; i++) {
+    snprintf(key, sizeof(key), "%d", e[i].pid);
+    snprintf(val, sizeof(val), "CAID %s, PID %d: %s",
+             e[i].caids[0] ? e[i].caids : "?", e[i].pid, e[i].names[0] ? e[i].names : "?");
+    htsmsg_add_msg(l, NULL, htsmsg_create_key_val(key, val));
+  }
+  free(e);
+  return l;
+}
+
+static uint32_t
+dvbbuffer_conf_ecm_opts(int slot, uint32_t opts)
+{
+  opts = dvbbuffer_conf_slot_opts(slot, opts);
+  return dvbbuffer_conf_ecm_mux(slot) ? opts : opts | PO_HIDDEN | PO_NOUI;
+}
+
+/* the changed fields to the muxes, only where the field's mux is still
+ * the one shown (from dvbbuffer_conf_class_changed) */
+static void
+dvbbuffer_conf_ecm_apply(void)
+{
+  char view[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+  mpegts_mux_t *mm;
+  htsmsg_field_t *f;
+  char *str;
+  size_t len, size;
+  int i;
+
+  if (!dvbbuffer_conf_ecm_dirty)
+    return;
+  dvbbuffer_conf_ecm_dirty = 0;
+  dvbbuffer_conf_slots_view(view);
+  for (i = 0; i < DVBBUFFER_MUX_SLOTS; i++) {
+    htsmsg_t *l = dvbbuffer_conf_ecm_new[i];
+    dvbbuffer_conf_ecm_new[i] = NULL;
+    if (l == NULL)
+      continue;
+    mm = dvbbuffer_conf_slot_mux(view[i]);
+    if (mm && !strcmp(view[i], dvbbuffer_conf_ecm_view[i])) {
+      str = NULL;
+      len = size = 0;
+      HTSMSG_FOREACH(f, l) {
+        const char *pid = htsmsg_field_get_str(f);
+        size_t n = pid ? strlen(pid) : 0;
+        if (n == 0 || len + n + 2 > 512)
+          continue;
+        if (len + n + 2 > size) {
+          size = 512;
+          if ((str = realloc(str, size)) == NULL)
+            break;
+        }
+        len += snprintf(str + len, size - len, "%s%s", len ? "," : "", pid);
+      }
+      if (strcmp(str ?: "", mm->mm_ecm_prefetch ?: "")) {
+        free(mm->mm_ecm_prefetch);
+        mm->mm_ecm_prefetch = str;
+        str = NULL;
+        idnode_changed(&mm->mm_id);
+        dvbbuffer_mux_prefetch_notify(mm, NULL);
+      }
+      free(str);
+    }
+    htsmsg_destroy(l);
+  }
+}
+
+#define DVBBUFFER_ECM_FUNCS(i) \
+  static const void *dvbbuffer_conf_ecm_get_##i(void *o) \
+    { return dvbbuffer_conf_ecm_get(i); } \
+  static int dvbbuffer_conf_ecm_set_##i(void *o, const void *v) \
+    { return dvbbuffer_conf_ecm_set(i, v); } \
+  static uint32_t dvbbuffer_conf_ecm_opts_##i(void *o, uint32_t opts) \
+    { return dvbbuffer_conf_ecm_opts(i, opts); } \
+  static htsmsg_t *dvbbuffer_conf_ecm_enum_##i(void *o, const char *lang) \
+    { return dvbbuffer_conf_ecm_enum(i); }
+DVBBUFFER_ECM_FUNCS(0)  DVBBUFFER_ECM_FUNCS(1)  DVBBUFFER_ECM_FUNCS(2)
+DVBBUFFER_ECM_FUNCS(3)  DVBBUFFER_ECM_FUNCS(4)  DVBBUFFER_ECM_FUNCS(5)
+DVBBUFFER_ECM_FUNCS(6)  DVBBUFFER_ECM_FUNCS(7)  DVBBUFFER_ECM_FUNCS(8)
+DVBBUFFER_ECM_FUNCS(9)  DVBBUFFER_ECM_FUNCS(10) DVBBUFFER_ECM_FUNCS(11)
+DVBBUFFER_ECM_FUNCS(12) DVBBUFFER_ECM_FUNCS(13) DVBBUFFER_ECM_FUNCS(14)
+DVBBUFFER_ECM_FUNCS(15)
+
 static htsmsg_t *
 dvbbuffer_conf_class_muxes_enum(void *o, const char *lang)
 {
@@ -320,6 +551,7 @@ const idclass_t dvbbuffer_conf_class = {
     { .name = N_("General"),                 .number = 1 },
     { .name = N_("Recently used muxes"),     .number = 2 },
     { .name = N_("Live start"),              .number = 3 },
+    { .name = N_("ECM prefetch (camd35)"),   .number = 4 },
     {}
   },
   .ic_properties = (const property_t[]){
@@ -666,6 +898,306 @@ const idclass_t dvbbuffer_conf_class = {
                    "player that much buffer at once."),
       .off    = offsetof(dvbbuffer_conf_t, start_lag_ms),
       .group  = 3,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "camd35_enabled",
+      .name   = N_("ECM prefetch (camd35)"),
+      .desc   = N_("Send the ECMs of the PIDs listed at the prebuffer muxes "
+                   "(\"ECM prefetch PIDs\") to this camd35 (UDP) server as "
+                   "they change, the answers are not used: the keys of these "
+                   "services are in the server's cache when they start."),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_enabled),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+    {
+      .type   = PT_STR,
+      .id     = "camd35_host",
+      .name   = N_("camd35 host"),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_host),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "camd35_port",
+      .name   = N_("camd35 port (UDP)"),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_port),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+    {
+      .type   = PT_STR,
+      .id     = "camd35_user",
+      .name   = N_("camd35 user"),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_user),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+    {
+      .type   = PT_STR,
+      .id     = "camd35_pass",
+      .name   = N_("camd35 password"),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_pass),
+      .opts   = PO_ADVANCED | PO_PASSWORD,
+      .group  = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_1",
+      .name     = N_("Warm mux 1: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 1 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_0,
+      .set      = dvbbuffer_conf_ecm_set_0,
+      .get_opts = dvbbuffer_conf_ecm_opts_0,
+      .list     = dvbbuffer_conf_ecm_enum_0,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_2",
+      .name     = N_("Warm mux 2: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 2 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_1,
+      .set      = dvbbuffer_conf_ecm_set_1,
+      .get_opts = dvbbuffer_conf_ecm_opts_1,
+      .list     = dvbbuffer_conf_ecm_enum_1,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_3",
+      .name     = N_("Warm mux 3: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 3 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_2,
+      .set      = dvbbuffer_conf_ecm_set_2,
+      .get_opts = dvbbuffer_conf_ecm_opts_2,
+      .list     = dvbbuffer_conf_ecm_enum_2,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_4",
+      .name     = N_("Warm mux 4: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 4 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_3,
+      .set      = dvbbuffer_conf_ecm_set_3,
+      .get_opts = dvbbuffer_conf_ecm_opts_3,
+      .list     = dvbbuffer_conf_ecm_enum_3,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_5",
+      .name     = N_("Warm mux 5: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 5 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_4,
+      .set      = dvbbuffer_conf_ecm_set_4,
+      .get_opts = dvbbuffer_conf_ecm_opts_4,
+      .list     = dvbbuffer_conf_ecm_enum_4,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_6",
+      .name     = N_("Warm mux 6: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 6 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_5,
+      .set      = dvbbuffer_conf_ecm_set_5,
+      .get_opts = dvbbuffer_conf_ecm_opts_5,
+      .list     = dvbbuffer_conf_ecm_enum_5,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_7",
+      .name     = N_("Warm mux 7: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 7 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_6,
+      .set      = dvbbuffer_conf_ecm_set_6,
+      .get_opts = dvbbuffer_conf_ecm_opts_6,
+      .list     = dvbbuffer_conf_ecm_enum_6,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_8",
+      .name     = N_("Warm mux 8: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 8 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_7,
+      .set      = dvbbuffer_conf_ecm_set_7,
+      .get_opts = dvbbuffer_conf_ecm_opts_7,
+      .list     = dvbbuffer_conf_ecm_enum_7,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_9",
+      .name     = N_("Warm mux 9: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 9 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_8,
+      .set      = dvbbuffer_conf_ecm_set_8,
+      .get_opts = dvbbuffer_conf_ecm_opts_8,
+      .list     = dvbbuffer_conf_ecm_enum_8,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_10",
+      .name     = N_("Warm mux 10: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 10 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_9,
+      .set      = dvbbuffer_conf_ecm_set_9,
+      .get_opts = dvbbuffer_conf_ecm_opts_9,
+      .list     = dvbbuffer_conf_ecm_enum_9,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_11",
+      .name     = N_("Warm mux 11: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 11 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_10,
+      .set      = dvbbuffer_conf_ecm_set_10,
+      .get_opts = dvbbuffer_conf_ecm_opts_10,
+      .list     = dvbbuffer_conf_ecm_enum_10,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_12",
+      .name     = N_("Warm mux 12: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 12 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_11,
+      .set      = dvbbuffer_conf_ecm_set_11,
+      .get_opts = dvbbuffer_conf_ecm_opts_11,
+      .list     = dvbbuffer_conf_ecm_enum_11,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_13",
+      .name     = N_("Warm mux 13: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 13 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_12,
+      .set      = dvbbuffer_conf_ecm_set_12,
+      .get_opts = dvbbuffer_conf_ecm_opts_12,
+      .list     = dvbbuffer_conf_ecm_enum_12,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_14",
+      .name     = N_("Warm mux 14: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 14 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_13,
+      .set      = dvbbuffer_conf_ecm_set_13,
+      .get_opts = dvbbuffer_conf_ecm_opts_13,
+      .list     = dvbbuffer_conf_ecm_enum_13,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_15",
+      .name     = N_("Warm mux 15: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 15 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_14,
+      .set      = dvbbuffer_conf_ecm_set_14,
+      .get_opts = dvbbuffer_conf_ecm_opts_14,
+      .list     = dvbbuffer_conf_ecm_enum_14,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
+    },
+    {
+      .type     = PT_STR,
+      .islist   = 1,
+      .id       = "ecm_prefetch_16",
+      .name     = N_("Warm mux 16: ECM prefetch"),
+      .desc     = N_("The CA PIDs of warm mux 16 whose ECMs are sent to the "
+                     "camd35 server, the same as \"ECM prefetch PIDs\" at "
+                     "the mux. After choosing another warm mux, save and "
+                     "reload for its PIDs."),
+      .get      = dvbbuffer_conf_ecm_get_15,
+      .set      = dvbbuffer_conf_ecm_set_15,
+      .get_opts = dvbbuffer_conf_ecm_opts_15,
+      .list     = dvbbuffer_conf_ecm_enum_15,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+      .group    = 4,
     },
     {}
   }

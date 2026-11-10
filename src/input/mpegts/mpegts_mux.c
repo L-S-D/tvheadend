@@ -718,6 +718,18 @@ const idclass_t mpegts_mux_class =
       .notify   = dvbbuffer_mux_prebuffer_notify,
       .opts     = PO_ADVANCED
     },
+    {
+      .type     = PT_STR,
+      .id       = "ecm_prefetch",
+      .name     = N_("ECM prefetch PIDs"),
+      .desc     = N_("ECM PIDs of a prebuffer mux whose ECMs are sent to "
+                     "OSCam (camd35) as they change, so that their keys are "
+                     "in its cache when a service starts. Comma separated, "
+                     "0x for hexadecimal."),
+      .off      = offsetof(mpegts_mux_t, mm_ecm_prefetch),
+      .notify   = dvbbuffer_mux_prefetch_notify,
+      .opts     = PO_ADVANCED
+    },
 #endif
     {
       .type     = PT_TIME,
@@ -790,6 +802,9 @@ mpegts_mux_free ( mpegts_mux_t *mm )
   free(mm->mm_provider_network_name);
   free(mm->mm_crid_authority);
   free(mm->mm_charset);
+#if ENABLE_DVBBUFFER
+  free(mm->mm_ecm_prefetch);
+#endif
   free(mm->mm_epg_module_id);
   free(mm->mm_nicename);
   free(mm);

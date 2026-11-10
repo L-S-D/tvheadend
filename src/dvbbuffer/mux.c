@@ -294,6 +294,8 @@ dvbbuffer_mux_attach(mpegts_mux_t *mm)
   atomic_add(&dvbbuffer_mux_rings, 1);
   dvbbuffer_mux_pmt_sync(mm);
 
+  dvbbuffer_prefetch_start(mm);
+
   tvhinfo(LS_DVBBUFFER, "%s: ring buffer started (%u s, %u kbit/s%s)",
           dm->dm_name, dvbbuffer_conf.buffer_sec, kbps,
           kbps == dvbbuffer_conf.max_bitrate_kbps ? ", configured maximum" : " from tuning");
@@ -332,6 +334,7 @@ dvbbuffer_mux_detach(mpegts_mux_t *mm)
   }
   atomic_dec(&dvbbuffer_mux_rings, 1);
   tvhinfo(LS_DVBBUFFER, "%s: ring buffer stopped", dm->dm_name);
+  dvbbuffer_prefetch_stop(dm);
   dvbbuffer_mux_pmt_stop(dm);
   dvbbuffer_mux_free(dm);
 }
@@ -432,6 +435,20 @@ dvbbuffer_mux_prebuffer_notify(void *p, const char *lang)
   else
     dvbbuffer_mux_detach(mm);
   dvbbuffer_warm_reconcile();
+}
+
+/*
+ * The mux property "ecm_prefetch" changed: the tables follow
+ */
+void
+dvbbuffer_mux_prefetch_notify(void *p, const char *lang)
+{
+  mpegts_mux_t *mm = p;
+
+  if (!dvbbuffer_running || mm->mm_dvbbuffer == NULL)
+    return;
+  dvbbuffer_prefetch_stop(mm->mm_dvbbuffer);
+  dvbbuffer_prefetch_start(mm);
 }
 
 /*
