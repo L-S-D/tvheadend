@@ -42,6 +42,26 @@
 /* DAB-GSE: DMX_SET_FE_STREAM (Neumo driver) and the libdvbdab streamer */
 #define LINUXDVB_GSE (ENABLE_LINUXDVB_NEUMO && ENABLE_DVBDAB)
 
+#if ENABLE_LINUXDVB_NEUMO
+#include <linux/dvb/dmx.h>
+/* a demux filter on the stream of the frontend itself (Neumo driver): in
+ * BBFrame mode the BBFrames of all input streams, in DVB_BBFRAMES_PID */
+#ifndef DMX_SET_FE_STREAM
+#define DMX_SET_FE_STREAM _IO('o', 55)
+#endif
+/* the dvr buffer for a multistream transponder: all of its streams */
+#define LINUXDVB_BBFRAMES_DVR_BUFFER (16 * 1024 * 1024)
+
+/* a multistream transponder tuned so that all input streams come */
+static int
+linuxdvb_frontend_bbframes_mux ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
+{
+  return lfe->lfe_supports_bbframes && mm != NULL &&
+         idnode_is_instance(&mm->mm_id, &dvb_mux_class) &&
+         ((dvb_mux_t *)mm)->lm_multistream;
+}
+#endif
+
 #define NOSIGNAL(x) (((x) & FE_HAS_SIGNAL) == 0)
 
 static void
@@ -640,6 +660,14 @@ linuxdvb_frontend_is_enabled
     return MI_IS_ENABLED_NEVER;
   if (mm == NULL)
     return MI_IS_ENABLED_OK;
+  /* a multistream transponder delivers its input streams as BBFrames (only a
+   * Neumo frontend; others tune the streams themselves) */
+  if (idnode_is_instance(&mm->mm_id, &dvb_mux_class) && ((dvb_mux_t *)mm)->lm_multistream) {
+#if ENABLE_LINUXDVB_NEUMO
+    if (!lfe->lfe_supports_bbframes)
+#endif
+      return MI_IS_ENABLED_NEVER;
+  }
   if (lfe->lfe_in_setup)
     return MI_IS_ENABLED_RETRY;
   if (lfe->lfe_type != DVB_TYPE_S)
@@ -1973,6 +2001,14 @@ linuxdvb_frontend_open_pid0
     return;
   }
 
+#if ENABLE_LINUXDVB_NEUMO
+  /* BBFrame mode: the filter reads the stream of the frontend (the BBFrames),
+   * set before the filter itself */
+  if (lfe->lfe_bbframes && ioctl(fd, DMX_SET_FE_STREAM) < 0)
+    tvherror(LS_LINUXDVB, "%s - DMX_SET_FE_STREAM failed for pid %d [e=%s]",
+             name, pid, strerror(errno));
+#endif
+
   /* Install filter */
   tvhtrace(LS_LINUXDVB, "%s - open PID %04X (%d) fd %d", name, pid, pid, fd);
   memset(&dmx_param, 0, sizeof(dmx_param));
@@ -2101,6 +2137,11 @@ linuxdvb_frontend_input_thread ( void *aux )
     tvherror(LS_LINUXDVB, "%s - failed to open %s", name, lfe->lfe_dvr_path);
     return NULL;
   }
+#if ENABLE_LINUXDVB_NEUMO
+  if (lfe->lfe_bbframes &&
+      ioctl(dvr, DMX_SET_BUFFER_SIZE, LINUXDVB_BBFRAMES_DVR_BUFFER) < 0)
+    tvhwarn(LS_LINUXDVB, "%s - dvr buffer for BBFrames not set [e=%s]", name, strerror(errno));
+#endif
 
   /* Setup poll */
   efd = tvhpoll_create(2);
@@ -2615,6 +2656,10 @@ linuxdvb_frontend_tune0
   /* DVB-S */
   } else if (lfe->lfe_type == DVB_TYPE_S) {
 #if ENABLE_LINUXDVB_NEUMO
+    /* the driver keeps the BBFrame output across DTV_CLEAR: set it always */
+    lfe->lfe_bbframes = linuxdvb_frontend_bbframes_mux(lfe, (mpegts_mux_t *)lm);
+    if (lfe->lfe_supports_bbframes)
+      S2CMD(DTV_OUTPUT_BBFRAMES, lfe->lfe_bbframes);
     /* Neumo driver: use blind tuning for auto-detection
      * blindscan_mode: 0=never, 1=scanning only, 2=always */
     if (lfe->lfe_neumo_supported &&
@@ -2640,6 +2685,14 @@ linuxdvb_frontend_tune0
       r = dmc->dmc_fe_stream_id != DVB_NO_STREAM_ID_FILTER ? (dmc->dmc_fe_stream_id & 0xFF) |
           ((dmc->dmc_fe_pls_code & 0x3FFFF)<<8) | ((dmc->dmc_fe_pls_mode & 0x3)<<26) :
           DVB_NO_STREAM_ID_FILTER;
+#if ENABLE_LINUXDVB_NEUMO
+      /* all input streams: no stream filter, the PLS on its own */
+      if (lfe->lfe_bbframes) {
+        r = DVB_NO_STREAM_ID_FILTER;
+        S2CMD(DTV_PLS_MODE,      dmc->dmc_fe_pls_mode);
+        S2CMD(DTV_PLS_CODE,      dmc->dmc_fe_pls_code);
+      }
+#endif
 #if DVB_VER_ATLEAST(5,9)
       S2CMD(DTV_STREAM_ID,       r);
 #if DVB_VER_ATLEAST(5,11)
@@ -3007,8 +3060,10 @@ linuxdvb_frontend_create
         lfe->lfe_neumo_supported = 1;
         lfe->lfe_num_rf_inputs = ext_info.num_rf_inputs;
         lfe->lfe_default_rf_input = ext_info.default_rf_input;
-        tvhinfo(LS_LINUXDVB, "%s Neumo driver detected: %d RF inputs, default=%d",
-                fe_path, ext_info.num_rf_inputs, ext_info.default_rf_input);
+        lfe->lfe_supports_bbframes = ext_info.supports_bbframes;
+        tvhinfo(LS_LINUXDVB, "%s Neumo driver detected: %d RF inputs, default=%d%s",
+                fe_path, ext_info.num_rf_inputs, ext_info.default_rf_input,
+                ext_info.supports_bbframes ? ", BBFrames" : "");
       } else {
         tvhtrace(LS_LINUXDVB, "%s - FE_GET_EXTENDED_INFO: supports_neumo=0", fe_path);
       }
