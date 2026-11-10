@@ -498,8 +498,15 @@ submux_subscribe ( mpegts_submux_t *sm, mpegts_mux_t *mm, mpegts_mux_t *parent,
   if (ths == NULL)
     return NULL;
   ths->ths_flags &= ~SUBSCRIPTION_ONESHOT;
-  if (svc)
+  if (svc) {
+#if ENABLE_DVBBUFFER
+    /* the carrier service started as one of a warm transponder: its PIDs
+     * got the ring content first */
+    if (sm->sm_pid)
+      sm->sm_backlog = submux_parent_backlog(parent, svc, sm->sm_pid);
+#endif
     return ths;
+  }
   ms = (mpegts_service_t *)ths->ths_service;
   mpegts_pid_init(&pids);
   mpegts_pid_add(&pids, sm->sm_pid, MPS_WEIGHT_RAW);
