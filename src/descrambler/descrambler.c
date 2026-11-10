@@ -28,6 +28,7 @@
 #include "input/mpegts/tsdemux.h"
 #include "dvbcam.h"
 #include "streaming.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 #if 0
 #define DEBUG2 1
@@ -209,6 +210,71 @@ descrambler_data_key_check(th_descrambler_runtime_t *dr, uint8_t key, int len)
     dd = TAILQ_NEXT(dd, dd_link);
   }
   return len;
+}
+
+/* the parity of the scrambled packets of a queue entry, up to max of them */
+static void
+descrambler_data_count_parity(const sbuf_t *sb, int max, int *even, int *odd)
+{
+  int off;
+  uint8_t ki;
+
+  for (off = 0; off < sb->sb_ptr && *even + *odd < max; off += 188) {
+    ki = sb->sb_data[off + 3];
+    if ((ki & 0x80) == 0)
+      continue;
+    if (ki & 0x40)
+      (*odd)++;
+    else
+      (*even)++;
+  }
+}
+
+/* parity bits (0x80/0xc0) of the oldest scrambled packets in the queue: the
+ * majority of the first ones (a stray packet does not decide), 0 = none */
+static uint8_t
+descrambler_data_first_parity(th_descrambler_runtime_t *dr, int max)
+{
+  th_descrambler_data_t *dd;
+  int even = 0, odd = 0;
+
+  TAILQ_FOREACH(dd, &dr->dr_queue, dd_link) {
+    if (dd->dd_sbuf.sb_data != NULL)
+      descrambler_data_count_parity(&dd->dd_sbuf, max, &even, &odd);
+    if (even + odd >= max)
+      break;
+  }
+  if (even + odd == 0)
+    return 0;
+  return odd > even ? 0xc0 : 0x80;
+}
+
+/*
+ * Fill a temporary buffer until the keys are known to make streaming faster
+ */
+static void
+descrambler_queue_data(th_descrambler_runtime_t *dr, service_t *t,
+                       const uint8_t *tsb, int len)
+{
+  uint32_t dbuflen = MAX(300, config.descrambler_buffer);
+
+#if ENABLE_DVBBUFFER
+  if (dr->dr_ring)    /* the whole backlog waits for its first key */
+    dbuflen = MAX(dbuflen, dvbbuffer_backlog_packets());
+#endif
+  if (dr->dr_queue_total >= dbuflen * 188) {
+    descrambler_data_cut(dr, MAX((dbuflen / 10) * 188, len));
+    if (dr->dr_last_err + sec2mono(10) < mclk()) {
+      dr->dr_last_err = mclk();
+      tvherror(LS_DESCRAMBLER, "cannot decode packets for service \"%s\"",
+               ((mpegts_service_t *)t)->s_dvb_svcname);
+    } else {
+      tvhtrace(LS_DESCRAMBLER, "cannot decode packets for service \"%s\"",
+               ((mpegts_service_t *)t)->s_dvb_svcname);
+    }
+  }
+  descrambler_data_append(dr, tsb, len);
+  service_set_streaming_status_flags(t, TSS_NO_ACCESS);
 }
 
 static int
@@ -1056,10 +1122,9 @@ descrambler_descramble ( service_t *t,
   th_descrambler_key_t *tk;
   th_descrambler_data_t *dd, *dd_next;
   int len2, len3, r, flush_data, update_tk;
-  uint32_t dbuflen;
   const uint8_t *tsb2;
   int64_t now;
-  uint_fast8_t ki;
+  uint_fast8_t ki, ki0;
   sbuf_t *sb;
 
   lock_assert(&t->s_stream_mutex);
@@ -1074,6 +1139,17 @@ descrambler_descramble ( service_t *t,
 
   if (dr->dr_descramble)
     return dr->dr_descramble(t, st, tsb, len);
+
+#if ENABLE_DVBBUFFER
+  /* packets of a ring backlog pass: this service starts in the past - the
+   * live-only behaviour (drop until the ECM is out, parity from a check of
+   * the newest packets) would cut that start; live again once the backlog
+   * is out of the queue */
+  if (t->s_dvbbuffer_backlog)
+    dr->dr_ring = 1;
+  else if (dr->dr_queue_total == 0)
+    dr->dr_ring = 0;
+#endif
 
   if (!dr->dr_key_multipid) {
     tk = &dr->dr_keys[0];
@@ -1244,7 +1320,17 @@ next:
       } else {
         tk = &dr->dr_keys[0];
       }
-      if (tk->key_start == 0) {
+      if (tk->key_start == 0 && dr->dr_ring &&
+          (ki0 = descrambler_data_first_parity(dr, dr->dr_initial_paritycheck / 188)) != 0) {
+        /* the first key belongs to the oldest queued packets: they came
+         * first, and their ECM before them (a backlog from a ring buffer
+         * holds a key change, the newest packet has the other parity) -
+         * nothing is cut, the change follows as with live data */
+        tvhtrace(LS_DESCRAMBLER, "initial stream key[%d] set to %s (oldest queued) for service \"%s\"",
+                                tk->key_pid, (ki0 & 0x40) ? "odd" : "even",
+                                ((mpegts_service_t *)t)->s_dvb_svcname);
+        key_update(t, tk, ki0, mclk());
+      } else if (tk->key_start == 0) {
         /* do not use the first TS packet to decide - it may be wrong */
         while (dr->dr_queue_total > dr->dr_initial_paritycheck) {
           if (descrambler_data_key_check(dr, ki & 0xc0, dr->dr_initial_paritycheck) == 0) {
@@ -1265,26 +1351,13 @@ next:
       }
     }
 queue:
-    if (dr->dr_ca_count != dr->dr_ca_failed) {
-      /*
-       * Fill a temporary buffer until the keys are known to make
-       * streaming faster.
-       */
-      dbuflen = MAX(300, config.descrambler_buffer);
-      if (dr->dr_queue_total >= dbuflen * 188) {
-        descrambler_data_cut(dr, MAX((dbuflen / 10) * 188, len));
-        if (dr->dr_last_err + sec2mono(10) < mclk()) {
-          dr->dr_last_err = mclk();
-          tvherror(LS_DESCRAMBLER, "cannot decode packets for service \"%s\"",
-                   ((mpegts_service_t *)t)->s_dvb_svcname);
-        } else {
-          tvhtrace(LS_DESCRAMBLER, "cannot decode packets for service \"%s\"",
-                   ((mpegts_service_t *)t)->s_dvb_svcname);
-        }
-      }
-      descrambler_data_append(dr, tsb, len);
-      service_set_streaming_status_flags(t, TSS_NO_ACCESS);
-    }
+    if (dr->dr_ca_count != dr->dr_ca_failed)
+      descrambler_queue_data(dr, t, tsb, len);
+  } else if (dr->dr_ring && !dr->dr_skip && dr->dr_ca_count > 0 &&
+             dr->dr_ca_count != dr->dr_ca_failed) {
+    /* ring backlog, no ECM sent yet: keep the packets as after it - the key
+     * may come soon, the ECM may even follow them in the backlog */
+    descrambler_queue_data(dr, t, tsb, len);
   } else {
     if (dr->dr_skip || dr->dr_ca_count == 0)
       ts_skip_packet2((mpegts_service_t *)t, tsb, len);
