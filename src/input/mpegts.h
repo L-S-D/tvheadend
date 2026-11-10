@@ -615,6 +615,8 @@ struct mpegts_service
   int      s_dvb_subscription_weight;
 #if ENABLE_DVBBUFFER
   int      s_dvbbuffer_used;    /* counted as mux use for the LRU (global_lock) */
+  tvh_uuid_t s_dvbbuffer_used_mux; /* ... for this mux (of a sub-mux: its
+                                      transponder, when it was started) */
 #endif
 
   mpegts_apids_t             *s_pids;
