@@ -58,6 +58,7 @@ dvbbuffer_conf_class_changed(idnode_t *self)
   dvbbuffer_conf_fixup();
   /* buffer size / bitrate apply to muxes started from now on */
   dvbbuffer_warm_reconcile();
+  dvbbuffer_camd35_reconf();
 }
 
 static htsmsg_t *
@@ -83,6 +84,7 @@ const idclass_t dvbbuffer_conf_class = {
     { .name = N_("General"),                 .number = 1 },
     { .name = N_("Recently used muxes"),     .number = 2 },
     { .name = N_("Live start"),              .number = 3 },
+    { .name = N_("ECM prefetch (camd35)"),   .number = 4 },
     {}
   },
   .ic_properties = (const property_t[]){
@@ -173,6 +175,50 @@ const idclass_t dvbbuffer_conf_class = {
                    "player that much buffer at once."),
       .off    = offsetof(dvbbuffer_conf_t, start_lag_ms),
       .group  = 3,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "camd35_enabled",
+      .name   = N_("ECM prefetch (camd35)"),
+      .desc   = N_("Send the ECMs of the PIDs listed at the prebuffer muxes "
+                   "(\"ECM prefetch PIDs\") to this camd35 (UDP) server as "
+                   "they change, the answers are not used: the keys of these "
+                   "services are in the server's cache when they start."),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_enabled),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+    {
+      .type   = PT_STR,
+      .id     = "camd35_host",
+      .name   = N_("camd35 host"),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_host),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "camd35_port",
+      .name   = N_("camd35 port (UDP)"),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_port),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+    {
+      .type   = PT_STR,
+      .id     = "camd35_user",
+      .name   = N_("camd35 user"),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_user),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+    {
+      .type   = PT_STR,
+      .id     = "camd35_pass",
+      .name   = N_("camd35 password"),
+      .off    = offsetof(dvbbuffer_conf_t, camd35_pass),
+      .opts   = PO_ADVANCED | PO_PASSWORD,
+      .group  = 4,
     },
     {}
   }
