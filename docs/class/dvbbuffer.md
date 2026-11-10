@@ -32,6 +32,10 @@ data, and plays within a fraction of a second.
   PMT that changed since (an audio track came or went) right after its
   backlog.
 
+* **Recently used muxes**: with *Recently used muxes kept warm* above 0, the
+  muxes last watched stay tuned with a ring buffer as well (with the lower
+  *Recently used mux weight*), so zapping back starts from the buffer.
+
 ---
 
 ## Notes

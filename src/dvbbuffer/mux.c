@@ -28,6 +28,21 @@ static mtimer_t dvbbuffer_mux_pmt_timer;
  * often (s) */
 #define DVBBUFFER_PMT_CHECK  60
 
+#if ENABLE_IPTV
+extern const idclass_t iptv_mux_class;
+#endif
+
+/* a DVB mux (satellite, cable, terrestrial), not IPTV */
+int
+dvbbuffer_mux_is_dvb(mpegts_mux_t *mm)
+{
+#if ENABLE_IPTV
+  return !idnode_is_instance(&mm->mm_id, &iptv_mux_class);
+#else
+  return 1;
+#endif
+}
+
 /* kept warm (prebuffer) */
 int
 dvbbuffer_mux_prebuffer(mpegts_mux_t *mm)
@@ -36,11 +51,12 @@ dvbbuffer_mux_prebuffer(mpegts_mux_t *mm)
          mm->mm_is_enabled(mm);
 }
 
-/* ring buffer wanted: kept warm */
+/* ring buffer wanted: kept warm (prebuffer or recently used) */
 int
 dvbbuffer_mux_wanted(mpegts_mux_t *mm)
 {
-  return dvbbuffer_mux_prebuffer(mm);
+  return dvbbuffer_mux_prebuffer(mm) ||
+         (dvbbuffer_running && dvbbuffer_conf.enabled && dvbbuffer_warm_lru(mm));
 }
 
 /*
@@ -293,6 +309,7 @@ dvbbuffer_mux_attach(mpegts_mux_t *mm)
   if (dm == NULL)
     return;
   dm->dm_name = strdup(mm->mm_nicename ?: "?");
+  dm->dm_lru = !dvbbuffer_mux_prebuffer(mm);
 
   kbps = dvbbuffer_mux_bitrate(mm);
   if (kbps == 0 || kbps > dvbbuffer_conf.max_bitrate_kbps)
@@ -312,9 +329,11 @@ dvbbuffer_mux_attach(mpegts_mux_t *mm)
   atomic_add(&dvbbuffer_mux_rings, 1);
   dvbbuffer_mux_pmt_sync(mm);
 
-  tvhinfo(LS_DVBBUFFER, "%s: ring buffer started (%u s, %u kbit/s%s)",
-          dm->dm_name, dvbbuffer_conf.buffer_sec, kbps,
-          kbps == dvbbuffer_conf.max_bitrate_kbps ? ", configured maximum" : " from tuning");
+  tvhlog(dm->dm_lru ? LOG_DEBUG : LOG_INFO, LS_DVBBUFFER,
+         "%s: ring buffer started (%u s, %u kbit/s%s)%s",
+         dm->dm_name, dvbbuffer_conf.buffer_sec, kbps,
+         kbps == dvbbuffer_conf.max_bitrate_kbps ? ", configured maximum" : " from tuning",
+         dm->dm_lru ? " for a recently used mux" : "");
 }
 
 int
@@ -349,7 +368,8 @@ dvbbuffer_mux_detach(mpegts_mux_t *mm)
     mm->mm_dvbbuffer = NULL;
   }
   atomic_dec(&dvbbuffer_mux_rings, 1);
-  tvhinfo(LS_DVBBUFFER, "%s: ring buffer stopped", dm->dm_name);
+  tvhlog(dm->dm_lru ? LOG_DEBUG : LOG_INFO, LS_DVBBUFFER,
+         "%s: ring buffer stopped", dm->dm_name);
   dvbbuffer_mux_pmt_stop(dm);
   dvbbuffer_mux_free(dm);
 }
