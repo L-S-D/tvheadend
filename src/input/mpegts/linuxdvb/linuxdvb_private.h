@@ -274,6 +274,10 @@ struct linuxdvb_satconf
    * MPEG-TS hooks
    */
   mpegts_input_t        *ls_frontend; ///< Frontend we're proxying for
+  mpegts_input_t        *ls_drive;    ///< Frontend sending the LNB and DiSEqC
+                                      ///  commands now: a slave tuner setting
+                                      ///  up a free RF input of a Neumo card,
+                                      ///  NULL = ls_frontend
   mpegts_mux_instance_t *ls_mmi;      ///< Used within delay diseqc handler
 
   /*
@@ -634,6 +638,20 @@ int linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol );
 void linuxdvb_satconf_reset ( linuxdvb_satconf_t *ls );
 
 static inline int linuxdvb_satconf_fe_fd ( linuxdvb_satconf_t *ls )
-  { return ((linuxdvb_frontend_t *)ls->ls_frontend)->lfe_fe_fd; }
+  { return ((linuxdvb_frontend_t *)(ls->ls_drive ?: ls->ls_frontend))->lfe_fe_fd; }
+
+/* a tuner on an RF input of a Neumo card (a virtual frontend): the RF input,
+ * not one of its tuners, is the master - the tuner that finds it free sets it
+ * up, the others follow (the driver: reservations of the input) */
+static inline int linuxdvb_frontend_rf_port ( linuxdvb_frontend_t *lfe )
+  { return lfe->lfe_rf_input >= 0 && lfe->lfe_neumo_supported; }
+
+/* reserve the RF input of the tuner without controlling it (Neumo driver):
+ * 0 = ok, -1 = failed */
+int linuxdvb_frontend_rf_input_slave ( linuxdvb_frontend_t *lfe );
+
+/* close the idle demods still holding the RF input of the tuner (the driver
+ * keeps a reservation until the device is closed); returns how many */
+int linuxdvb_frontend_rf_input_release ( linuxdvb_frontend_t *lfe, int except_own );
 
 #endif /* __TVH_LINUXDVB_PRIVATE_H__ */

@@ -639,7 +639,12 @@ linuxdvb_en50494_tune
   if (linuxdvb_en50494_lock_cable(lock))
     return -1;
 
-  if (group && !le->le_is_master) {
+  /* not for a tuner on an RF input of a Neumo card: the driver lets each of
+   * them send its own commands on the cable (unicable mode of the input),
+   * and the master's demod may be on another input; the group's lock keeps
+   * the commands apart */
+  if (group && !le->le_is_master &&
+      !linuxdvb_frontend_rf_port((linuxdvb_frontend_t *)lsp->ls_frontend)) {
     int mfd = linuxdvb_unicable_get_master_fd(group, &master);
     if (mfd >= 0) {
       fd = mfd;
