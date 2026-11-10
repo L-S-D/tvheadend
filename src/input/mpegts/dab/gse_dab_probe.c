@@ -1,11 +1,13 @@
 /*
  *  GSE-DAB Probe - Detection of DAB within GSE streams
  *
- *  Detects DAB ensembles within GSE (Generic Stream Encapsulation) streams
- *  and upgrades MM_TYPE_GSE muxes to MM_TYPE_DAB_GSE.
+ *  Finds the DAB ensembles of a GSE input stream of a multistream
+ *  transponder (MM_TYPE_GSE) and makes a DAB-GSE mux for each one.
  *
- *  Uses DMX_SET_FE_STREAM to access BBFrame data and libdvbdab streamer
- *  with DVBDAB_FORMAT_BBF_TS in discovery mode (filter_ip=0).
+ *  The GSE mux runs on the sub-mux input: its stream is the BBFrames of its
+ *  input stream, as the Neumo driver embeds them (DVB_BBFRAMES_PID). The
+ *  probe reads them while the scan runs (mm_secondary_cb), with a libdvbdab
+ *  streamer in discovery mode (DVBDAB_FORMAT_BBF_TS, filter_ip=0).
  *
  *  Copyright (C) 2025
  *
@@ -18,29 +20,13 @@
 #include "tvheadend.h"
 #include "input.h"
 #include "input/mpegts/mpegts_dvb.h"
-#include "input/mpegts/linuxdvb/linuxdvb_private.h"
 #include <dvbdab/dvbdab_c.h>
 #include "dab_stream.h"
-#include <poll.h>
-#include <fcntl.h>
-#include <sys/ioctl.h>
-#include <linux/dvb/dmx.h>
 
-#ifndef DMX_SET_FE_STREAM
-#define DMX_SET_FE_STREAM _IO('o', 55)
-#endif
-
-/*
- * GSE-DAB probe context - uses DMX_SET_FE_STREAM for BBFrame access
- */
 typedef struct gse_dab_probe_ctx {
   mpegts_mux_t          *mm;
-  dvbdab_streamer_t     *streamer;
-  int                    dmx_fd;       /* Demux FD with DMX_SET_FE_STREAM */
+  dvbdab_streamer_t     *streamer;   /* fed by the input thread, mi_output_lock */
   int64_t                start_time;
-  pthread_t              thread;
-  th_pipe_t              pipe;
-  int                    running;
 } gse_dab_probe_ctx_t;
 
 /* Discovery timeout in milliseconds */
@@ -58,42 +44,24 @@ gse_format_ip_str(char *buf, size_t len, uint32_t ip)
 }
 
 /*
- * Upgrade outer mux to DAB-GSE type
- */
-static void
-gse_upgrade_outer_mux(mpegts_mux_t *mm, dvb_mux_t *outer_dm,
-                      const dvbdab_ensemble_t *ens, const char *ip_str)
-{
-  outer_dm->lm_tuning.dmc_dab_ip = ens->source_ip;
-  outer_dm->lm_tuning.dmc_dab_port = ens->source_port;
-  mm->mm_type = MM_TYPE_DAB_GSE;
-  mpegts_mux_set_tsid(mm, ens->eid, 1);
-
-  dvb_mux_set_dab_ensemble(mm, ens->label);
-  mpegts_mux_update_nice_name(mm);
-
-  tvhinfo(LS_MPEGTS, "mux %s: upgraded to DAB-GSE (EID=0x%04X, %s:%d)",
-          mm->mm_nicename, ens->eid, ip_str, ens->source_port);
-
-  mm->mm_scan_last_seen = gclk();
-  idnode_changed(&mm->mm_id);
-}
-
-/*
- * Create DAB-GSE child mux
+ * Create the DAB-GSE mux of an ensemble: a sub-mux of the transponder, in
+ * the input stream of the GSE mux
  */
 static dvb_mux_t *
 gse_create_child_mux(mpegts_mux_t *mm, dvb_network_t *ln,
                      const dvb_mux_conf_t *dmc, const dvbdab_ensemble_t *ens,
                      const char *ip_str)
 {
-  dvb_mux_t *dab_mux;
+  dvb_mux_t *dab_mux, *t;
 
   dab_mux = dvb_mux_create0(ln, MPEGTS_ONID_NONE, ens->eid, dmc, NULL, NULL);
   if (!dab_mux)
     return NULL;
 
   dab_mux->mm_type = MM_TYPE_DAB_GSE;
+  t = dvb_mux_submux_parent((dvb_mux_t *)mm);
+  if (t)
+    dvb_mux_submux_link(dab_mux, t);
 
   dvb_mux_set_dab_ensemble((mpegts_mux_t *)dab_mux, ens->label);
   mpegts_mux_update_nice_name((mpegts_mux_t *)dab_mux);
@@ -117,8 +85,7 @@ gse_create_child_mux(mpegts_mux_t *mm, dvb_network_t *ln,
  */
 static int
 gse_process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln, dvb_mux_t *outer_dm,
-                     const dvbdab_ensemble_t *ens, int is_already_dab_gse,
-                     int *created_count)
+                     const dvbdab_ensemble_t *ens)
 {
   dvb_mux_conf_t dmc;
   dvb_mux_t *dab_mux;
@@ -144,24 +111,11 @@ gse_process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln, dvb_mux_t *outer_dm,
     return 1;
   }
 
-  /* First ensemble on GSE mux: upgrade current mux */
-  if (!is_already_dab_gse && *created_count == 0) {
-    gse_upgrade_outer_mux(mm, outer_dm, ens, ip_str);
-    (*created_count)++;
-    return 1;
-  }
-
-  /* Create new child mux */
-  if (gse_create_child_mux(mm, ln, &dmc, ens, ip_str)) {
-    (*created_count)++;
-    return 1;
-  }
-
-  return 0;
+  return gse_create_child_mux(mm, ln, &dmc, ens, ip_str) != NULL;
 }
 
 /*
- * Process streamer results - upgrade mux type and create child muxes
+ * Process the streamer results: a DAB-GSE mux for each ensemble
  */
 static int
 gse_dab_probe_process_results(mpegts_mux_t *mm, dvbdab_streamer_t *streamer)
@@ -169,11 +123,7 @@ gse_dab_probe_process_results(mpegts_mux_t *mm, dvbdab_streamer_t *streamer)
   dvbdab_ensemble_t *ensembles;
   int count = 0;
   int i;
-  dvb_network_t *ln;
-  dvb_mux_t *outer_dm;
   int found = 0;
-  int created = 0;
-  int is_already_dab_gse = (mm->mm_type == MM_TYPE_DAB_GSE);
 
   ensembles = dvbdab_streamer_get_all_ensembles(streamer, &count);
   if (!ensembles || count == 0) {
@@ -181,178 +131,60 @@ gse_dab_probe_process_results(mpegts_mux_t *mm, dvbdab_streamer_t *streamer)
     return 0;
   }
 
-  ln = (dvb_network_t *)mm->mm_network;
-  outer_dm = (dvb_mux_t *)mm;
-
   tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe found %d ensemble(s)", mm->mm_nicename, count);
 
-  for (i = 0; i < count; i++) {
-    if (gse_process_ensemble(mm, ln, outer_dm, &ensembles[i],
-                             is_already_dab_gse, &created))
-      found++;
-  }
+  for (i = 0; i < count; i++)
+    found += gse_process_ensemble(mm, (dvb_network_t *)mm->mm_network,
+                                  (dvb_mux_t *)mm, &ensembles[i]);
 
   dvbdab_streamer_free_all_ensembles(ensembles, count);
 
   return found;
 }
 
-/*
- * GSE-DAB probe thread - reads BBFrame data via DMX_SET_FE_STREAM
- */
-static void *
-gse_dab_probe_thread(void *aux)
+/* the packets of the GSE mux (the input thread, under mi_output_lock) */
+static void
+gse_dab_probe_packet_cb(void *aux, const uint8_t *pkt, int len)
 {
   gse_dab_probe_ctx_t *ctx = aux;
-  struct pollfd pfd[2];
-  uint8_t buf[32768];
-  ssize_t n;
-  int nfds;
-  int64_t elapsed;
-  int done = 0;
 
-  tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe thread started", ctx->mm->mm_nicename);
+  dvbdab_streamer_feed(ctx->streamer, pkt, len);
+}
 
-  memset(pfd, 0, sizeof(pfd));
-  pfd[0].fd = ctx->dmx_fd;
-  pfd[0].events = POLLIN;
-  pfd[1].fd = ctx->pipe.rd;
-  pfd[1].events = POLLIN;
+static void
+gse_dab_probe_set_cb(mpegts_mux_t *mm, gse_dab_probe_ctx_t *ctx)
+{
+  mpegts_input_t *mi = mm->mm_active ? mm->mm_active->mmi_input : NULL;
 
-  while (!done && ctx->running && tvheadend_is_running()) {
-    /* Check timeout */
-    elapsed = mclk() - ctx->start_time;
-    if (elapsed >= ms2mono(GSE_DAB_PROBE_TIMEOUT_MS)) {
-      tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe timeout", ctx->mm->mm_nicename);
-      done = 1;
-      continue;
-    }
-
-    /* Check if we have enough results */
-    if (ctx->streamer && dvbdab_streamer_is_basic_ready(ctx->streamer)) {
-      tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe got basic results", ctx->mm->mm_nicename);
-      done = 1;
-      continue;
-    }
-
-    nfds = poll(pfd, 2, 200);
-    if (nfds < 0) {
-      if (!ERRNO_AGAIN(errno))
-        done = 1;
-      continue;
-    }
-    if (nfds == 0)
-      continue;
-
-    /* Check control pipe */
-    if (pfd[1].revents & POLLIN) {
-      done = 1;
-      continue;
-    }
-
-    if (pfd[0].revents & POLLNVAL) {
-      done = 1;
-      continue;
-    }
-
-    /* Read BBFrame data from demux (POLLERR, a buffer overflow, is cleared
-     * by the read - without it the loop would spin) */
-    if (pfd[0].revents & (POLLIN | POLLERR)) {
-      n = read(ctx->dmx_fd, buf, sizeof(buf));
-      if (n <= 0)
-        continue;
-
-      /* Feed to libdvbdab streamer */
-      if (ctx->streamer)
-        dvbdab_streamer_feed(ctx->streamer, buf, n);
-    }
-  }
-
-  tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe thread stopped", ctx->mm->mm_nicename);
-  return NULL;
+  if (mi)
+    tvh_mutex_lock(&mi->mi_output_lock);
+  mm->mm_secondary_ctx = ctx;
+  mm->mm_secondary_cb  = ctx ? gse_dab_probe_packet_cb : NULL;
+  if (mi)
+    tvh_mutex_unlock(&mi->mi_output_lock);
 }
 
 /*
- * Start GSE-DAB probe - called when GSE mux scan starts
- * Also runs on DAB-GSE muxes to discover new/missing ensembles
+ * Start GSE-DAB probe - called when the scan of a GSE mux starts
  */
 void
 mpegts_gse_dab_probe_start(mpegts_mux_t *mm)
 {
   gse_dab_probe_ctx_t *ctx;
   dvbdab_streamer_config_t config;
-  linuxdvb_frontend_t *lfe;
-  struct dmx_pes_filter_params pes_filter;
-  int dmx_fd;
 
-  /* Run for MM_TYPE_GSE and MM_TYPE_DAB_GSE muxes */
-  if (mm->mm_type != MM_TYPE_GSE && mm->mm_type != MM_TYPE_DAB_GSE)
+  if (mm->mm_type != MM_TYPE_GSE || mm->mm_gse_dab_probe_ctx ||
+      mm->mm_active == NULL || mm->mm_secondary_cb)
     return;
 
-  /* Already probing? */
-  if (mm->mm_gse_dab_probe_ctx)
-    return;
-
-  /* Demux of the tuner the scan runs on (mm_instances holds one instance per
-   * input of the network, its first entry is not the active one) */
-  mpegts_mux_instance_t *mmi = mm->mm_active;
-  if (!mmi || !mmi->mmi_input ||
-      !idnode_is_instance(&mmi->mmi_input->ti_id, &linuxdvb_frontend_dvbs_class))
-    return;
-  lfe = (linuxdvb_frontend_t *)mmi->mmi_input;
-
-  /* Open demux for DMX_SET_FE_STREAM */
-  dmx_fd = tvh_open(lfe->lfe_dmx_path, O_RDONLY | O_NONBLOCK, 0);
-  if (dmx_fd < 0) {
-    tvherror(LS_MPEGTS, "mux %s: GSE-DAB probe failed to open demux: %s",
-             mm->mm_nicename, strerror(errno));
-    return;
-  }
-
-  /* Set buffer size */
-  ioctl(dmx_fd, DMX_SET_BUFFER_SIZE, 4 * 1024 * 1024);
-
-  /* Enable frontend stream mode for BBFrame access */
-  if (ioctl(dmx_fd, DMX_SET_FE_STREAM) < 0) {
-    tvherror(LS_MPEGTS, "mux %s: GSE-DAB probe DMX_SET_FE_STREAM failed: %s",
-             mm->mm_nicename, strerror(errno));
-    close(dmx_fd);
-    return;
-  }
-
-  /* Set PES filter */
-  memset(&pes_filter, 0, sizeof(pes_filter));
-  pes_filter.pid = 0x2000;
-  pes_filter.input = DMX_IN_FRONTEND;
-  pes_filter.output = DMX_OUT_TSDEMUX_TAP;
-  pes_filter.pes_type = DMX_PES_OTHER;
-
-  if (ioctl(dmx_fd, DMX_SET_PES_FILTER, &pes_filter) < 0) {
-    tvherror(LS_MPEGTS, "mux %s: GSE-DAB probe DMX_SET_PES_FILTER failed: %s",
-             mm->mm_nicename, strerror(errno));
-    close(dmx_fd);
-    return;
-  }
-
-  /* Start demux */
-  if (ioctl(dmx_fd, DMX_START) < 0) {
-    tvherror(LS_MPEGTS, "mux %s: GSE-DAB probe DMX_START failed: %s",
-             mm->mm_nicename, strerror(errno));
-    close(dmx_fd);
-    return;
-  }
-
-  /* Allocate context */
   ctx = calloc(1, sizeof(*ctx));
-  if (!ctx) {
-    close(dmx_fd);
+  if (!ctx)
     return;
-  }
 
   /* Create streamer in discovery mode (filter_ip=0) with BBF_TS format */
   memset(&config, 0, sizeof(config));
-  config.format = DVBDAB_FORMAT_BBF_TS;  /* BBFrame-in-PseudoTS from DMX_SET_FE_STREAM */
-  config.pid = 0;
+  config.format = DVBDAB_FORMAT_BBF_TS;  /* BBFrames in the packets of the driver */
+  config.pid = DVB_BBFRAMES_PID;
   config.filter_ip = 0;    /* Discovery mode: find all ensembles */
   config.filter_port = 0;
 
@@ -361,36 +193,16 @@ mpegts_gse_dab_probe_start(mpegts_mux_t *mm)
   if (!ctx->streamer) {
     tvherror(LS_MPEGTS, "mux %s: GSE-DAB probe failed to create streamer",
              mm->mm_nicename);
-    close(dmx_fd);
     free(ctx);
     return;
   }
 
   ctx->mm = mm;
-  ctx->dmx_fd = dmx_fd;
   ctx->start_time = mclk();
-  ctx->running = 1;
-
-  /* Create control pipe */
-  if (tvh_pipe(O_NONBLOCK, &ctx->pipe) < 0) {
-    dvbdab_streamer_destroy(ctx->streamer);
-    close(dmx_fd);
-    free(ctx);
-    return;
-  }
-
-  /* Start probe thread */
-  if (tvh_thread_create(&ctx->thread, NULL, gse_dab_probe_thread, ctx, "gse-dab-probe") != 0) {
-    tvh_pipe_close(&ctx->pipe);
-    dvbdab_streamer_destroy(ctx->streamer);
-    close(dmx_fd);
-    free(ctx);
-    return;
-  }
-
   mm->mm_gse_dab_probe_ctx = ctx;
+  gse_dab_probe_set_cb(mm, ctx);
 
-  tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe started (DMX_SET_FE_STREAM)", mm->mm_nicename);
+  tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe started", mm->mm_nicename);
 }
 
 /*
@@ -407,32 +219,14 @@ mpegts_gse_dab_probe_complete(mpegts_mux_t *mm, int evaluate)
 
   mm->mm_gse_dab_probe_ctx = NULL;
 
-  /* Stop probe thread */
-  if (ctx->running) {
-    ctx->running = 0;
-    tvh_write(ctx->pipe.wr, "q", 1);
-    pthread_join(ctx->thread, NULL);
-    tvh_pipe_close(&ctx->pipe);
-  }
+  /* the input thread is not inside the streamer after this */
+  if (mm->mm_secondary_ctx == ctx)
+    gse_dab_probe_set_cb(mm, NULL);
 
   /* Process results (not of a cancelled scan) */
-  if (ctx->streamer) {
-    if (evaluate)
-      found = gse_dab_probe_process_results(mm, ctx->streamer);
-    dvbdab_streamer_destroy(ctx->streamer);
-  }
-
-  /* Close demux - skip DMX_STOP as it can block with DMX_SET_FE_STREAM
-   * TODO: Re-enable DMX_STOP once kernel driver issue is fixed:
-   *   ioctl(ctx->dmx_fd, DMX_STOP);
-   * The Neumo stid135 driver blocks indefinitely on DMX_STOP when
-   * DMX_SET_FE_STREAM mode was used. close() alone should be sufficient
-   * for cleanup as the kernel handles fd release.
-   */
-  if (ctx->dmx_fd >= 0) {
-    close(ctx->dmx_fd);
-  }
-
+  if (evaluate)
+    found = gse_dab_probe_process_results(mm, ctx->streamer);
+  dvbdab_streamer_destroy(ctx->streamer);
   free(ctx);
 
   tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe complete, found %d ensemble(s)",
@@ -448,23 +242,19 @@ int
 mpegts_gse_dab_probe_is_done(mpegts_mux_t *mm)
 {
   gse_dab_probe_ctx_t *ctx = mm->mm_gse_dab_probe_ctx;
-  int64_t elapsed;
+  mpegts_input_t *mi;
+  int done;
 
   if (!ctx)
     return 1;
-
-  /* Thread finished? */
-  if (!ctx->running)
+  if (mclk() - ctx->start_time >= ms2mono(GSE_DAB_PROBE_TIMEOUT_MS))
     return 1;
 
-  /* Check if streamer has basic results */
-  if (ctx->streamer && dvbdab_streamer_is_basic_ready(ctx->streamer))
-    return 1;
-
-  /* Check timeout */
-  elapsed = mclk() - ctx->start_time;
-  if (elapsed >= ms2mono(GSE_DAB_PROBE_TIMEOUT_MS))
-    return 1;
-
-  return 0;
+  mi = mm->mm_active ? mm->mm_active->mmi_input : NULL;
+  if (mi)
+    tvh_mutex_lock(&mi->mi_output_lock);
+  done = dvbdab_streamer_is_basic_ready(ctx->streamer);
+  if (mi)
+    tvh_mutex_unlock(&mi->mi_output_lock);
+  return done;
 }

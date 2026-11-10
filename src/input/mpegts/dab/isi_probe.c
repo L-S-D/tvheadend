@@ -225,17 +225,21 @@ isi_is_gse_matype(uint8_t matype)
 }
 
 /*
- * Find mux by exact match of frequency, polarisation, and stream_id
+ * The mux of an input stream: frequency, polarisation and stream_id; of a GSE
+ * stream its GSE mux (its DAB-GSE muxes are the ensembles in it)
  * Returns NULL if not found
  */
 static dvb_mux_t *
-isi_find_mux_exact(dvb_network_t *ln, uint32_t freq, int pol, int stream_id)
+isi_find_mux_exact(dvb_network_t *ln, uint32_t freq, int pol, int stream_id, int gse)
 {
   mpegts_mux_t *mm;
   dvb_mux_t *dm;
 
   LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
     dm = (dvb_mux_t *)mm;
+    if (gse ? mm->mm_type != MM_TYPE_GSE
+            : (mm->mm_type != MM_TYPE_TS && mm->mm_type != MM_TYPE_ISI))
+      continue;
     if (dm->lm_tuning.dmc_fe_freq == freq &&
         dm->lm_tuning.u.dmc_fe_qpsk.polarisation == pol &&
         dm->lm_tuning.dmc_fe_stream_id == stream_id) {
@@ -282,7 +286,7 @@ isi_probe_create_muxes(mpegts_mux_t *mm, const uint8_t *isi_list, int isi_count,
              isi, matype, is_gse ? "GSE" : "TS");
 
     /* an existing mux of the stream (from before, or the scanned one) */
-    child_mux = isi_find_mux_exact(ln, freq, pol, isi);
+    child_mux = isi_find_mux_exact(ln, freq, pol, isi, is_gse);
     if (child_mux) {
       if (((mpegts_mux_t *)child_mux)->mm_type == MM_TYPE_TS)
         ((mpegts_mux_t *)child_mux)->mm_type = MM_TYPE_ISI;
@@ -347,9 +351,12 @@ mpegts_isi_probe_start(mpegts_mux_t *mm)
    * of the network, its first entry is not the active one) */
   mmi = mm->mm_active;
   if (!mmi || !mmi->mmi_input ||
-      !idnode_is_instance(&mmi->mmi_input->ti_id, &linuxdvb_frontend_dvbs_class))
+      !idnode_is_instance(&mmi->mmi_input->ti_id, &linuxdvb_frontend_class))
     return;
   lfe = (linuxdvb_frontend_t *)mmi->mmi_input;
+  /* a DVB-S frontend, also a slave one (its class is not a DVB-S one) */
+  if (lfe->lfe_type != DVB_TYPE_S)
+    return;
 
   /* The ISI list comes from the Neumo driver (DTV_ISI_LIST) */
 #if ENABLE_LINUXDVB_NEUMO

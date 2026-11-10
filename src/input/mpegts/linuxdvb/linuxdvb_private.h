@@ -180,18 +180,6 @@ struct linuxdvb_frontend
    * Satconf (DVB-S only)
    */
   linuxdvb_satconf_t       *lfe_satconf;
-
-  /*
-   * GSE/BBFrame streaming (for DAB-GSE type muxes)
-   * Separate from DAB because GSE uses DMX_SET_FE_STREAM mode
-   * which is incompatible with normal PID filtering.
-   */
-  void                     *lfe_gse_ctx;     /* libdvbdab streamer for GSE */
-  int                       lfe_gse_dmx_fd;  /* Demux FD (DMX_SET_FE_STREAM) */
-  pthread_t                 lfe_gse_thread;  /* GSE input thread */
-  th_pipe_t                 lfe_gse_pipe;    /* Thread control */
-  int                       lfe_gse_running; /* 1 if GSE thread is active */
-  sbuf_t                    lfe_gse_buffer;  /* Output buffer for the DAB TS */
 };
 
 #if ENABLE_LINUXDVB_CA
@@ -437,6 +425,7 @@ extern const idclass_t linuxdvb_adapter_class;
 extern const idclass_t linuxdvb_ca_class;
 
 extern const idclass_t linuxdvb_frontend_dvbt_class;
+extern const idclass_t linuxdvb_frontend_class;
 extern const idclass_t linuxdvb_frontend_dvbs_class;
 extern const idclass_t linuxdvb_frontend_dvbs_slave_class;
 extern const idclass_t linuxdvb_frontend_dvbc_class;
