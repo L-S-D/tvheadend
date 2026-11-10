@@ -22,6 +22,8 @@
 #include "queue.h"
 #include "settings.h"
 #include "mpegts_dvb.h"
+#include "mpegts_network_scan.h"
+#include "t2mi.h"
 #include "linuxdvb/linuxdvb_private.h"
 #include "dvb_charset.h"
 #include "config.h"
@@ -669,31 +671,39 @@ dvb_network_find_mux
   return (dvb_mux_t *)mm;
 }
 
-/* the DAB mux of this type on the same transponder, in the same PID (and for
- * MPE: from the same IP source) */
-static dvb_mux_t *
-dvb_network_find_mux_dab
+/* a sub-mux of this type on the same transponder, in the same PID (T2MI:
+ * of the PLP, if one is set; DAB-MPE: from the same IP source) */
+static int
+dvb_network_submux_match
+  ( const mpegts_mux_t *mm, const dvb_mux_conf_t *dmc, int type )
+{
+  const dvb_mux_conf_t *c = &((const dvb_mux_t *)mm)->lm_tuning;
+
+  if (mm->mm_type != type ||
+      c->dmc_fe_type != dmc->dmc_fe_type ||
+      deltaU32(c->dmc_fe_freq, dmc->dmc_fe_freq) > 2000 ||
+      c->u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation ||
+      c->dmc_fe_stream_id != dmc->dmc_fe_stream_id ||
+      c->dmc_fe_pls_mode != dmc->dmc_fe_pls_mode ||
+      c->dmc_fe_pls_code != dmc->dmc_fe_pls_code ||
+      c->dmc_fe_pid != dmc->dmc_fe_pid)
+    return 0;
+  if (type == MM_TYPE_T2MI && dmc->dmc_t2mi_plp_set)
+    return c->dmc_t2mi_plp_set && c->dmc_t2mi_plp == dmc->dmc_t2mi_plp;
+  if (type == MM_TYPE_DAB_MPE)
+    return c->dmc_dab_ip == dmc->dmc_dab_ip && c->dmc_dab_port == dmc->dmc_dab_port;
+  return 1;
+}
+
+dvb_mux_t *
+dvb_network_find_submux
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc, int type )
 {
   mpegts_mux_t *mm;
-  const dvb_mux_conf_t *c;
 
-  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
-    if (mm->mm_type != type) continue;
-
-    c = &((dvb_mux_t *)mm)->lm_tuning;
-    if (c->dmc_fe_type != dmc->dmc_fe_type) continue;
-    if (deltaU32(c->dmc_fe_freq, dmc->dmc_fe_freq) > 2000) continue;
-    if (c->u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation) continue;
-    if (c->dmc_fe_stream_id != dmc->dmc_fe_stream_id) continue;
-    if (c->dmc_fe_pls_mode != dmc->dmc_fe_pls_mode) continue;
-    if (c->dmc_fe_pls_code != dmc->dmc_fe_pls_code) continue;
-    if (c->dmc_fe_pid != dmc->dmc_fe_pid) continue;
-    if (type == MM_TYPE_DAB_MPE &&
-        (c->dmc_dab_ip != dmc->dmc_dab_ip || c->dmc_dab_port != dmc->dmc_dab_port))
-      continue;
-    return (dvb_mux_t *)mm;
-  }
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link)
+    if (dvb_network_submux_match(mm, dmc, type))
+      return (dvb_mux_t *)mm;
   return NULL;
 }
 
@@ -701,14 +711,14 @@ dvb_mux_t *
 dvb_network_find_mux_dab_mpe
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc )
 {
-  return dvb_network_find_mux_dab(ln, dmc, MM_TYPE_DAB_MPE);
+  return dvb_network_find_submux(ln, dmc, MM_TYPE_DAB_MPE);
 }
 
 dvb_mux_t *
 dvb_network_find_mux_dab_eti
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc )
 {
-  return dvb_network_find_mux_dab(ln, dmc, MM_TYPE_DAB_ETI);
+  return dvb_network_find_submux(ln, dmc, MM_TYPE_DAB_ETI);
 }
 
 dvb_mux_t *
@@ -741,7 +751,131 @@ dvb_mux_t *
 dvb_network_find_mux_dab_tsni
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc )
 {
-  return dvb_network_find_mux_dab(ln, dmc, MM_TYPE_DAB_TSNI);
+  return dvb_network_find_submux(ln, dmc, MM_TYPE_DAB_TSNI);
+}
+
+/*
+ * T2MI sub-muxes: the search finds T2-MI streams in the PMTs of the
+ * services of a transponder (SCT_T2MI); a sub-mux takes the first PLP with
+ * a TS, its scan gives the others sub-muxes of their own. All with
+ * global_lock.
+ */
+
+extern const idclass_t dvb_mux_class;
+
+/* a T2MI sub-mux of the transponder, scanned at once */
+static dvb_mux_t *
+dvb_network_t2mi_create
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc, const dvb_mux_t *parent,
+    uint16_t sid, int format )
+{
+  dvb_mux_t *lm;
+
+  lm = dvb_mux_create0(ln, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE, dmc, NULL, NULL);
+  if (lm == NULL)
+    return NULL;
+  lm->mm_type = MM_TYPE_T2MI;
+  lm->lm_carrier_sid = sid;
+  lm->lm_t2mi_format = format;
+  lm->lm_submux_found = 1;
+  if (parent)
+    dvb_mux_submux_link(lm, parent);
+  mpegts_mux_update_nice_name((mpegts_mux_t *)lm);
+  idnode_changed(&lm->mm_id);
+  mpegts_network_scan_queue_add((mpegts_mux_t *)lm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                SUBSCRIPTION_INITSCAN, 10);
+  return lm;
+}
+
+void
+dvb_mux_t2mi_found ( mpegts_mux_t *mm, uint16_t pid, uint16_t sid )
+{
+  mpegts_network_t *mn = mm->mm_network;
+  dvb_mux_conf_t dmc;
+  mpegts_mux_t *sm;
+  dvb_mux_t *lm;
+  int found = 0;
+
+  lock_assert(&global_lock);
+
+  /* in a transponder (sub-muxes in sub-muxes: not yet) */
+  if (mpegts_mux_is_submux(mm) || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    return;
+  dmc = ((dvb_mux_t *)mm)->lm_tuning;
+  dmc.dmc_fe_pid = pid;
+  dmc.dmc_t2mi_plp_set = 0;
+  dmc.dmc_t2mi_plp = 0;
+
+  /* the sub-muxes of the PID (one for each PLP) learn their service */
+  LIST_FOREACH(sm, &mn->mn_muxes, mm_network_link) {
+    if (!dvb_network_submux_match(sm, &dmc, MM_TYPE_T2MI))
+      continue;
+    found = 1;
+    lm = (dvb_mux_t *)sm;
+    if (lm->lm_carrier_sid != sid) {
+      tvhinfo(LS_MPEGTS, "%s: carried in the service %d of %s", sm->mm_nicename,
+              sid, mm->mm_nicename);
+      lm->lm_carrier_sid = sid;
+      idnode_changed(&sm->mm_id);
+    }
+  }
+  if (found || mn->mn_autodiscovery == MN_DISCOVERY_DISABLE)
+    return;
+  lm = dvb_network_t2mi_create((dvb_network_t *)mn, &dmc, (dvb_mux_t *)mm, sid,
+                               T2MI_FORMAT_AUTO);
+  if (lm)
+    tvhinfo(LS_MPEGTS, "%s: created the T2MI mux %s (service %d)", mm->mm_nicename,
+            lm->mm_nicename, sid);
+}
+
+static int
+dvb_mux_t2mi_plp_seen ( const uint32_t *plps, int plp )
+{
+  return (__atomic_load_n(&plps[plp >> 5], __ATOMIC_RELAXED) >> (plp & 31)) & 1;
+}
+
+void
+dvb_mux_t2mi_scan_done ( mpegts_mux_t *mm )
+{
+  dvb_mux_t *lm = (dvb_mux_t *)mm;
+  dvb_mux_t *parent;
+  dvb_mux_t *pm;
+  dvb_mux_conf_t dmc;
+  int plp;
+  int cur;
+  int n = 0;
+
+  lock_assert(&global_lock);
+
+  if (mm->mm_type != MM_TYPE_T2MI || !idnode_is_instance(&mm->mm_id, &dvb_mux_class) ||
+      lm->lm_tuning.dmc_t2mi_plp_set)
+    return;
+  for (plp = 0; plp < 256; plp++)
+    n += dvb_mux_t2mi_plp_seen(lm->lm_t2mi_plps, plp);
+  cur = __atomic_load_n(&lm->lm_t2mi_plp_cur, __ATOMIC_RELAXED);
+  if (n < 2 || cur < 0 || cur > 255)
+    return;
+  tvhinfo(LS_MPEGTS, "%s: %d PLPs with a TS, a sub-mux for each (this one: PLP %d)",
+          mm->mm_nicename, n, cur);
+  parent = dvb_mux_submux_parent(lm);
+  for (plp = 0; plp < 256; plp++) {
+    if (plp == cur || !dvb_mux_t2mi_plp_seen(lm->lm_t2mi_plps, plp))
+      continue;
+    dmc = lm->lm_tuning;
+    dmc.dmc_t2mi_plp_set = 1;
+    dmc.dmc_t2mi_plp = plp;
+    if (dvb_network_find_submux((dvb_network_t *)mm->mm_network, &dmc, MM_TYPE_T2MI))
+      continue;
+    pm = dvb_network_t2mi_create((dvb_network_t *)mm->mm_network, &dmc, parent,
+                                 lm->lm_carrier_sid, lm->lm_t2mi_format);
+    if (pm)
+      tvhinfo(LS_MPEGTS, "%s: created the T2MI mux %s", mm->mm_nicename, pm->mm_nicename);
+  }
+  /* this one keeps the PLP it had: its services are of that one */
+  lm->lm_tuning.dmc_t2mi_plp_set = 1;
+  lm->lm_tuning.dmc_t2mi_plp = cur;
+  mpegts_mux_update_nice_name(mm);
+  idnode_changed(&mm->mm_id);
 }
 
 static htsmsg_t *

@@ -368,6 +368,7 @@ dvb_psi_parse_pmt
   int video_stream;
   int rds_uecp;
   int ac4;
+  int t2mi;
   int pcr_shared = 0;
   const char *lang;
   const char *supp_lang;
@@ -440,6 +441,7 @@ dvb_psi_parse_pmt
     component_tag = -1;
     rds_uecp = 0;
     ac4 = 0;
+    t2mi = 0;
     tt_position = 1000;
     tt_initial_page = 0;
     lang = NULL;
@@ -589,11 +591,20 @@ dvb_psi_parse_pmt
         if(ptr[0] == 0x15) /* descriptor_tag_extension : AC-4 */
           ac4 = 1;
 
+        if(ptr[0] == 0x11 && estype == 0x06) /* T2MI_descriptor (EN 300 468) */
+          t2mi = 1;
+
         if((estype == 0x06 || estype == 0x81) && ac4)
           hts_stream_type = SCT_AC4;
 
         psi_desc_supplementary_audio(ptr, dlen, &supp_audio_type, &supp_lang,
                                      &supp_receiver_mix);
+        break;
+
+      case DVB_DESC_DATA_BROADCAST_ID:
+        /* data_broadcast_id 0x0123: T2-MI (before the T2MI descriptor) */
+        if(dlen >= 2 && ((ptr[0] << 8) | ptr[1]) == 0x0123 && estype == 0x06)
+          t2mi = 1;
         break;
 
       case DVB_DESC_ANCILLARY_DATA:
@@ -612,6 +623,10 @@ dvb_psi_parse_pmt
       }
       len -= dlen; ptr += dlen; dllen -= dlen;
     }
+
+    /* a T2-MI stream: the carrier of a DVB-T2 multiplex (a sub-mux) */
+    if (t2mi && hts_stream_type == SCT_UNKNOWN)
+      hts_stream_type = SCT_T2MI;
 
     if (supp_lang)
       lang = supp_lang;
@@ -805,6 +820,9 @@ dvb_pmt_callback
   int r, sect, last, ver, restart;
   uint32_t update;
   uint16_t sid;
+  uint16_t t2mi[4];
+  int t2mi_n = 0;
+  int i;
   mpegts_mux_t *mm = mt->mt_mux;
   mpegts_service_t *s;
   elementary_stream_t *es;
@@ -849,12 +867,23 @@ dvb_pmt_callback
       restart = s->s_status == SERVICE_RUNNING;
     }
   }
-  /* autoenable */
-  if (elementary_stream_has_audio_or_video(&s->s_components)) {
+  /* autoenable: also a data service that carries a T2-MI stream */
+  if (elementary_stream_has_audio_or_video(&s->s_components) ||
+      elementary_stream_type_find(&s->s_components, SCT_T2MI)) {
     mpegts_service_autoenable(s, "PAT and PMT");
     s->s_verified = 1;
   }
+  /* its T2-MI streams: their sub-muxes, after the lock */
+  TAILQ_FOREACH(es, &s->s_components.set_all, es_link)
+    if (es->es_type == SCT_T2MI && t2mi_n < (int)ARRAY_SIZE(t2mi))
+      t2mi[t2mi_n++] = es->es_pid;
   tvh_mutex_unlock(&s->s_stream_mutex);
+#if ENABLE_MPEGTS_DVB
+  for (i = 0; i < t2mi_n; i++)
+    dvb_mux_t2mi_found(mm, t2mi[i], sid);
+#else
+  (void)i;
+#endif
   if (restart)
     service_restart((service_t*)s);
   if (update & (PMT_UPDATE_NEW_CA_STREAM|PMT_UPDATE_NEW_CAID|

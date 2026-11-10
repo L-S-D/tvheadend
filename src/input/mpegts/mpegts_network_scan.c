@@ -288,6 +288,13 @@ mpegts_network_scan_mux_done0
   else if (result != MM_SCAN_NONE && mm->mm_type != type0)
     mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
                                   SUBSCRIPTION_INITSCAN, 10);
+
+#if ENABLE_MPEGTS_DVB
+  /* a T2-MI stream with several PLPs: a sub-mux for each (of a scan that
+   * ended, not a cancelled one: the mux may be going away) */
+  if (result != MM_SCAN_NONE)
+    dvb_mux_t2mi_scan_done(mm);
+#endif
 }
 
 /* The end of a scan that was put off */
