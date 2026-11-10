@@ -117,8 +117,11 @@ submux_process ( mpegts_submux_t *sm, streaming_message_t *msg )
       submux_input_stream(sm, data, len);
       break;
     }
+    /* the packets of the PID; of a GSE stream: those of its frames, as
+     * they come (BBFrames in the packets of the driver, for libdvbdab) */
     for ( ; len >= 188; data += 188, len -= 188)
-      if (data[0] == 0x47 && (((data[1] & 0x1f) << 8) | data[2]) == sm->sm_pid)
+      if (data[0] == 0x47 && (((data[1] & 0x1f) << 8) | data[2]) == sm->sm_pid &&
+          (sm->sm_bbf == NULL || bbframe_split_take(sm->sm_bbf, data)))
         sbuf_append(&sm->sm_in, data, 188);
     if (sm->sm_in.sb_ptr == 0)
       break;
@@ -457,7 +460,8 @@ mpegts_submux_init ( void )
   mi->mi_mux_types     = 1u << MM_TYPE_ISI;
 #if ENABLE_DVBDAB
   mi->mi_mux_types    |= (1u << MM_TYPE_DAB_MPE) | (1u << MM_TYPE_DAB_ETI) |
-                         (1u << MM_TYPE_DAB_TSNI);
+                         (1u << MM_TYPE_DAB_TSNI) |
+                         (1u << MM_TYPE_GSE) | (1u << MM_TYPE_DAB_GSE);
 #endif
   mi->mi_is_enabled    = submux_input_is_enabled;
   mi->mi_get_weight    = submux_input_get_weight;
