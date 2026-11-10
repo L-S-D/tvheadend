@@ -61,4 +61,35 @@ void bbframe_ts_init ( bbframe_ts_t *bt );
 int  bbframe_frame_ts ( bbframe_ts_t *bt, const uint8_t *frame, size_t len,
                         bbframe_ts_cb_t cb, void *opaque );
 
+/*
+ * The Neumo driver embeds the BBFrames of all input streams of a transponder
+ * in TS packets of one PID: byte 5..6 0x80 0x00, byte 7 the number of bytes
+ * from byte 8 on, byte 8 0xB8 where a frame starts (then the 10 bytes of its
+ * header follow) or a counter; a frame goes on in byte 9 of the next packets.
+ */
+
+/* a frame: the 0xB8 byte, the header and the largest data field */
+#define BBFRAME_MAX  (1 + BBFRAME_HEADER + BBFRAME_DATA_MAX)
+
+typedef struct bbframe_split {
+  bbframe_ts_t bs_ts;             /* the TS packets of the stream taken */
+  int      bs_isi;                /* the input stream taken */
+  int      bs_cur;                /* the stream of the frame in the packets now, -1: none */
+  uint8_t  bs_frame[BBFRAME_MAX]; /* the frame being collected */
+  size_t   bs_len;
+} bbframe_split_t;
+
+/* the header of the frame that starts in the packet: its stream and
+ * MATYPE-1; -1 if no frame starts in it or the header is bad */
+int  bbframe_packet_header ( const uint8_t *pkt, uint8_t *isi, uint8_t *matype );
+
+void bbframe_split_init ( bbframe_split_t *bs, int isi );
+
+/* 1 if the packet carries a frame of the input stream taken */
+int  bbframe_split_take ( bbframe_split_t *bs, const uint8_t *pkt );
+
+/* the same, for a TS stream: its TS packets go to cb */
+void bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
+                        bbframe_ts_cb_t cb, void *opaque );
+
 #endif /* __TVH_BBFRAME_H__ */
