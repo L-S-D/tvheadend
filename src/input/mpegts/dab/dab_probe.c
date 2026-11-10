@@ -286,6 +286,7 @@ mpegts_dab_probe_start(mpegts_mux_t *mm)
   if (mm->mm_type != MM_TYPE_TS ||
       mm->mm_network->mn_autodiscovery == MN_DISCOVERY_DISABLE ||
       !idnode_is_instance(&mm->mm_network->mn_id, &dvb_network_class) ||
+      ((dvb_mux_t *)mm)->lm_multistream ||
       !((dvb_network_t *)mm->mm_network)->ln_dab_probe ||
       mm->mm_active == NULL)
     return;

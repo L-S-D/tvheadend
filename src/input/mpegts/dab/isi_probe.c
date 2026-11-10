@@ -28,11 +28,11 @@
 
 /* Neumo driver ioctls - not in standard kernel headers */
 #ifndef DTV_ISI_LIST
-#define DTV_ISI_LIST 71
+#define DTV_ISI_LIST 76
 #endif
 
 #ifndef DTV_MATYPE_LIST
-#define DTV_MATYPE_LIST 72
+#define DTV_MATYPE_LIST 90
 #endif
 
 /*
@@ -212,68 +212,63 @@ isi_find_mux_exact(dvb_network_t *ln, uint32_t freq, int pol, int stream_id)
 }
 
 /*
- * Create child muxes for discovered ISIs
+ * Create the muxes of the input streams: the scanned transponder is a
+ * multistream transponder then, they are its sub-muxes (TS: MM_TYPE_ISI,
+ * else GSE). A transponder with one TS stream has nothing to split.
  */
 static int
 isi_probe_create_muxes(mpegts_mux_t *mm, const uint8_t *isi_list, int isi_count,
                        const uint8_t *matype_list)
 {
-  dvb_network_t *ln;
-  const dvb_mux_t *outer_dm;
-  dvb_mux_t *child_mux;
+  dvb_network_t *ln = (dvb_network_t *)mm->mm_network;
+  dvb_mux_t *outer_dm = (dvb_mux_t *)mm;
+  dvb_mux_t *t, *child_mux;
   dvb_mux_conf_t dmc;
-  int i;
+  int i, gse = 0;
   int created = 0;
-  uint32_t freq;
-  int pol;
+  uint32_t freq = outer_dm->lm_tuning.dmc_fe_freq;
+  int pol = outer_dm->lm_tuning.u.dmc_fe_qpsk.polarisation;
 
-  ln = (dvb_network_t *)mm->mm_network;
-  outer_dm = (dvb_mux_t *)mm;
-  freq = outer_dm->lm_tuning.dmc_fe_freq;
-  pol = outer_dm->lm_tuning.u.dmc_fe_qpsk.polarisation;
+  for (i = 0; i < isi_count; i++)
+    gse += isi_is_gse_matype(matype_list[isi_list[i]]);
+  if (gse == 0 && isi_count < 2)
+    return 0;
 
-  tvhdebug(LS_MPEGTS, "ISI probe: outer mux stream_id=%d, freq=%u, pol=%d",
-           outer_dm->lm_tuning.dmc_fe_stream_id, freq, pol);
+  /* the mux of the transponder (the scanned one, if it has no stream set) */
+  t = dvb_mux_multistream_transponder(ln, outer_dm);
+  if (t == NULL)
+    return 0;
 
   for (i = 0; i < isi_count; i++) {
     uint8_t isi = isi_list[i];
     uint8_t matype = matype_list[isi];
     int is_gse = isi_is_gse_matype(matype);
 
-    tvhdebug(LS_MPEGTS, "ISI probe: evaluating ISI %d, MATYPE=0x%02X, is_gse=%d",
-             isi, matype, is_gse);
+    tvhdebug(LS_MPEGTS, "ISI probe: ISI %d, MATYPE=0x%02X, %s",
+             isi, matype, is_gse ? "GSE" : "TS");
 
-    /* A transponder with one TS stream has nothing to split */
-    if (!is_gse && isi_count < 2)
-      continue;
-
-    /* Check if mux with this ISI already exists (exact match) */
+    /* an existing mux of the stream (from before, or the scanned one) */
     child_mux = isi_find_mux_exact(ln, freq, pol, isi);
     if (child_mux) {
-      tvhdebug(LS_MPEGTS, "ISI probe: mux for ISI %d already exists (freq=%u, pol=%d)",
-               isi, freq, pol);
+      if (((mpegts_mux_t *)child_mux)->mm_type == MM_TYPE_TS)
+        ((mpegts_mux_t *)child_mux)->mm_type = MM_TYPE_ISI;
+      dvb_mux_submux_link(child_mux, t);
+      mpegts_mux_update_nice_name((mpegts_mux_t *)child_mux);
       child_mux->mm_scan_last_seen = gclk();
       idnode_changed(&child_mux->mm_id);
       continue;
     }
 
-    tvhdebug(LS_MPEGTS, "ISI probe: no existing mux found for ISI %d, creating", isi);
-
-    /* Copy outer mux tuning, set ISI */
-    dmc = outer_dm->lm_tuning;
+    /* the tuning of the transponder, with the stream */
+    dmc = t->lm_tuning;
     dmc.dmc_fe_stream_id = isi;
-
-    /* Create new mux for this ISI */
     child_mux = dvb_mux_create0(ln, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE, &dmc, NULL, NULL);
     if (!child_mux)
       continue;
-
-    /* Set type based on MATYPE - GSE or regular TS
-     * Note: GSE type may upgrade to DAB-GSE if DAB content is detected later */
-    if (is_gse) {
-      child_mux->mm_type = MM_TYPE_GSE;
-    }
-    /* else keep default MM_TYPE_TS */
+    /* a GSE stream may become DAB-GSE when its scan finds DAB */
+    ((mpegts_mux_t *)child_mux)->mm_type = is_gse ? MM_TYPE_GSE : MM_TYPE_ISI;
+    dvb_mux_submux_link(child_mux, t);
+    mpegts_mux_update_nice_name((mpegts_mux_t *)child_mux);
 
     tvhinfo(LS_MPEGTS, "ISI probe: created %s mux for ISI %d (MATYPE=0x%02X)",
             is_gse ? "GSE" : "TS", isi, matype);
