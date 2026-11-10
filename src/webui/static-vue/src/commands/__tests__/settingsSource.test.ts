@@ -4,7 +4,7 @@
 /*
  * settingsSource tests — verifies the singleton-config field
  * indexer that powers Settings results in the Cmd-K palette.
- * Covers the admin gate, the parallel fetch of all six config
+ * Covers the admin gate, the parallel fetch of all seven config
  * pages, the 60 s cache, the noui/phidden field filter, the
  * stable id shape, and the navigation hash payload.
  */
@@ -35,13 +35,14 @@ const baseDeps: SettingsSourceDeps = {
   access: makeAccess() as unknown as SettingsSourceDeps['access'],
 }
 
-/* The six load endpoints the source fetches in parallel. Tests
- * use this list to assert all-six coverage without hard-coding it
+/* The seven load endpoints the source fetches in parallel. Tests
+ * use this list to assert all-seven coverage without hard-coding it
  * across each spec. */
 const LOAD_ENDPOINTS = [
   'config/load',
   'imagecache/config/load',
   'satips/config/load',
+  'dvbbuffer/config/load',
   'timeshift/config/load',
   'tvhlog/config/load',
   'epggrab/config/load',
@@ -92,7 +93,7 @@ describe('settingsSource', () => {
     expect(getSettingsCommands().value).toHaveLength(0)
   })
 
-  it('fetches all six singleton-config endpoints in parallel', async () => {
+  it('fetches all seven singleton-config endpoints in parallel', async () => {
     pinApi({})
     await ensureSettingsLoaded(baseDeps)
     const calledEndpoints = apiMock.mock.calls.map((c) => c[0])
@@ -220,7 +221,7 @@ describe('settingsSource', () => {
         'config/load': fakeLoadResponse([{ id: 'hostname', caption: 'Server name' }]),
       })
       await ensureSettingsLoaded(baseDeps)
-      expect(apiMock).toHaveBeenCalledTimes(6) /* one per page */
+      expect(apiMock).toHaveBeenCalledTimes(LOAD_ENDPOINTS.length) /* one per page */
       apiMock.mockClear()
       vi.setSystemTime(new Date(1_700_000_000_000 + 30_000)) /* +30 s */
       await ensureSettingsLoaded(baseDeps)
@@ -241,15 +242,15 @@ describe('settingsSource', () => {
       apiMock.mockClear()
       vi.setSystemTime(new Date(1_700_000_000_000 + 61_000)) /* +61 s */
       await ensureSettingsLoaded(baseDeps)
-      expect(apiMock).toHaveBeenCalledTimes(6)
+      expect(apiMock).toHaveBeenCalledTimes(LOAD_ENDPOINTS.length)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('a single page erroring leaves the other five contributing', async () => {
+  it('a single page erroring leaves the other six contributing', async () => {
     /* Simulates a build without one capability (e.g. satip_server
-     * disabled). The page fetch rejects, the other five succeed,
+     * disabled). The page fetch rejects, the other six succeed,
      * and we still get their commands. */
     pinApi({
       'satips/config/load': new Error('module disabled'),
@@ -272,6 +273,6 @@ describe('settingsSource', () => {
     const b = ensureSettingsLoaded(baseDeps)
     await Promise.all([a, b])
     /* Each endpoint fetched exactly once despite two callers. */
-    expect(apiMock).toHaveBeenCalledTimes(6)
+    expect(apiMock).toHaveBeenCalledTimes(LOAD_ENDPOINTS.length)
   })
 })
