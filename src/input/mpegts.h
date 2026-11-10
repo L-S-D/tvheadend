@@ -414,6 +414,7 @@ enum mpegts_mux_enable
 enum mpegts_mux_type
 {
   MM_TYPE_TS       = 0,  /* Standard transport stream (default) */
+  MM_TYPE_T2MI     = 1,  /* T2-MI or TS piping in a PID (the TS of a DVB-T2 PLP, ...) */
   MM_TYPE_DAB_MPE  = 2,  /* DAB via MPE (IP multicast in MPE sections) */
   MM_TYPE_DAB_ETI  = 3,  /* DAB via ETI-NA (direct ETI encapsulation) */
   MM_TYPE_DAB_TSNI = 6,  /* DAB via TS NI V.11 (incrementing table_id 0x69-0x9A) */

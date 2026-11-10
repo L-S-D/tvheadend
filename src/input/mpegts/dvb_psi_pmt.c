@@ -658,6 +658,33 @@ dvb_pmt_autoenable ( mpegts_service_t *s )
          elementary_stream_type_find(&s->s_components, SCT_T2MI) != NULL;
 }
 
+/* the T2-MI streams of a service (the stream lock) */
+static int
+dvb_pmt_t2mi_pids ( mpegts_service_t *s, uint16_t *pids, int max )
+{
+  elementary_stream_t *es;
+  int n = 0;
+
+  TAILQ_FOREACH(es, &s->s_components.set_all, es_link)
+    if (es->es_type == SCT_T2MI && n < max)
+      pids[n++] = es->es_pid;
+  return n;
+}
+
+/* their sub-muxes (the global lock, not the stream lock: this makes muxes) */
+static void
+dvb_pmt_t2mi_found ( mpegts_mux_t *mm, const uint16_t *pids, int n, uint16_t sid )
+{
+#if ENABLE_MPEGTS_DVB
+  int i;
+
+  for (i = 0; i < n; i++)
+    dvb_mux_t2mi_found(mm, pids[i], sid);
+#else
+  (void)mm; (void)pids; (void)n; (void)sid;
+#endif
+}
+
 int
 dvb_pmt_callback
   (mpegts_table_t *mt, const uint8_t *ptr, int len, int tableid)
@@ -665,6 +692,8 @@ dvb_pmt_callback
   int r, sect, last, ver, restart;
   uint32_t update;
   uint16_t sid;
+  uint16_t t2mi[4];
+  int t2mi_n;
   mpegts_mux_t *mm = mt->mt_mux;
   mpegts_service_t *s;
   elementary_stream_t *es;
@@ -713,7 +742,10 @@ dvb_pmt_callback
     mpegts_service_autoenable(s, "PAT and PMT");
     s->s_verified = 1;
   }
+  /* its T2-MI streams: their sub-muxes, after the lock */
+  t2mi_n = dvb_pmt_t2mi_pids(s, t2mi, ARRAY_SIZE(t2mi));
   tvh_mutex_unlock(&s->s_stream_mutex);
+  dvb_pmt_t2mi_found(mm, t2mi, t2mi_n, sid);
   if (restart)
     service_restart((service_t*)s);
   if (update & (PMT_UPDATE_NEW_CA_STREAM|PMT_UPDATE_NEW_CAID|
