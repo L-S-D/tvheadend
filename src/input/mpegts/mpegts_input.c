@@ -1688,8 +1688,9 @@ mpegts_input_process
       goto done;
     }
 
-    /* Secondary scan callback (DAB probe) */
-    if (mm->mm_secondary_cb)
+    /* Secondary scan callback (DAB probe): live only, a ring pass would
+     * feed it the same packets again */
+    if (mm->mm_secondary_cb && backlog == NULL)
       mm->mm_secondary_cb(mm->mm_secondary_ctx, tsb, llen);
 
     /* Find PID */
