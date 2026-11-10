@@ -114,14 +114,24 @@ submux_ts_out ( void *opaque, const uint8_t *ts )
   sbuf_append(&sm->sm_out, ts, 188);
 }
 
-/* a packet of the PID of the sub-mux, not scrambled (still scrambled: the
- * descrambler has no key for the carrier) */
+/* a packet of the PID of the parent: its continuity tells packets lost on
+ * the way (tuner, queue); one still scrambled (the descrambler has no key
+ * for the carrier) is not passed on - not in BBFrames of the driver */
 static int
 submux_packet ( mpegts_submux_t *sm, const uint8_t *data )
 {
+  int cc;
+
   if (data[0] != 0x47 || (((data[1] & 0x1f) << 8) | data[2]) != sm->sm_pid)
     return 0;
-  if (data[3] & 0xc0) {
+  sm->sm_packets++;
+  if (data[3] & 0x10) {
+    cc = data[3] & 0x0f;
+    if (sm->sm_cc >= 0 && cc != ((sm->sm_cc + 1) & 0x0f) && cc != sm->sm_cc)
+      sm->sm_cc_gaps++;
+    sm->sm_cc = cc;
+  }
+  if (sm->sm_bbf == NULL && (data[3] & 0xc0)) {
     sm->sm_scrambled++;
     return 0;
   }
@@ -148,33 +158,6 @@ submux_t2mi_stream ( mpegts_submux_t *sm, const uint8_t *data, size_t len )
   }
   if (sm->sm_out.sb_ptr > 0)
     mpegts_input_recv_packets(sm->sm_mmi, &sm->sm_out, MPEGTS_DATA_DECAPSULATED, NULL);
-}
-
-static void
-submux_ts_out ( void *opaque, const uint8_t *ts )
-{
-  mpegts_submux_t *sm = opaque;
-
-  sbuf_append(&sm->sm_out, ts, 188);
-}
-
-/* a packet of the PID of the parent: its continuity tells packets lost on
- * the way (tuner, queue) */
-static int
-submux_packet ( mpegts_submux_t *sm, const uint8_t *data )
-{
-  int cc;
-
-  if (data[0] != 0x47 || (((data[1] & 0x1f) << 8) | data[2]) != sm->sm_pid)
-    return 0;
-  sm->sm_packets++;
-  if (data[3] & 0x10) {
-    cc = data[3] & 0x0f;
-    if (sm->sm_cc >= 0 && cc != ((sm->sm_cc + 1) & 0x0f) && cc != sm->sm_cc)
-      sm->sm_cc_gaps++;
-    sm->sm_cc = cc;
-  }
-  return 1;
 }
 
 /* an input stream (TS) out of the BBFrames of the transponder */
@@ -520,8 +503,20 @@ submux_subscribe ( mpegts_submux_t *sm, mpegts_mux_t *mm, mpegts_mux_t *parent,
   ms = (mpegts_service_t *)ths->ths_service;
   mpegts_pid_init(&pids);
   mpegts_pid_add(&pids, sm->sm_pid, MPS_WEIGHT_RAW);
+#if ENABLE_DVBBUFFER
+  /* a stream decoded by libdvbdab (DAB) starts live: decoding the ring
+   * content first takes longer than the live stream of the tuned parent */
+  if (sm->sm_mmi->mmi_decap)
+    parent->mm_backlog_off++;
+#endif
   r = ms->s_update_pids(ms, &pids);
   mpegts_pid_done(&pids);
+#if ENABLE_DVBBUFFER
+  if (sm->sm_mmi->mmi_decap)
+    parent->mm_backlog_off--;
+  else if (!r)
+    sm->sm_backlog = submux_parent_backlog(parent, ms, sm->sm_pid);
+#endif
   if (r) {
     subscription_unsubscribe(ths, UNSUBSCRIBE_FINAL);
     return NULL;
