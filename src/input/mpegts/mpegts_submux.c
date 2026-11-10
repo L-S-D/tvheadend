@@ -416,7 +416,11 @@ mpegts_submux_init ( void )
   if (mi == NULL)
     return;
   mi->mi_enabled       = 1;
-  mi->mi_mux_types     = 0;   /* the sub-mux types come with their users */
+  mi->mi_mux_types     = 0;
+#if ENABLE_DVBDAB
+  mi->mi_mux_types    |= (1u << MM_TYPE_DAB_MPE) | (1u << MM_TYPE_DAB_ETI) |
+                         (1u << MM_TYPE_DAB_TSNI);
+#endif
   mi->mi_is_enabled    = submux_input_is_enabled;
   mi->mi_get_weight    = submux_input_get_weight;
   mi->mi_warm_mux      = submux_input_warm_mux;

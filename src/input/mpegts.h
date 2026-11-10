@@ -141,7 +141,7 @@ struct mpegts_pcr {
 
 #define MPEGTS_DATA_CC_RESTART		(1<<0)
 #define MPEGTS_DATA_REMOVE_SCRAMBLED	(1<<1)
-#define MPEGTS_DATA_DECAPSULATED	(1<<2) /* the stream of a sub-mux, already made */
+#define MPEGTS_DATA_DECAPSULATED	(1<<2) /* the stream of a sub-mux: comes at its own pace */
 
 typedef int (*mpegts_table_callback_t)
   ( mpegts_table_t*, const uint8_t *buf, int len, int tableid );
@@ -694,10 +694,11 @@ struct mpegts_mux_instance
 };
 
 /*
- * A sub-mux (DAB) is carried in a PID of its transponder: while its instance
- * runs, the packets the input delivers are turned into the transport stream
- * of the sub-mux (mpegts_input_recv_packets), for every input alike. The input
- * only has to ask for the PID of the stream (dvb_mux_stream_pid()).
+ * A sub-mux (DAB) is carried in a PID of its transponder. The sub-mux input
+ * (mpegts_submux.c) runs it from a raw subscription on the transponder, and
+ * the packets of the PID are turned into the transport stream of the sub-mux
+ * (mpegts_mux_decap_feed). The transponder keeps its tuner for its services
+ * and other sub-muxes.
  */
 #if ENABLE_DVBDAB
 int  mpegts_mux_decap_start ( mpegts_mux_instance_t *mmi );

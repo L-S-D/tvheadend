@@ -280,19 +280,14 @@ mpegts_dab_probe_start(mpegts_mux_t *mm)
 {
   dab_probe_ctx_t *ctx;
 
-  mpegts_mux_instance_t *mmi = mm->mm_active;
-  mpegts_input_t *mi = mmi ? mmi->mmi_input : NULL;
-  const uint32_t dab_types = (1u << MM_TYPE_DAB_MPE) | (1u << MM_TYPE_DAB_ETI) |
-                             (1u << MM_TYPE_DAB_TSNI);
-
   /* Only a transponder (not a sub-mux) of a DVB network that may get new
-   * muxes, tuned on an input which can deliver DAB muxes: the probe opens
-   * the whole mux while the scan runs */
+   * muxes, while it is tuned: the probe opens the whole mux while the scan
+   * runs. Its sub-muxes run from it on the sub-mux input. */
   if (mm->mm_type != MM_TYPE_TS ||
       mm->mm_network->mn_autodiscovery == MN_DISCOVERY_DISABLE ||
       !idnode_is_instance(&mm->mm_network->mn_id, &dvb_network_class) ||
       !((dvb_network_t *)mm->mm_network)->ln_dab_probe ||
-      mi == NULL || !(mi->mi_mux_types & dab_types))
+      mm->mm_active == NULL)
     return;
 
   /* Already probing? */
