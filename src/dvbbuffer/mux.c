@@ -28,6 +28,21 @@ static mtimer_t dvbbuffer_mux_pmt_timer;
  * often (s) */
 #define DVBBUFFER_PMT_CHECK  60
 
+#if ENABLE_IPTV
+extern const idclass_t iptv_mux_class;
+#endif
+
+/* a DVB mux (satellite, cable, terrestrial), not IPTV */
+int
+dvbbuffer_mux_is_dvb(mpegts_mux_t *mm)
+{
+#if ENABLE_IPTV
+  return !idnode_is_instance(&mm->mm_id, &iptv_mux_class);
+#else
+  return 1;
+#endif
+}
+
 /* kept warm (prebuffer) */
 int
 dvbbuffer_mux_prebuffer(mpegts_mux_t *mm)
@@ -36,11 +51,12 @@ dvbbuffer_mux_prebuffer(mpegts_mux_t *mm)
          mm->mm_is_enabled(mm);
 }
 
-/* ring buffer wanted: kept warm */
+/* ring buffer wanted: kept warm (prebuffer or recently used) */
 int
 dvbbuffer_mux_wanted(mpegts_mux_t *mm)
 {
-  return dvbbuffer_mux_prebuffer(mm);
+  return dvbbuffer_mux_prebuffer(mm) ||
+         (dvbbuffer_running && dvbbuffer_conf.enabled && dvbbuffer_warm_lru(mm));
 }
 
 /*

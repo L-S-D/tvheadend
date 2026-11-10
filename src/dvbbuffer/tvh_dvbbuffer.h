@@ -62,6 +62,10 @@ void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);
 /* a mux or network was enabled or disabled, global_lock held */
 void dvbbuffer_mux_enabled_notify(void);
 
+/* a service starts (+1) or stops (-1): mux use for the recently used muxes
+   kept warm (LRU), global_lock held */
+void dvbbuffer_service_used(struct mpegts_service *s, int delta);
+
 /* packets of one service's ring backlog at most (buffer_sec at 25 Mbit/s):
  * the descrambler queues that many until the first key */
 uint32_t dvbbuffer_backlog_packets(void);
