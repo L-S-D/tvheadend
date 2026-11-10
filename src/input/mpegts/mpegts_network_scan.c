@@ -231,16 +231,17 @@ mpegts_network_scan_mux_done0
    * or its tuner taken), the mux may be going away */
   dab_found = mpegts_dab_probe_complete(mm, result != MM_SCAN_NONE);
 
-  /* Complete ISI probe */
-  mpegts_isi_probe_complete(mm, result != MM_SCAN_NONE);
+  /* Complete ISI probe (a multistream transponder: its streams) */
+  dab_found += mpegts_isi_probe_complete(mm, result != MM_SCAN_NONE);
 
   /* Complete GSE-DAB probe */
   dab_found += mpegts_gse_dab_probe_complete(mm, result != MM_SCAN_NONE);
 
-  /* Override result if DAB probe found content */
+  /* Override result if a probe found content (DAB, input streams) */
   if (dab_found > 0 && result == MM_SCAN_FAIL) {
     result = MM_SCAN_OK;
-    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB found)", mm->mm_nicename);
+    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB or input streams found)",
+            mm->mm_nicename);
   }
 
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {
