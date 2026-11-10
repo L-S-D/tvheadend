@@ -481,6 +481,7 @@ mpegts_service_start(service_t *t, int instance, int weight, int flags)
 
   /* Start Mux */
   mmi->mmi_start_weight = weight;
+  mmi->mmi_start_flags = flags;
   r = mpegts_mux_instance_start(&mmi, t, weight);
 
   /* Start */

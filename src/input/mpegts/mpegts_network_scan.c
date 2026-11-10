@@ -112,8 +112,11 @@ mpegts_network_scan_do_mux ( mpegts_mux_queue_t *q, mpegts_mux_t *mm )
   assert(state == MM_SCAN_STATE_PEND ||
          state == MM_SCAN_STATE_IPEND);
 
-  /* No free tuners - stop */
-  if (r == SM_CODE_NO_FREE_ADAPTER || r == SM_CODE_NO_ADAPTERS)
+  /* No free tuners - stop; not for a sub-mux without any (its transponder
+   * is not found, or no input runs its type): that is the sub-mux alone,
+   * it fails instead of holding up the muxes queued after it for good */
+  if (r == SM_CODE_NO_FREE_ADAPTER ||
+      (r == SM_CODE_NO_ADAPTERS && !mpegts_mux_is_submux(mm)))
     return -1;
 
   /* No valid tuners (subtly different, might be able to tuner a later

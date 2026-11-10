@@ -686,10 +686,12 @@ struct mpegts_mux_instance
   mpegts_input_t *mmi_input;
 
   int             mmi_start_weight;
+  int             mmi_start_flags;
   int             mmi_tune_failed;
 
   void           *mmi_decap;      /* decapsulation of a sub-mux (DAB), see below */
   sbuf_t          mmi_decap_out;  /* its output: the TS of the sub-mux */
+  void           *mmi_submux;     /* the sub-mux input's state (mpegts_submux.c) */
 };
 
 /*

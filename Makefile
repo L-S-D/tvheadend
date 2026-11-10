@@ -412,6 +412,7 @@ I18N-C += $(SRCS-MPEGTS)
 SRCS-MPEGTS-DVB = \
 	src/input/mpegts/mpegts_network_dvb.c \
 	src/input/mpegts/mpegts_mux_dvb.c \
+	src/input/mpegts/mpegts_submux.c \
 	src/input/mpegts/scanfile.c
 SRCS-${CONFIG_MPEGTS_DVB} += $(SRCS-MPEGTS-DVB)
 I18N-C += $(SRCS-MPEGTS-DVB)
