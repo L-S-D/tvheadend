@@ -18,7 +18,8 @@
  */
 
 /*
- * A sub-mux (a DAB ensemble in a PID of a transponder) is not tuned itself.
+ * A sub-mux (a DAB ensemble in a PID of a transponder, an input stream of a
+ * multistream transponder in its BBFrames) is not tuned itself.
  * The sub-mux input starts it with a raw subscription on its transponder, the
  * parent, for the PID the sub-mux is carried in. The stream of the sub-mux
  * is made of that PID on a thread of the sub-mux and goes into the normal
@@ -35,10 +36,13 @@
 #include "streaming.h"
 #include "profile.h"
 #include "input/mpegts/mpegts_dvb.h"
+#include "input/mpegts/bbframe.h"
 
 /* bytes the queue of a sub-mux takes before it drops (the parent's tuner
- * does not wait for the sub-mux thread) */
-#define SUBMUX_QUEUE_SIZE  (4 * 1024 * 1024)
+ * does not wait for the sub-mux thread); an input stream gets all the
+ * BBFrames of its transponder: some seconds of a whole transponder */
+#define SUBMUX_QUEUE_SIZE       (4 * 1024 * 1024)
+#define SUBMUX_QUEUE_SIZE_BBF  (32 * 1024 * 1024)
 
 typedef struct mpegts_submux {
   mpegts_mux_instance_t *sm_mmi;
@@ -50,6 +54,11 @@ typedef struct mpegts_submux {
   uint16_t               sm_pid;    /* the parent's PID the sub-mux is in */
   int                    sm_backlog; /* the ring of the parent comes first */
   sbuf_t                 sm_in;     /* packets of that PID */
+  bbframe_split_t       *sm_bbf;    /* an input stream: out of the BBFrames */
+  sbuf_t                 sm_out;    /* its TS */
+  int                    sm_cc;     /* the continuity counter of the PID */
+  uint64_t               sm_packets;
+  uint64_t               sm_cc_gaps;  /* packets lost before the sub-mux thread */
 } mpegts_submux_t;
 
 extern const idclass_t mpegts_input_class;
@@ -80,6 +89,44 @@ submux_parent ( mpegts_mux_t *mm )
  * *************************************************************************/
 
 static void
+submux_ts_out ( void *opaque, const uint8_t *ts )
+{
+  mpegts_submux_t *sm = opaque;
+
+  sbuf_append(&sm->sm_out, ts, 188);
+}
+
+/* a packet of the PID of the parent: its continuity tells packets lost on
+ * the way (tuner, queue) */
+static int
+submux_packet ( mpegts_submux_t *sm, const uint8_t *data )
+{
+  int cc;
+
+  if (data[0] != 0x47 || (((data[1] & 0x1f) << 8) | data[2]) != sm->sm_pid)
+    return 0;
+  sm->sm_packets++;
+  if (data[3] & 0x10) {
+    cc = data[3] & 0x0f;
+    if (sm->sm_cc >= 0 && cc != ((sm->sm_cc + 1) & 0x0f) && cc != sm->sm_cc)
+      sm->sm_cc_gaps++;
+    sm->sm_cc = cc;
+  }
+  return 1;
+}
+
+/* an input stream (TS) out of the BBFrames of the transponder */
+static void
+submux_input_stream ( mpegts_submux_t *sm, const uint8_t *data, size_t len )
+{
+  for ( ; len >= 188; data += 188, len -= 188)
+    if (submux_packet(sm, data))
+      bbframe_split_ts(sm->sm_bbf, data, submux_ts_out, sm);
+  if (sm->sm_out.sb_ptr > 0)
+    mpegts_input_recv_packets(sm->sm_mmi, &sm->sm_out, MPEGTS_DATA_DECAPSULATED, NULL);
+}
+
+static void
 submux_process ( mpegts_submux_t *sm, streaming_message_t *msg )
 {
   mpegts_mux_instance_t *mmi = sm->sm_mmi;
@@ -91,8 +138,15 @@ submux_process ( mpegts_submux_t *sm, streaming_message_t *msg )
   case SMT_MPEGTS:
     data = pktbuf_ptr(msg->sm_data);
     len = pktbuf_len(msg->sm_data);
+    if (sm->sm_bbf && mmi->mmi_mux->mm_type == MM_TYPE_ISI) {
+      submux_input_stream(sm, data, len);
+      break;
+    }
+    /* the packets of the PID; of a GSE stream: those of its frames, as
+     * they come (BBFrames in the packets of the driver, for libdvbdab) */
     for ( ; len >= 188; data += 188, len -= 188)
-      if (data[0] == 0x47 && (((data[1] & 0x1f) << 8) | data[2]) == sm->sm_pid)
+      if (submux_packet(sm, data) &&
+          (sm->sm_bbf == NULL || bbframe_split_take(sm->sm_bbf, data)))
         sbuf_append(&sm->sm_in, data, 188);
     if (sm->sm_in.sb_ptr == 0)
       break;
@@ -163,6 +217,15 @@ submux_free ( mpegts_submux_t *sm )
   }
   streaming_queue_deinit(&sm->sm_sq);
   sbuf_free(&sm->sm_in);
+  sbuf_free(&sm->sm_out);
+  if (sm->sm_packets)
+    tvhdebug(LS_MPEGTS, "%s - %"PRIu64" packets of PID 0x%04x, %"PRIu64" CC gaps",
+             sm->sm_mmi->mmi_mux->mm_nicename, sm->sm_packets, sm->sm_pid, sm->sm_cc_gaps);
+  if (sm->sm_bbf && sm->sm_bbf->bs_ts.bt_frames)
+    tvhdebug(LS_MPEGTS, "%s - %"PRIu64" BBFrames, %"PRIu64" lost, %"PRIu64" resyncs",
+             sm->sm_mmi->mmi_mux->mm_nicename, sm->sm_bbf->bs_ts.bt_frames,
+             sm->sm_bbf->bs_ts.bt_errors, sm->sm_bbf->bs_ts.bt_resyncs);
+  free(sm->sm_bbf);
   free(sm);
 }
 
@@ -278,8 +341,8 @@ submux_input_is_enabled
     if (r == MI_IS_ENABLED_OK && pi->mi_get_weight(pi, parent, flags, weight) < weight)
       nfree++;
   }
-  if (!any)
-    return MI_IS_ENABLED_OK;   /* the subscription reports it */
+  if (!any)   /* the subscription reports it; BBFrames need an input for them */
+    return mpegts_mux_in_bbframes(mm) ? MI_IS_ENABLED_NEVER : MI_IS_ENABLED_OK;
   if (nfree > submux_input_pending_parents(mi, mm, parent, weight))
     return MI_IS_ENABLED_OK;
   return MI_IS_ENABLED_RETRY;
@@ -340,8 +403,14 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
   sm = calloc(1, sizeof(*sm));
   sm->sm_mmi = mmi;
   sm->sm_pid = pid;
+  sm->sm_cc = -1;
   sbuf_init(&sm->sm_in);
-  streaming_queue_init(&sm->sm_sq, 0, SUBMUX_QUEUE_SIZE);
+  sbuf_init(&sm->sm_out);
+  if (mpegts_mux_in_bbframes(mm)) {
+    sm->sm_bbf = malloc(sizeof(*sm->sm_bbf));
+    bbframe_split_init(sm->sm_bbf, ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_stream_id);
+  }
+  streaming_queue_init(&sm->sm_sq, 0, sm->sm_bbf ? SUBMUX_QUEUE_SIZE_BBF : SUBMUX_QUEUE_SIZE);
   atomic_set(&sm->sm_run, 1);
   if (tvh_thread_create(&sm->sm_thread, NULL, submux_thread, sm, "submux")) {
     atomic_set(&sm->sm_run, 0);
@@ -469,10 +538,11 @@ mpegts_submux_init ( void )
   if (mi == NULL)
     return;
   mi->mi_enabled       = 1;
-  mi->mi_mux_types     = 0;
+  mi->mi_mux_types     = 1u << MM_TYPE_ISI;
 #if ENABLE_DVBDAB
   mi->mi_mux_types    |= (1u << MM_TYPE_DAB_MPE) | (1u << MM_TYPE_DAB_ETI) |
-                         (1u << MM_TYPE_DAB_TSNI);
+                         (1u << MM_TYPE_DAB_TSNI) |
+                         (1u << MM_TYPE_GSE) | (1u << MM_TYPE_DAB_GSE);
 #endif
   mi->mi_is_enabled    = submux_input_is_enabled;
   mi->mi_get_weight    = submux_input_get_weight;

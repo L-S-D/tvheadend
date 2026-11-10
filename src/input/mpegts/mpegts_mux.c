@@ -408,6 +408,34 @@ mpegts_mux_class_get_name ( void *ptr )
   return &s;
 }
 
+static int32_t stream_id_none = -1;
+
+static const void *
+mpegts_mux_class_get_stream_id ( void *ptr )
+{
+  mpegts_mux_t *mm = ptr;
+  const idclass_t *ic;
+
+  if (!mm)
+    return &stream_id_none;
+
+  /* Check if this is a DVB mux by walking the class hierarchy */
+  ic = mm->mm_id.in_class;
+  while (ic) {
+    if (ic == &dvb_mux_dvbs_class || ic == &dvb_mux_dvbt_class ||
+        ic == &dvb_mux_dvbc_class || ic == &dvb_mux_isdb_t_class ||
+        ic == &dvb_mux_isdb_s_class || ic == &dvb_mux_isdb_c_class ||
+        ic == &dvb_mux_atsc_t_class || ic == &dvb_mux_atsc_c_class ||
+        ic == &dvb_mux_dtmb_class || ic == &dvb_mux_dab_class ||
+        ic == &dvb_mux_cablecard_class) {
+      const dvb_mux_t *dm = (const dvb_mux_t *)mm;
+      return &dm->lm_tuning.dmc_fe_stream_id;
+    }
+    ic = ic->ic_super;
+  }
+  return &stream_id_none;
+}
+
 static struct strtab
 scan_state_tab[] = {
   { N_("IDLE"),        MM_SCAN_STATE_IDLE },
@@ -556,6 +584,15 @@ const idclass_t mpegts_mux_class =
       .list     = mpegts_mux_enable_list,
       .notify   = mpegts_mux_class_enabled_notify,
       .opts     = PO_DOC_NLIST
+    },
+    {
+      .type     = PT_INT,
+      .id       = "stream_id",
+      .name     = N_("ISI"),
+      .desc     = N_("Input Stream Identifier (ISI) for DVB-S2 multi-stream, "
+                     "or PLP ID for DVB-T2. -1 means not set."),
+      .get      = mpegts_mux_class_get_stream_id,
+      .opts     = PO_RDONLY | PO_NOSAVE,
     },
     {
       .type     = PT_INT,

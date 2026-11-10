@@ -111,3 +111,91 @@ bbframe_frame_ts ( bbframe_ts_t *bt, const uint8_t *frame, size_t len,
   }
   return 0;
 }
+
+/* **************************************************************************
+ * The BBFrames in the packets of the Neumo driver
+ * *************************************************************************/
+
+#define BB_SYNC       0xb8
+#define BB_PKT_DATA   180   /* bytes of a packet from byte 8 on */
+
+int
+bbframe_packet_header ( const uint8_t *pkt, uint8_t *isi, uint8_t *matype )
+{
+  if (pkt[5] != 0x80 || pkt[7] < 1 + BBFRAME_HEADER || pkt[7] > BB_PKT_DATA ||
+      pkt[8] != BB_SYNC || bbframe_header_mode(pkt + 9) < 0)
+    return -1;
+  *matype = pkt[9];
+  *isi = pkt[10];
+  return 0;
+}
+
+void
+bbframe_split_init ( bbframe_split_t *bs, int isi )
+{
+  memset(bs, 0, sizeof(*bs));
+  bbframe_ts_init(&bs->bs_ts);
+  bs->bs_isi = isi;
+  bs->bs_cur = -1;
+}
+
+int
+bbframe_split_take ( bbframe_split_t *bs, const uint8_t *pkt )
+{
+  uint8_t isi, matype;
+
+  if (pkt[5] != 0x80 || pkt[7] == 0 || pkt[7] > BB_PKT_DATA)
+    return 0;
+  if (pkt[8] == BB_SYNC)
+    bs->bs_cur = bbframe_packet_header(pkt, &isi, &matype) == 0 ? isi : -1;
+  return bs->bs_cur >= 0 && bs->bs_cur == bs->bs_isi;
+}
+
+/* a frame of the stream that was not complete */
+static void
+bbframe_split_lost ( bbframe_split_t *bs )
+{
+  bs->bs_ts.bt_errors++;
+  bs->bs_ts.bt_synced = 0;
+  bs->bs_len = 0;
+}
+
+void
+bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
+                   bbframe_ts_cb_t cb, void *opaque )
+{
+  size_t len = pkt[7], dfl;
+  const uint8_t *src;
+  int start = pkt[8] == BB_SYNC;
+
+  if (!bbframe_split_take(bs, pkt)) {
+    if (start && bs->bs_len)
+      bbframe_split_lost(bs);
+    return;
+  }
+
+  if (start) {
+    if (bs->bs_len)
+      bbframe_split_lost(bs);
+    src = pkt + 8;
+  } else {
+    if (bs->bs_len == 0)
+      return;                      /* the start of the frame was lost */
+    src = pkt + 9;
+    len--;
+  }
+  if (bs->bs_len + len > sizeof(bs->bs_frame)) {
+    bbframe_split_lost(bs);
+    return;
+  }
+  memcpy(bs->bs_frame + bs->bs_len, src, len);
+  bs->bs_len += len;
+
+  if (bs->bs_len < 1 + BBFRAME_HEADER)
+    return;
+  dfl = (((size_t)bs->bs_frame[5] << 8) | bs->bs_frame[6]) >> 3;
+  if (bs->bs_len < 1 + BBFRAME_HEADER + dfl)
+    return;
+  bbframe_frame_ts(&bs->bs_ts, bs->bs_frame + 1, bs->bs_len - 1, cb, opaque);
+  bs->bs_len = 0;
+}

@@ -219,7 +219,7 @@ mpegts_network_scan_mux_done0
 {
   mpegts_network_t *mn = mm->mm_network;
   mpegts_mux_scan_state_t state = mm->mm_scan_state;
-  int dab_found = 0;
+  int dab_found = 0, type0 = mm->mm_type;
 
   /* The DAB data come slower than the tables of a scan: a scan that ended
    * (not a cancelled one) waits for the probe, for a while at most */
@@ -231,10 +231,17 @@ mpegts_network_scan_mux_done0
    * or its tuner taken), the mux may be going away */
   dab_found = mpegts_dab_probe_complete(mm, result != MM_SCAN_NONE);
 
-  /* Override result if DAB probe found content */
+  /* Complete ISI probe (a multistream transponder: its streams) */
+  dab_found += mpegts_isi_probe_complete(mm, result != MM_SCAN_NONE);
+
+  /* Complete GSE-DAB probe */
+  dab_found += mpegts_gse_dab_probe_complete(mm, result != MM_SCAN_NONE);
+
+  /* Override result if a probe found content (DAB, input streams) */
   if (dab_found > 0 && result == MM_SCAN_FAIL) {
     result = MM_SCAN_OK;
-    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB found)", mm->mm_nicename);
+    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB or input streams found)",
+            mm->mm_nicename);
   }
 
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {
@@ -275,6 +282,12 @@ mpegts_network_scan_mux_done0
   /* Re-enable? */
   if (weight > 0)
     mpegts_network_scan_queue_add(mm, weight, mm->mm_scan_flags, 10);
+  /* the GSE-DAB probe made this GSE mux the first ensemble it found: this
+   * scan read the GSE stream, the ensemble's services need a scan of its
+   * own (not when the scan was cancelled - the mux may be going away) */
+  else if (result != MM_SCAN_NONE && mm->mm_type != type0)
+    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                  SUBSCRIPTION_INITSCAN, 10);
 }
 
 /* The end of a scan that was put off */
@@ -339,6 +352,12 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
 
   /* Start DAB probe in parallel with SI scanning */
   mpegts_dab_probe_start(mm);
+
+  /* Start ISI probe (no-op if not DVB-S2 with Neumo driver) */
+  mpegts_isi_probe_start(mm);
+
+  /* Start GSE-DAB probe (no-op if not MM_TYPE_GSE) */
+  mpegts_gse_dab_probe_start(mm);
 }
 
 /* Mux has been reactivated */

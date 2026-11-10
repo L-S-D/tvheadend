@@ -53,6 +53,7 @@ typedef struct linuxdvb_diseqc      linuxdvb_diseqc_t;
 typedef struct linuxdvb_lnb         linuxdvb_lnb_t;
 typedef struct linuxdvb_network     linuxdvb_network_t;
 typedef struct linuxdvb_en50494     linuxdvb_en50494_t;
+typedef struct linuxdvb_unicable_group linuxdvb_unicable_group_t;
 
 typedef LIST_HEAD(,linuxdvb_hardware) linuxdvb_hardware_list_t;
 typedef TAILQ_HEAD(linuxdvb_satconf_ele_list,linuxdvb_satconf_ele) linuxdvb_satconf_ele_list_t;
@@ -153,6 +154,29 @@ struct linuxdvb_frontend
   uint32_t                  lfe_grace_period;
 
   /*
+   * Neumo DVB driver support
+   * Set when RF input is configured, to include DTV_SET_SEC_CONFIGURED in tune
+   */
+  int                       lfe_sec_configured;
+
+  /*
+   * Neumo DVB driver detection (from FE_GET_EXTENDED_INFO)
+   */
+  int                       lfe_neumo_detected;     /* 1 if detection was done */
+  int                       lfe_neumo_supported;    /* 1 if driver supports Neumo extensions */
+  uint8_t                   lfe_num_rf_inputs;      /* Number of RF inputs available */
+  int8_t                    lfe_default_rf_input;   /* Default RF input */
+  int                       lfe_supports_bbframes;  /* outputs the BBFrames of all input streams */
+  int                       lfe_bbframes;           /* tuned so: the PID filters read them */
+
+  /*
+   * Virtual frontend RF input binding (for multi-RF-input adapters)
+   * -1 = not bound (legacy/standard frontend)
+   * 0+ = bound to specific RF input
+   */
+  int8_t                    lfe_rf_input;
+
+  /*
    * Satconf (DVB-S only)
    */
   linuxdvb_satconf_t       *lfe_satconf;
@@ -240,6 +264,10 @@ struct linuxdvb_satconf
    * MPEG-TS hooks
    */
   mpegts_input_t        *ls_frontend; ///< Frontend we're proxying for
+  mpegts_input_t        *ls_drive;    ///< Frontend sending the LNB and DiSEqC
+                                      ///  commands now: a slave tuner setting
+                                      ///  up a free RF input of a Neumo card,
+                                      ///  NULL = ls_frontend
   mpegts_mux_instance_t *ls_mmi;      ///< Used within delay diseqc handler
 
   /*
@@ -252,6 +280,7 @@ struct linuxdvb_satconf
    */
   mtimer_t               ls_diseqc_timer;
   int                    ls_diseqc_idx;
+  int                    ls_rf_retries;    /* FE_SET_RF_INPUT: RF input busy, tried again */
   int                    ls_diseqc_repeats;
   int                    ls_diseqc_full;
   int                    ls_switch_rotor;
@@ -343,6 +372,8 @@ struct linuxdvb_lnb
   int       (*lnb_match)(linuxdvb_lnb_t*, dvb_mux_t*, dvb_mux_t*);
   int       (*lnb_band) (linuxdvb_lnb_t*, dvb_mux_t*);
   int       (*lnb_pol)  (linuxdvb_lnb_t*, dvb_mux_t*);
+  /* voltage to use (0 = 13 V, 1 = 18 V), -1 = from the polarisation (NULL: same) */
+  int       (*lnb_vol)  (linuxdvb_lnb_t*, dvb_mux_t*);
 };
 
 #define UNICABLE_EN50494     50494
@@ -364,7 +395,27 @@ struct linuxdvb_en50494
 
   /* runtime */
   uint32_t  le_tune_freq; /* the real frequency to tune to */
+
+  /*
+   * Unicable master/slave support
+   * For multi-frontend setups where DiSEqC commands must be sent via a
+   * designated "master" frontend (e.g., when some adapters lack DiSEqC output)
+   */
+  uint16_t  le_group_id;    /* unicable group ID (0=standalone, 1-15=group number) */
+  int       le_is_master;   /* 1 if this element is the master for its group */
 };
+
+/*
+ * Unicable group - runtime tracking for master/slave coordination
+ */
+struct linuxdvb_unicable_group
+{
+  TAILQ_ENTRY(linuxdvb_unicable_group) lug_link;
+  uint16_t                             lug_group_id;
+  tvh_mutex_t                          lug_lock;       /* per-group lock for command serialization */
+};
+
+typedef TAILQ_HEAD(,linuxdvb_unicable_group) linuxdvb_unicable_group_list_t;
 
 /*
  * Classes
@@ -374,6 +425,7 @@ extern const idclass_t linuxdvb_adapter_class;
 extern const idclass_t linuxdvb_ca_class;
 
 extern const idclass_t linuxdvb_frontend_dvbt_class;
+extern const idclass_t linuxdvb_frontend_class;
 extern const idclass_t linuxdvb_frontend_dvbs_class;
 extern const idclass_t linuxdvb_frontend_dvbs_slave_class;
 extern const idclass_t linuxdvb_frontend_dvbc_class;
@@ -422,7 +474,7 @@ linuxdvb_frontend_t *
 linuxdvb_frontend_create
   ( htsmsg_t *conf, linuxdvb_adapter_t *la, int number,
     const char *fe_path, const char *dmx_path, const char *dvr_path,
-    dvb_fe_type_t type, const char *name );
+    dvb_fe_type_t type, const char *name, int8_t rf_input );
 
 void linuxdvb_frontend_save ( linuxdvb_frontend_t *lfe, htsmsg_t *m );
 
@@ -517,9 +569,10 @@ htsmsg_t *linuxdvb_switch_list  ( void *o, const char *lang );
 htsmsg_t *linuxdvb_rotor_list   ( void *o, const char *lang );
 htsmsg_t *linuxdvb_en50494_list ( void *o, const char *lang );
 
-htsmsg_t *linuxdvb_en50494_id_list  ( void *o, const char *lang );
-htsmsg_t *linuxdvb_en50607_id_list  ( void *o, const char *lang );
-htsmsg_t *linuxdvb_en50494_pin_list ( void *o, const char *lang );
+htsmsg_t *linuxdvb_en50494_id_list    ( void *o, const char *lang );
+htsmsg_t *linuxdvb_en50607_id_list    ( void *o, const char *lang );
+htsmsg_t *linuxdvb_en50494_pin_list   ( void *o, const char *lang );
+htsmsg_t *linuxdvb_en50494_group_list ( void *o, const char *lang );
 
 static inline int linuxdvb_unicable_is_en50607( const char *str )
   { return str && strcmp(str, UNICABLE_II_NAME) == 0; }
@@ -527,6 +580,7 @@ static inline int linuxdvb_unicable_is_en50494( const char *str )
   { return !linuxdvb_unicable_is_en50607(str); }
 
 void linuxdvb_en50494_init (void);
+void linuxdvb_en50494_done (void);
 
 int linuxdvb_diseqc_raw_send (int fd, int len, ...);
 int
@@ -575,6 +629,16 @@ int linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol );
 void linuxdvb_satconf_reset ( linuxdvb_satconf_t *ls );
 
 static inline int linuxdvb_satconf_fe_fd ( linuxdvb_satconf_t *ls )
-  { return ((linuxdvb_frontend_t *)ls->ls_frontend)->lfe_fe_fd; }
+  { return ((linuxdvb_frontend_t *)(ls->ls_drive ?: ls->ls_frontend))->lfe_fe_fd; }
+
+/* a tuner on an RF input of a Neumo card (a virtual frontend): the RF input,
+ * not one of its tuners, is the master - the tuner that finds it free sets it
+ * up, the others follow (the driver: reservations of the input) */
+static inline int linuxdvb_frontend_rf_port ( linuxdvb_frontend_t *lfe )
+  { return lfe->lfe_rf_input >= 0 && lfe->lfe_neumo_supported; }
+
+/* reserve the RF input of the tuner without controlling it (Neumo driver):
+ * 0 = ok, -1 = failed */
+int linuxdvb_frontend_rf_input_slave ( linuxdvb_frontend_t *lfe );
 
 #endif /* __TVH_LINUXDVB_PRIVATE_H__ */
