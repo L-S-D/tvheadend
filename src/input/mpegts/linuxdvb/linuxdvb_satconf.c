@@ -972,6 +972,7 @@ linuxdvb_satconf_post_stop_mux
   ( linuxdvb_satconf_t *ls )
 {
   ls->ls_mmi = NULL;
+  ls->ls_drive = NULL;
 }
 
 int
@@ -1060,7 +1061,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     return 0;
   }
 
-  linuxdvb_frontend_t   *lfe   = (linuxdvb_frontend_t*)ls->ls_frontend;
+  linuxdvb_frontend_t   *lfe   = (linuxdvb_frontend_t*)(ls->ls_drive ?: ls->ls_frontend);
   dvb_mux_t             *lm    = (dvb_mux_t*)mmi->mmi_mux;
   linuxdvb_diseqc_t     *lds[] = {
     ls->ls_switch_rotor ? (linuxdvb_diseqc_t*)lse->lse_switch :
@@ -1123,6 +1124,11 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
      * input (another LNB/satellite), so the tune must not go on */
     switch (rf_result) {
     case FE_RESERVATION_MASTER:
+      /* the input was free: the driver turned voltage and tone off, a
+       * DiSEqC switch may have lost its position - send everything again */
+      ls->ls_last_switch = NULL;
+      ls->ls_last_toneburst = 0;
+      /* fall through */
     case FE_RESERVATION_SLAVE:
       /* RF input changed: the driver turned voltage/tone off on the old one,
        * so re-apply them even if they look unchanged; a slave must send its
@@ -1285,7 +1291,12 @@ linuxdvb_satconf_start_mux
 {
   int r, f;
   linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mmi->mmi_mux);
-  linuxdvb_frontend_t    *lfe = (linuxdvb_frontend_t*)ls->ls_frontend;
+  linuxdvb_frontend_t    *lfe;
+
+  /* skip_diseqc: the frontend of the satconf joins an RF input in use (its
+   * LNB settings are set), else the tuner setting it up (ls_drive) */
+  lfe = (linuxdvb_frontend_t*)(skip_diseqc ? ls->ls_frontend :
+                               (ls->ls_drive ?: ls->ls_frontend));
 
   /* Not fully configured */
   if (!lse) return SM_CODE_TUNING_FAILED;
@@ -1302,6 +1313,11 @@ linuxdvb_satconf_start_mux
     f = linuxdvb_satconf_lnb_freq(ls, mmi);
     if (f < 0)
       return SM_CODE_TUNING_FAILED;
+#if ENABLE_LINUXDVB_NEUMO
+    /* the input is set up by another tuner: listen on it, as its slave */
+    if (linuxdvb_frontend_rf_port(lfe) && linuxdvb_frontend_rf_input_slave(lfe))
+      return SM_CODE_TUNING_FAILED;
+#endif
     return linuxdvb_frontend_tune1(lfe, mmi, f);
   }
   if (ls->ls_early_tune) {
