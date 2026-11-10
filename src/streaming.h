@@ -387,6 +387,8 @@ struct source_info {
   int   si_type;
   uint16_t si_tsid;
   uint16_t si_onid;
+  uint16_t si_sid;     /* service_id (program number) */
+  uint8_t  si_dvb_ids; /* onid, tsid and sid are known */
 };
 
 /**

@@ -4393,6 +4393,11 @@ htsp_subscription_start(htsp_subscription_t *hs, const streaming_start_t *ss)
     htsmsg_add_str2(sourceinfo, "provider",     si->si_provider    );
     htsmsg_add_str2(sourceinfo, "service",      si->si_service     );
     htsmsg_add_str2(sourceinfo, "satpos",       si->si_satpos      );
+    if (si->si_dvb_ids) {
+      htsmsg_add_u32(sourceinfo, "onid", si->si_onid);
+      htsmsg_add_u32(sourceinfo, "tsid", si->si_tsid);
+      htsmsg_add_u32(sourceinfo, "sid",  si->si_sid);
+    }
   }
 
   htsmsg_add_msg(m, "sourceinfo", sourceinfo);
