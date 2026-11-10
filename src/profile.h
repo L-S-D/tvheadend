@@ -95,6 +95,7 @@ typedef struct profile_chain {
   struct streaming_target  *prch_gh;
   struct streaming_target  *prch_tsfix;
   struct streaming_target  *prch_start;    /* dvbbuffer live start, before tsfix */
+  struct streaming_target  *prch_tsstart;  /* ... for raw TS, before the queue */
   int                       prch_dvbbuffer_full; /* recording: the whole backlog */
 #if ENABLE_TIMESHIFT
   struct streaming_target  *prch_timeshift;

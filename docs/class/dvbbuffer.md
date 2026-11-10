@@ -39,9 +39,10 @@ data, and plays within a fraction of a second.
 * **Live start**: a client should not play from the start of the backlog,
   seconds behind live. Profiles with *Instant zapping: start live* (Stream
   Profiles) pass the stream on from the newest keyframe at least *Live start
-  behind live* behind live; audio starts there too, teletext comes whole
-  (HTSP, Matroska and transcoding profiles). Recordings always get the
-  whole backlog.
+  behind live* behind live; audio starts there too, teletext comes whole.
+  Recordings are not filtered by the live start, they get the whole
+  backlog; a recording that follows the EPG running state still drops its
+  first 2 s when that state is not known by then.
 
 ---
 
