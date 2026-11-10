@@ -37,6 +37,10 @@ dvbbuffer_conf_fixup(void)
     dvbbuffer_conf.warm_weight = 1;
   if (dvbbuffer_conf.warm_weight >= SUBSCRIPTION_PRIO_MIN)
     dvbbuffer_conf.warm_weight = SUBSCRIPTION_PRIO_MIN - 1;
+  if (dvbbuffer_conf.lru_weight < 1)
+    dvbbuffer_conf.lru_weight = 1;
+  if (dvbbuffer_conf.lru_weight >= SUBSCRIPTION_PRIO_MIN)
+    dvbbuffer_conf.lru_weight = SUBSCRIPTION_PRIO_MIN - 1;
 }
 
 uint32_t
@@ -75,6 +79,7 @@ const idclass_t dvbbuffer_conf_class = {
   .ic_save       = dvbbuffer_conf_class_save,
   .ic_groups     = (const property_group_t[]) {
     { .name = N_("General"),                 .number = 1 },
+    { .name = N_("Recently used muxes"),     .number = 2 },
     {}
   },
   .ic_properties = (const property_t[]){
@@ -132,6 +137,28 @@ const idclass_t dvbbuffer_conf_class = {
       .off    = offsetof(dvbbuffer_conf_t, warm_max),
       .group  = 1,
     },
+    {
+      .type   = PT_U32,
+      .id     = "lru_max",
+      .name   = N_("Recently used muxes kept warm"),
+      .desc   = N_("Besides the prebuffer muxes, this many of the muxes "
+                   "last watched stay tuned with a ring buffer (it starts "
+                   "while watching), so zapping back starts from the "
+                   "buffer. 0 disables it."),
+      .off    = offsetof(dvbbuffer_conf_t, lru_max),
+      .group  = 2,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "lru_weight",
+      .name   = N_("Recently used mux weight"),
+      .desc   = N_("Subscription weight of the recently used muxes, "
+                   "normally below the warm mux weight: they give their "
+                   "tuners away first."),
+      .off    = offsetof(dvbbuffer_conf_t, lru_weight),
+      .opts   = PO_ADVANCED,
+      .group  = 2,
+    },
     {}
   }
 };
@@ -153,6 +180,8 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.max_bitrate_kbps = 80000;
   dvbbuffer_conf.warm_weight      = 5;
   dvbbuffer_conf.warm_max         = 4;
+  dvbbuffer_conf.lru_max          = 0;  /* holds tuners: opt in */
+  dvbbuffer_conf.lru_weight       = 3;
 
   idclass_register(&dvbbuffer_conf_class);
 
