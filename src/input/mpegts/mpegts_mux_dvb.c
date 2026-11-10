@@ -254,6 +254,18 @@ dvb_mux_class_parent_opts ( void *o, uint32_t opts )
   return opts | PO_NOUI | PO_NOSAVE;
 }
 
+/* the carrier service: for a sub-mux only */
+static uint32_t
+dvb_mux_class_carrier_opts ( void *o, uint32_t opts )
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mpegts_mux_is_submux(mm))
+    return opts;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
 const idclass_t dvb_mux_class =
 {
   .ic_super      = &mpegts_mux_class,
@@ -287,6 +299,17 @@ const idclass_t dvb_mux_class =
       .off      = offsetof(dvb_mux_t, lm_parent),
       .opts     = PO_RDONLY,
       .get_opts = dvb_mux_class_parent_opts,
+    },
+    {
+      .type     = PT_U16,
+      .id       = "carrier_sid",
+      .name     = N_("Carrier service"),
+      .desc     = N_("The service of the transponder the sub-mux is carried "
+                     "in: its stream goes through the descrambler first. "
+                     "0: the PID of the stream only (not scrambled)."),
+      .off      = offsetof(dvb_mux_t, lm_carrier_sid),
+      .opts     = PO_ADVANCED,
+      .get_opts = dvb_mux_class_carrier_opts,
     },
     {
       .type     = PT_STR,
