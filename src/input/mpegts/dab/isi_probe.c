@@ -453,11 +453,6 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
 
   free(ctx);
 
-  /* a multistream transponder has no tables of its own: its streams are
-   * the result of its scan */
-  if (((dvb_mux_t *)mm)->lm_multistream && isi_count > 0 && found == 0)
-    found = isi_count;
-
   /* every scan of a DVB-S2 mux ends here: the log gets the ones that made muxes */
   if (found > 0)
     tvhinfo(LS_MPEGTS, "mux %s: ISI probe complete, created %d mux(es) from %d ISI(s)",
@@ -466,6 +461,10 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
     tvhdebug(LS_MPEGTS, "mux %s: ISI probe complete, created %d mux(es) from %d ISI(s)",
              mm->mm_nicename, found, isi_count);
 
+  /* a multistream transponder has no tables of its own: its streams are
+   * the result of its scan */
+  if (((dvb_mux_t *)mm)->lm_multistream && isi_count > 0 && found == 0)
+    found = isi_count;
   return found;
 }
 
