@@ -36,6 +36,13 @@ data, and plays within a fraction of a second.
   muxes last watched stay tuned with a ring buffer as well (with the lower
   *Recently used mux weight*), so zapping back starts from the buffer.
 
+* **Live start**: a client should not play from the start of the backlog,
+  seconds behind live. Profiles with *Instant zapping: start live* (Stream
+  Profiles) pass the stream on from the newest keyframe at least *Live start
+  behind live* behind live; audio starts there too, teletext comes whole
+  (HTSP, Matroska and transcoding profiles). Recordings always get the
+  whole backlog.
+
 ---
 
 ## Notes
