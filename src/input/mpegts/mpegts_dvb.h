@@ -61,6 +61,12 @@ typedef struct dvb_mux
    * whose tuning it follows (dvb_mux_submux_sync())
    */
   char *lm_parent;
+
+  /*
+   * A sub-mux: the service of the transponder it is carried in; the stream
+   * then goes through the descrambler (0: the PID only, not scrambled)
+   */
+  uint16_t lm_carrier_sid;
 } dvb_mux_t;
 
 /*
