@@ -1,3 +1,43 @@
+> [!NOTE]
+> **This is the L-S-D fork of Tvheadend.** It follows upstream `master` and adds work that waits
+> upstream as a pull request or is not meant for upstream. Below this note is the upstream README.
+
+### What is different
+
+- **Instant zapping:** muxes marked *Prebuffer (instant zapping)*, and optionally the last watched
+  ones, stay tuned with a ring buffer of their whole transport stream. A channel on such a warm mux
+  starts at the last keyframe from the buffer, so the picture comes up in about half a second.
+  Viewers start close to live; an ECM prefetch for camd35 (OSCam) has the keys ready.
+  Settings: Configuration → Stream → Instant Zapping.
+- **More stream details over HTSP:** component tags, subtitle page and type, initial teletext page,
+  audio type and receiver mix, the DVB ids (ONID, TSID, SID) of the channel, and a queue that keeps
+  at least 1.5 s of the stream. [TVF](https://github.com/L-S-D/tvfrontend), a client for LG webOS
+  TVs, uses them.
+- **DAB radio from DVB** with [libdvbdab](https://github.com/L-S-D/libdvbdab): ETI-NA, MPE, TS NI
+  and DAB over GSE.
+- **Neumo DVB driver** (for example TBS 6909X): multistream (ISI), GSE, blind tuning, Unicable
+  groups, shared RF inputs, external polarizer control.
+- **T2-MI** and TS piping as sub-muxes, also from scrambled carriers.
+- **capmt fixes for OSCam:** ECM flush, CSA-ALT, message order, forced CA id.
+- Smaller fixes: the timeshift option *Include teletext*, the local language codes qaa..qtz, a higher
+  service priority beats an already tuned mux.
+
+### Branches
+
+| Branch | Contents |
+|---|---|
+| `master` | the same as `v3/all` |
+| `v3/base` | upstream `master` + our open upstream pull requests |
+| `v3/tvf` | `v3/base` + instant zapping, recommended for TVF |
+| `v3/neumo` | `v3/base` + the Neumo driver support |
+| `v3/all` | `v3/tvf` + Neumo + T2-MI + service priority |
+| `pr/*` | one topic each on upstream `master`, as sent upstream |
+
+Our pull requests upstream:
+[tvheadend/tvheadend, author L-S-D](https://github.com/tvheadend/tvheadend/pulls?q=is%3Apr+author%3AL-S-D).
+
+---
+
 <div align="center">
 
 [![Build Status](https://github.com/tvheadend/tvheadend/actions/workflows/build-cloudsmith.yml/badge.svg?branch=master)](https://github.com/tvheadend/tvheadend/actions/workflows/build-cloudsmith.yml)
