@@ -64,6 +64,107 @@
 /* prevention of self raised DiSEqC collisions */
 static tvh_mutex_t linuxdvb_en50494_lock;
 
+/* Unicable master/slave group management */
+static linuxdvb_unicable_group_list_t linuxdvb_unicable_groups;
+static tvh_mutex_t linuxdvb_unicable_groups_lock;
+
+/*
+ * Find master satconf element for a unicable group
+ * Must be called WITHOUT groups_lock held
+ */
+static linuxdvb_satconf_ele_t *
+linuxdvb_unicable_find_master ( uint16_t group_id )
+{
+  tvh_hardware_t *th;
+  linuxdvb_adapter_t *la;
+  linuxdvb_frontend_t *lfe;
+  linuxdvb_satconf_ele_t *lse;
+
+  LIST_FOREACH(th, &tvh_hardware, th_link) {
+    if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class))
+      continue;
+    la = (linuxdvb_adapter_t *)th;
+    LIST_FOREACH(lfe, &la->la_frontends, lfe_link) {
+      if (lfe->lfe_type != DVB_TYPE_S || !lfe->lfe_satconf)
+        continue;
+      TAILQ_FOREACH(lse, &lfe->lfe_satconf->ls_elements, lse_link) {
+        if (!lse->lse_en50494)
+          continue;
+        linuxdvb_en50494_t *le = (linuxdvb_en50494_t *)lse->lse_en50494;
+        if (le->le_group_id == group_id && le->le_is_master)
+          return lse;
+      }
+    }
+  }
+  return NULL;
+}
+
+/*
+ * Find or create a unicable group by ID
+ */
+static linuxdvb_unicable_group_t *
+linuxdvb_unicable_group_get ( uint16_t group_id )
+{
+  linuxdvb_unicable_group_t *group;
+
+  if (group_id == 0)
+    return NULL;  /* group 0 means standalone, no master/slave */
+
+  tvh_mutex_lock(&linuxdvb_unicable_groups_lock);
+
+  /* Search for existing group */
+  TAILQ_FOREACH(group, &linuxdvb_unicable_groups, lug_link) {
+    if (group->lug_group_id == group_id) {
+      tvh_mutex_unlock(&linuxdvb_unicable_groups_lock);
+      return group;
+    }
+  }
+
+  /* Create new group */
+  group = calloc(1, sizeof(*group));
+  if (group) {
+    group->lug_group_id = group_id;
+    tvh_mutex_init(&group->lug_lock, NULL);
+    TAILQ_INSERT_TAIL(&linuxdvb_unicable_groups, group, lug_link);
+    tvhtrace(LS_EN50494, "created unicable group %d", group_id);
+  }
+
+  tvh_mutex_unlock(&linuxdvb_unicable_groups_lock);
+  return group;
+}
+
+/*
+ * Master element and frontend FD of a group. Looked up on every tune: a cached
+ * pointer would outlive the element when the master's satconf is destroyed
+ * (satconf type change, fewer positions, adapter gone).
+ * Must be called WITH group->lug_lock and global_lock held
+ */
+static int
+linuxdvb_unicable_get_master_fd ( linuxdvb_unicable_group_t *group,
+                                  linuxdvb_satconf_ele_t **master )
+{
+  linuxdvb_satconf_ele_t *lse;
+  linuxdvb_frontend_t *lfe;
+
+  lock_assert(&global_lock);
+  lse = linuxdvb_unicable_find_master(group->lug_group_id);
+  if (!lse) {
+    tvhdebug(LS_EN50494, "no master found for unicable group %d", group->lug_group_id);
+    return -1;
+  }
+  lfe = (linuxdvb_frontend_t *)lse->lse_parent->ls_frontend;
+
+  /* closed: disabled, or idle with power save */
+  if (lfe->lfe_fe_fd <= 0) {
+    tvhdebug(LS_EN50494, "master frontend FD not open for group %d (frontend %s)",
+             group->lug_group_id, lfe->lfe_fe_path);
+    return -1;
+  }
+
+  *master = lse;
+  return lfe->lfe_fe_fd;
+}
+
 static void
 linuxdvb_en50494_class_get_title
   ( idnode_t *o, const char *lang, char *dst, size_t dstsize )
@@ -135,6 +236,29 @@ linuxdvb_en50494_pin_list ( void *o, const char *lang )
   return m;
 }
 
+htsmsg_t *
+linuxdvb_en50494_group_list ( void *o, const char *lang )
+{
+  htsmsg_t *m = htsmsg_create_list();
+  htsmsg_t *e;
+  int i;
+
+  e = htsmsg_create_map();
+  htsmsg_add_u32(e, "key", 0);
+  htsmsg_add_str(e, "val", tvh_gettext_lang(lang, N_("None (standalone)")));
+  htsmsg_add_msg(m, NULL, e);
+
+  for (i = 1; i <= 15; i++) {
+    char buf[32];
+    e = htsmsg_create_map();
+    htsmsg_add_u32(e, "key", i);
+    snprintf(buf, sizeof(buf), "%s %d", tvh_gettext_lang(lang, N_("Group")), i);
+    htsmsg_add_str(e, "val", buf);
+    htsmsg_add_msg(m, NULL, e);
+  }
+  return m;
+}
+
 extern const idclass_t linuxdvb_diseqc_class;
 
 const idclass_t linuxdvb_en50494_class =
@@ -190,6 +314,27 @@ const idclass_t linuxdvb_en50494_class =
       .desc   = N_("Position ID."),
       .off    = offsetof(linuxdvb_en50494_t, le_position),
       .list   = linuxdvb_en50494_position_list,
+    },
+    {
+      .type   = PT_U16,
+      .id     = "unicable_group",
+      .name   = N_("Unicable group"),
+      .desc   = N_("Unicable elements in the same group share one cable: their "
+                   "commands are sent one at a time, those of the slaves through the "
+                   "master's tuner. None = no group."),
+      .off    = offsetof(linuxdvb_en50494_t, le_group_id),
+      .list   = linuxdvb_en50494_group_list,
+      .opts   = PO_ADVANCED,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "is_master",
+      .name   = N_("Unicable master"),
+      .desc   = N_("This element's tuner sends the Unicable commands for all "
+                   "members of its group (one master per group). Without a usable "
+                   "master (disabled, or idle with power save) a slave sends itself."),
+      .off    = offsetof(linuxdvb_en50494_t, le_is_master),
+      .opts   = PO_ADVANCED,
     },
     {}
   }
@@ -248,6 +393,27 @@ const idclass_t linuxdvb_en50607_class =
       .desc   = N_("Position ID."),
       .off    = offsetof(linuxdvb_en50494_t, le_position),
       .list   = linuxdvb_en50494_position_list,
+    },
+    {
+      .type   = PT_U16,
+      .id     = "unicable_group",
+      .name   = N_("Unicable group"),
+      .desc   = N_("Unicable elements in the same group share one cable: their "
+                   "commands are sent one at a time, those of the slaves through the "
+                   "master's tuner. None = no group."),
+      .off    = offsetof(linuxdvb_en50494_t, le_group_id),
+      .list   = linuxdvb_en50494_group_list,
+      .opts   = PO_ADVANCED,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "is_master",
+      .name   = N_("Unicable master"),
+      .desc   = N_("This element's tuner sends the Unicable commands for all "
+                   "members of its group (one master per group). Without a usable "
+                   "master (disabled, or idle with power save) a slave sends itself."),
+      .off    = offsetof(linuxdvb_en50494_t, le_is_master),
+      .opts   = PO_ADVANCED,
     },
     {}
   }
@@ -309,18 +475,25 @@ linuxdvb_en50494_match
   return lm1 == lm2;
 }
 
+/*
+ * Internal tune function - sends unicable command using specified FD and satconf
+ * Parameters:
+ *   fd       - frontend FD to use for DiSEqC commands
+ *   volt_lsp - satconf to use for voltage control (master's satconf for slaves)
+ *   repeats  - number of DiSEqC repeats
+ */
 static int
-linuxdvb_en50494_tune
+linuxdvb_en50494_tune_internal
   ( linuxdvb_diseqc_t *ld, dvb_mux_t *lm,
-    linuxdvb_satconf_t *lsp, linuxdvb_satconf_ele_t *sc,
-    int vol, int pol, int band, int freq )
+    linuxdvb_satconf_ele_t *sc,
+    int vol, int pol, int band, int freq,
+    int fd, linuxdvb_satconf_t *volt_lsp, int repeats )
 {
-  int ret = 0, i, fd = linuxdvb_satconf_fe_fd(lsp), rfreq;
+  int ret = 0, i, rfreq;
   int ver2 = linuxdvb_unicable_is_en50607(ld->ld_type);
   linuxdvb_en50494_t *le = (linuxdvb_en50494_t*) ld;
   uint8_t data1, data2, data3;
   uint16_t t;
-
 
   if (!ver2) {
     /* tune frequency for the frontend */
@@ -349,19 +522,8 @@ linuxdvb_en50494_tune
     data3 |= band & 1;                    /* 1bit band lower(0)/upper(1) */
   }
 
-  /* wait until no other thread is setting up switch.
-   * when an other thread was blocking, waiting 20ms.
-   */
-  if (tvh_mutex_trylock(&linuxdvb_en50494_lock) != 0) {
-    if (tvh_mutex_lock(&linuxdvb_en50494_lock) != 0) {
-      tvherror(LS_EN50494,"failed to lock for tuning");
-      return -1;
-    }
-    tvh_safe_usleep(20000);
-  }
-
   /* setup en50494 switch */
-  for (i = 0; i <= sc->lse_parent->ls_diseqc_repeats; i++) {
+  for (i = 0; i <= repeats; i++) {
     /* to avoid repeated collision, wait a random time 68-118
      * 67,5 is the typical diseqc-time */
     if (i != 0) {
@@ -372,7 +534,7 @@ linuxdvb_en50494_tune
     }
 
     /* use 18V */
-    ret = linuxdvb_diseqc_set_volt(lsp, 1);
+    ret = linuxdvb_diseqc_set_volt(volt_lsp, 1);
     if (ret) {
       tvherror(LS_EN50494, "error setting lnb voltage to 18V");
       break;
@@ -419,15 +581,81 @@ linuxdvb_en50494_tune
     tvh_safe_usleep(MINMAX(le->le_cmd_time, 10, 300) * 1000); /* standard: 2ms < x < 60ms */
 
     /* return to 13V */
-    ret = linuxdvb_diseqc_set_volt(lsp, 0);
+    ret = linuxdvb_diseqc_set_volt(volt_lsp, 0);
     if (ret) {
       tvherror(LS_EN50494, "error setting lnb voltage back to 13V");
       break;
     }
   }
-  tvh_mutex_unlock(&linuxdvb_en50494_lock);
 
   return ret == 0 ? 0 : -1;
+}
+
+/* wait until no other thread is setting up the switch (lock); after
+ * waiting for another one, give the switch 20ms */
+static int
+linuxdvb_en50494_lock_cable ( tvh_mutex_t *lock )
+{
+  if (tvh_mutex_trylock(lock) != 0) {
+    if (tvh_mutex_lock(lock) != 0) {
+      tvherror(LS_EN50494, "failed to lock for tuning");
+      return -1;
+    }
+    tvh_safe_usleep(20000);
+  }
+  return 0;
+}
+
+/*
+ * Public tune function. The elements of a Unicable group share one cable:
+ * their commands go out one at a time (the group's lock), those of the slaves
+ * through the master's frontend and with its LNB voltage - for tuners that
+ * cannot drive the cable themselves (a splitter where only one of them powers
+ * the LNB). Without a usable master a slave sends itself. An element without
+ * a group locks against all others.
+ */
+static int
+linuxdvb_en50494_tune
+  ( linuxdvb_diseqc_t *ld, dvb_mux_t *lm,
+    linuxdvb_satconf_t *lsp, linuxdvb_satconf_ele_t *sc,
+    int vol, int pol, int band, int freq )
+{
+  linuxdvb_en50494_t *le = (linuxdvb_en50494_t*) ld;
+  linuxdvb_unicable_group_t *group = NULL;
+  linuxdvb_satconf_ele_t *master;
+  linuxdvb_satconf_t *volt_lsp = lsp;
+  tvh_mutex_t *lock = &linuxdvb_en50494_lock;
+  int fd = linuxdvb_satconf_fe_fd(lsp), ret;
+  int repeats = sc->lse_parent->ls_diseqc_repeats;
+
+  if (le->le_group_id > 0) {
+    group = linuxdvb_unicable_group_get(le->le_group_id);
+    if (!group) {
+      tvherror(LS_EN50494, "failed to get unicable group %d", le->le_group_id);
+      return -1;
+    }
+    lock = &group->lug_lock;
+  }
+  if (linuxdvb_en50494_lock_cable(lock))
+    return -1;
+
+  if (group && !le->le_is_master) {
+    int mfd = linuxdvb_unicable_get_master_fd(group, &master);
+    if (mfd >= 0) {
+      fd = mfd;
+      volt_lsp = master->lse_parent;
+      tvhtrace(LS_EN50494, "slave routing through master: group=%d fd=%d",
+               le->le_group_id, fd);
+    } else {
+      tvhwarn(LS_EN50494, "group %d: master not available, the slave sends itself",
+              le->le_group_id);
+    }
+  }
+
+  ret = linuxdvb_en50494_tune_internal(ld, lm, sc, vol, pol, band, freq,
+                                       fd, volt_lsp, repeats);
+  tvh_mutex_unlock(lock);
+  return ret;
 }
 
 
@@ -441,6 +669,26 @@ linuxdvb_en50494_init (void)
   if (tvh_mutex_init(&linuxdvb_en50494_lock, NULL) != 0) {
     tvherror(LS_EN50494, "failed to init lock mutex");
   }
+  TAILQ_INIT(&linuxdvb_unicable_groups);
+  if (tvh_mutex_init(&linuxdvb_unicable_groups_lock, NULL) != 0) {
+    tvherror(LS_EN50494, "failed to init groups lock mutex");
+  }
+}
+
+void
+linuxdvb_en50494_done (void)
+{
+  linuxdvb_unicable_group_t *group;
+
+  tvh_mutex_lock(&linuxdvb_unicable_groups_lock);
+  while ((group = TAILQ_FIRST(&linuxdvb_unicable_groups)) != NULL) {
+    TAILQ_REMOVE(&linuxdvb_unicable_groups, group, lug_link);
+    tvh_mutex_destroy(&group->lug_lock);
+    free(group);
+  }
+  tvh_mutex_unlock(&linuxdvb_unicable_groups_lock);
+  tvh_mutex_destroy(&linuxdvb_unicable_groups_lock);
+  tvh_mutex_destroy(&linuxdvb_en50494_lock);
 }
 
 htsmsg_t *
