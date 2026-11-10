@@ -111,6 +111,12 @@ dab_stream_create(const dab_stream_config_t *config,
     scfg.filter_ip = config->filter_ip;
     scfg.filter_port = config->filter_port;
     break;
+  case 3: /* GSE in the BBFrames of the Neumo driver */
+    scfg.format = DVBDAB_FORMAT_BBF_TS;
+    scfg.filter_ip = config->filter_ip;
+    scfg.filter_port = config->filter_port;
+    scfg.eid = config->eid;
+    break;
   case 4: /* TSNI - TS NI V.11 */
     scfg.format = DVBDAB_FORMAT_TSNI;
     /* TSNI only needs PID, no IP/port filtering */
@@ -186,6 +192,7 @@ dab_decap_format(const mpegts_mux_t *mm)
   switch (mm->mm_type) {
   case MM_TYPE_DAB_ETI:  return 0;
   case MM_TYPE_DAB_MPE:  return 1;
+  case MM_TYPE_DAB_GSE:  return 3;
   case MM_TYPE_DAB_TSNI: return 4;
   default:               return -1;
   }
@@ -205,7 +212,7 @@ mpegts_mux_decap_start(mpegts_mux_instance_t *mmi)
   dmc = &((dvb_mux_t *)mm)->lm_tuning;
   memset(&cfg, 0, sizeof(cfg));
   cfg.format = format;
-  cfg.pid = dmc->dmc_fe_pid;
+  cfg.pid = dvb_mux_stream_pid(mm);   /* GSE: the PID of the BBFrames */
   if (cfg.pid == 0) {
     tvherror(LS_MPEGTS, "%s: DAB mux has no PID configured", mm->mm_nicename);
     return -1;
@@ -214,9 +221,11 @@ mpegts_mux_decap_start(mpegts_mux_instance_t *mmi)
     cfg.eti_padding = dmc->dmc_dab_eti_padding;
     cfg.eti_bit_offset = dmc->dmc_dab_eti_bit_offset;
     cfg.eti_inverted = dmc->dmc_dab_eti_inverted;
-  } else if (format == 1) {     /* MPE */
+  } else if (format == 1 || format == 3) {  /* MPE, GSE */
     cfg.filter_ip = dmc->dmc_dab_ip;
     cfg.filter_port = dmc->dmc_dab_port;
+    if (format == 3 && mm->mm_tsid != MPEGTS_TSID_NONE && mm->mm_tsid <= 0xffff)
+      cfg.eid = mm->mm_tsid;    /* the ensemble the scan found */
   }                             /* TS NI: the PID is all it needs */
 
   mmi->mmi_decap = dab_stream_create(&cfg, dab_decap_output_cb, mmi);
