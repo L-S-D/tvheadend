@@ -1062,6 +1062,8 @@ dvb_network_create0
       mpegts_mux_post_create((mpegts_mux_t *)lm);
     }
     htsmsg_destroy(c);
+    /* the input streams of multistream transponders from before */
+    dvb_network_link_multistream(ln);
   }
 
   return ln;

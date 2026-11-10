@@ -3023,6 +3023,8 @@ linuxdvb_frontend_create
   lfe->ti_wizard_get          = linuxdvb_frontend_wizard_get;
   lfe->ti_wizard_set          = linuxdvb_frontend_wizard_set;
   lfe->mi_is_enabled          = linuxdvb_frontend_is_enabled;
+  /* an input stream of a multistream transponder: tuned with its stream */
+  lfe->mi_mux_types          |= (1u << MM_TYPE_ISI);
 #if LINUXDVB_GSE
   /* GSE streams of multistream transponders (Neumo driver) */
   lfe->mi_mux_types          |= (1u << MM_TYPE_GSE) | (1u << MM_TYPE_DAB_GSE);
