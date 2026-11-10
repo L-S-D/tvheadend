@@ -1079,6 +1079,8 @@ dvb_network_create0
     }
     ln->ln_loading = 0;
     htsmsg_destroy(c);
+    /* the input streams of multistream transponders from before */
+    dvb_network_link_multistream(ln);
   }
 
   return ln;

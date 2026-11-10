@@ -419,13 +419,20 @@ enum mpegts_mux_type
   MM_TYPE_DAB_GSE  = 4,  /* DAB via GSE (IP multicast in GSE) */
   MM_TYPE_GSE      = 5,  /* GSE stream (may upgrade to DAB-GSE if DAB detected) */
   MM_TYPE_DAB_TSNI = 6,  /* DAB via TS NI V.11 (incrementing table_id 0x69-0x9A) */
+  MM_TYPE_ISI      = 7,  /* the TS of one input stream of a multistream transponder */
 };
 
-/* a mux carried inside another one (in a PID of its transponder); GSE
- * streams are own streams of a multistream transponder (ISI) */
-#define mpegts_mux_is_submux(mm) \
+/* a mux carried inside another one: in a PID of its transponder (DAB), or
+ * in the BBFrames of a multistream transponder (an input stream: TS, GSE,
+ * DAB in GSE) */
+#define mpegts_mux_in_pid(mm) \
   ((mm)->mm_type == MM_TYPE_DAB_MPE || (mm)->mm_type == MM_TYPE_DAB_ETI || \
    (mm)->mm_type == MM_TYPE_DAB_TSNI)
+#define mpegts_mux_in_bbframes(mm) \
+  ((mm)->mm_type == MM_TYPE_ISI || (mm)->mm_type == MM_TYPE_GSE || \
+   (mm)->mm_type == MM_TYPE_DAB_GSE)
+#define mpegts_mux_is_submux(mm) \
+  (mpegts_mux_in_pid(mm) || mpegts_mux_in_bbframes(mm))
 
 /* a DAB ensemble converted to a TS (libdvbdab) */
 #define mpegts_mux_is_dab(mm) \

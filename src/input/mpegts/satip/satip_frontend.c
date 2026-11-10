@@ -2372,6 +2372,8 @@ satip_frontend_create
   lfe->ti_wizard_set     = satip_frontend_wizard_set;
   lfe->mi_display_name   = satip_frontend_display_name;
   lfe->mi_is_enabled     = satip_frontend_is_enabled;
+  /* an input stream of a multistream transponder: tuned with its stream */
+  lfe->mi_mux_types     |= (1u << MM_TYPE_ISI);
   lfe->mi_warm_mux       = satip_frontend_warm_mux;
   lfe->mi_start_mux      = satip_frontend_start_mux;
   lfe->mi_stop_mux       = satip_frontend_stop_mux;
