@@ -41,6 +41,8 @@ dvbbuffer_conf_fixup(void)
     dvbbuffer_conf.lru_weight = 1;
   if (dvbbuffer_conf.lru_weight >= SUBSCRIPTION_PRIO_MIN)
     dvbbuffer_conf.lru_weight = SUBSCRIPTION_PRIO_MIN - 1;
+  if (dvbbuffer_conf.start_lag_ms > 60000)
+    dvbbuffer_conf.start_lag_ms = 60000;
 }
 
 uint32_t
@@ -80,6 +82,7 @@ const idclass_t dvbbuffer_conf_class = {
   .ic_groups     = (const property_group_t[]) {
     { .name = N_("General"),                 .number = 1 },
     { .name = N_("Recently used muxes"),     .number = 2 },
+    { .name = N_("Live start"),              .number = 3 },
     {}
   },
   .ic_properties = (const property_t[]){
@@ -158,6 +161,18 @@ const idclass_t dvbbuffer_conf_class = {
       .off    = offsetof(dvbbuffer_conf_t, lru_weight),
       .opts   = PO_ADVANCED,
       .group  = 2,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "start_lag_ms",
+      .name   = N_("Live start behind live (ms)"),
+      .desc   = N_("After zapping, live clients (profiles with \"Instant "
+                   "zapping: start live\") get the stream from the newest "
+                   "keyframe at least this far behind live instead of the "
+                   "whole backlog. 0 = the newest keyframe; more gives the "
+                   "player that much buffer at once."),
+      .off    = offsetof(dvbbuffer_conf_t, start_lag_ms),
+      .group  = 3,
     },
     {}
   }
