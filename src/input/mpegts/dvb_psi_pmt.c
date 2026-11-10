@@ -657,6 +657,9 @@ dvb_pmt_callback
   int r, sect, last, ver, restart;
   uint32_t update;
   uint16_t sid;
+  uint16_t t2mi[4];
+  int t2mi_n = 0;
+  int i;
   mpegts_mux_t *mm = mt->mt_mux;
   mpegts_service_t *s;
   elementary_stream_t *es;
@@ -707,7 +710,17 @@ dvb_pmt_callback
     mpegts_service_autoenable(s, "PAT and PMT");
     s->s_verified = 1;
   }
+  /* its T2-MI streams: their sub-muxes, after the lock */
+  TAILQ_FOREACH(es, &s->s_components.set_all, es_link)
+    if (es->es_type == SCT_T2MI && t2mi_n < (int)ARRAY_SIZE(t2mi))
+      t2mi[t2mi_n++] = es->es_pid;
   tvh_mutex_unlock(&s->s_stream_mutex);
+#if ENABLE_MPEGTS_DVB
+  for (i = 0; i < t2mi_n; i++)
+    dvb_mux_t2mi_found(mm, t2mi[i], sid);
+#else
+  (void)i;
+#endif
   if (restart)
     service_restart((service_t*)s);
   if (update & (PMT_UPDATE_NEW_CA_STREAM|PMT_UPDATE_NEW_CAID|

@@ -67,6 +67,19 @@ typedef struct dvb_mux
    * then goes through the descrambler (0: the PID only, not scrambled)
    */
   uint16_t lm_carrier_sid;
+
+  /*
+   * T2MI: the format of the PID (t2mi.h; auto: detected). From the sub-mux
+   * thread: the PLPs with a TS seen since the sub-mux started (a bit each)
+   * and the one passed on (-1: none yet). Without a PLP set the first one
+   * is taken: the scan gives the others sub-muxes of their own.
+   */
+  int      lm_t2mi_format;
+  uint32_t lm_t2mi_plps[8];
+  int      lm_t2mi_plp_cur;
+
+  /* made by the search (not saved): one that stays empty is disabled */
+  int      lm_submux_found;
 } dvb_mux_t;
 
 /*
@@ -103,6 +116,11 @@ dvb_network_t *dvb_network_create0
 dvb_mux_t *dvb_network_find_mux
   ( dvb_network_t *ln, dvb_mux_conf_t *dmc, uint32_t onid, uint32_t tsid, int check, int approx_match );
 
+/* the sub-mux of this type on the same transponder, in the same PID (T2MI:
+ * of the PLP, if one is set; DAB-MPE: from the same IP source) */
+dvb_mux_t *dvb_network_find_submux
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc, int type );
+
 dvb_mux_t *dvb_network_find_mux_dab_mpe
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc );
 
@@ -114,6 +132,12 @@ dvb_mux_t *dvb_network_find_mux_dab_tsni
 
 const idclass_t *dvb_network_mux_class(mpegts_network_t *mn);
 int dvb_network_get_orbital_pos(mpegts_network_t *mn);
+
+/* T2MI: a T2-MI stream in a service of the transponder (its PMT) */
+void dvb_mux_t2mi_found ( mpegts_mux_t *mm, uint16_t pid, uint16_t sid );
+
+/* T2MI: the scan of a sub-mux saw several PLPs: a sub-mux for each */
+void dvb_mux_t2mi_scan_done ( mpegts_mux_t *mm );
 
 /* the PID a sub-mux is carried in; 0 for a mux that is not a sub-mux */
 uint16_t   dvb_mux_stream_pid    ( mpegts_mux_t *mm );
