@@ -28,6 +28,7 @@
 #include "dvb_charset.h"
 #include "epggrab.h"
 #include "config.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 #include <assert.h>
 
@@ -473,6 +474,9 @@ mpegts_mux_class_enabled_notify ( void *p, const char *lang )
       mm->mm_scan_result = MM_SCAN_IGNORE;
     }
   }
+#if ENABLE_DVBBUFFER
+  dvbbuffer_mux_enabled_notify();
+#endif
 }
 
 static htsmsg_t *
@@ -703,6 +707,18 @@ const idclass_t mpegts_mux_class =
       .off      = offsetof(mpegts_mux_t, mm_sid_filter),
       .opts     = PO_HIDDEN | PO_EXPERT
     },
+#if ENABLE_DVBBUFFER
+    {
+      .type     = PT_BOOL,
+      .id       = "prebuffer",
+      .name     = N_("Prebuffer (instant zapping)"),
+      .desc     = N_("Keep this mux tuned with a low weight and hold the "
+                     "last seconds of the whole transport stream in RAM."),
+      .off      = offsetof(mpegts_mux_t, mm_prebuffer),
+      .notify   = dvbbuffer_mux_prebuffer_notify,
+      .opts     = PO_ADVANCED
+    },
+#endif
     {
       .type     = PT_TIME,
       .id       = "created",

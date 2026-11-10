@@ -100,6 +100,9 @@ typedef struct th_descrambler_runtime {
   uint32_t dr_quick_ecm:1;
   uint32_t dr_key_const:1;
   uint32_t dr_key_multipid:1;
+  uint32_t dr_ring:1;          /* started from a ring backlog (dvbbuffer): queue
+                                  before the first ECM, first parity from the
+                                  oldest queued packet, queue as big as the backlog */
   int64_t  dr_ecm_start[2];
   int64_t  dr_ecm_last_key_time;
   int64_t  dr_ecm_key_margin;

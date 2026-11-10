@@ -44,6 +44,7 @@
 
 #include "settings.h"
 #include "epggrab.h"  //Needed to be able to test for epggrab_conf.epgdb_processparentallabels
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 /* **************************************************************************
  * Datatypes and variables
@@ -196,6 +197,9 @@ typedef struct htsp_subscription {
   int hs_90khz;
 
   int hs_queue_depth;
+#if ENABLE_DVBBUFFER
+  int64_t hs_start_burst;   /* mclk() until which the start burst may queue */
+#endif
 
 #define NUM_FILTERED_STREAMS (64*8)
 
@@ -4175,9 +4179,15 @@ htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
   htsp_msg_t *hm;
   htsp_connection_t *htsp = hs->hs_htsp;
   int64_t ts;
-  int qlen = hs->hs_q.hmq_payload;
+  int64_t qlen = hs->hs_q.hmq_payload;
   int video = SCT_ISVIDEO(pkt->pkt_type);
+  int64_t depth = hs->hs_queue_depth;   /* x3, x8 of a large depth: not an int */
   size_t payloadlen;
+
+#if ENABLE_DVBBUFFER
+  if (hs->hs_start_burst && mclk() < hs->hs_start_burst)
+    depth *= 8;
+#endif
 
   if (pkt->pkt_err)
     hs->hs_data_errors += pkt->pkt_err;
@@ -4191,9 +4201,9 @@ htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
   }
 
   if(video &&
-     ((qlen > hs->hs_queue_depth     && pkt->v.pkt_frametype == PKT_B_FRAME) ||
-      (qlen > hs->hs_queue_depth * 2 && pkt->v.pkt_frametype == PKT_P_FRAME) ||
-      (qlen > hs->hs_queue_depth * 3))) {
+     ((qlen > depth     && pkt->v.pkt_frametype == PKT_B_FRAME) ||
+      (qlen > depth * 2 && pkt->v.pkt_frametype == PKT_P_FRAME) ||
+      (qlen > depth * 3))) {
 
     hs->hs_dropstats[pkt->v.pkt_frametype]++;
 
@@ -4304,6 +4314,11 @@ htsp_subscription_start(htsp_subscription_t *hs, const streaming_start_t *ss)
   const source_info_t *si;
 
   tvhdebug(LS_HTSP, "%s - subscription start", hs->hs_htsp->htsp_logname);
+#if ENABLE_DVBBUFFER
+  /* instant zapping: the stream starts with a burst from the ring buffer -
+   * not a slow client, the queue protection below gets room for it */
+  hs->hs_start_burst = ss->ss_dvbbuffer ? mclk() + sec2mono(2) : 0;
+#endif
 
   for(i = 0; i < ss->ss_num_components; i++) {
     const streaming_start_component_t *ssc = &ss->ss_components[i];

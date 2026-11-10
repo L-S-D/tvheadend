@@ -343,6 +343,14 @@ typedef struct service {
   int s_streaming_live;
   int s_running;
   int s_pending_restart;
+#if ENABLE_DVBBUFFER
+  int s_dvbbuffer_backlog;  /* subscriptions waiting for / in the ring content
+                               pass of a warm mux (mi_output_lock) */
+  int s_dvbbuffer_start;    /* started with such a backlog: the stream begins
+                               with it until the service runs (a PMT that
+                               differs from the saved one builds the start
+                               anew before) */
+#endif
 
   // Live status
 #define TSS_LIVE             0x01

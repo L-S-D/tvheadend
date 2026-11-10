@@ -50,9 +50,9 @@ tsdebug_encode_keys
 }
 
 void
-tsdebug_check_tspkt( mpegts_mux_t *mm, uint8_t *pkt, int len )
+tsdebug_check_tspkt( mpegts_mux_t *mm, const uint8_t *pkt, int len )
 {
-  void tsdebugcw_new_keys(service_t *t, int type, uint16_t pid, uint8_t *odd, uint8_t *even);
+  void tsdebugcw_new_keys(service_t *t, int type, uint16_t pid, const uint8_t *odd, const uint8_t *even);
   uint32_t pos, type, keylen, sid, crc;
   uint16_t pid;
   mpegts_service_t *t;
