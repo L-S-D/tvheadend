@@ -66,7 +66,8 @@ enum streaming_component_type {
   SCT_OPUS,
   SCT_FLAC,
   SCT_AC4,
-  SCT_LAST = SCT_AC4
+  SCT_T2MI,    /* a T2-MI stream (TS 102 773): a DVB-T2 multiplex inside */
+  SCT_LAST = SCT_T2MI
 };
 
 #define SCT_MASK(t) (1 << (t))

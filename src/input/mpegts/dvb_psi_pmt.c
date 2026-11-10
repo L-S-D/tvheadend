@@ -278,6 +278,7 @@ dvb_psi_parse_pmt
   int video_stream;
   int rds_uecp;
   int ac4;
+  int t2mi;
   int pcr_shared = 0;
   const char *lang;
   const char *supp_lang;
@@ -344,6 +345,7 @@ dvb_psi_parse_pmt
     ancillary_id = -1;
     rds_uecp = 0;
     ac4 = 0;
+    t2mi = 0;
     tt_position = 1000;
     lang = NULL;
     supp_lang = NULL;
@@ -480,10 +482,18 @@ dvb_psi_parse_pmt
         if(ptr[0] == 0x15) /* descriptor_tag_extension : AC-4 */
           ac4 = 1;
 
+        /* T2MI_descriptor (EN 300 468) */
+        t2mi |= ptr[0] == 0x11 && estype == 0x06;
+
         if((estype == 0x06 || estype == 0x81) && ac4)
           hts_stream_type = SCT_AC4;
 
         psi_desc_supplementary_audio(ptr, dlen, &supp_audio_type, &supp_lang);
+        break;
+
+      case DVB_DESC_DATA_BROADCAST_ID:
+        /* data_broadcast_id 0x0123: T2-MI (before the T2MI descriptor) */
+        t2mi |= dlen >= 2 && ((ptr[0] << 8) | ptr[1]) == 0x0123 && estype == 0x06;
         break;
 
       case DVB_DESC_ANCILLARY_DATA:
@@ -502,6 +512,10 @@ dvb_psi_parse_pmt
       }
       len -= dlen; ptr += dlen; dllen -= dlen;
     }
+
+    /* a T2-MI stream: the carrier of a DVB-T2 multiplex (a sub-mux) */
+    if (t2mi && hts_stream_type == SCT_UNKNOWN)
+      hts_stream_type = SCT_T2MI;
 
     if (supp_lang)
       lang = supp_lang;
@@ -635,6 +649,15 @@ dvb_psi_parse_pmt
   return update;
 }
 
+/* a service with audio or video, or a data service that carries a T2-MI
+ * stream (the stream lock) */
+static int
+dvb_pmt_autoenable ( mpegts_service_t *s )
+{
+  return elementary_stream_has_audio_or_video(&s->s_components) ||
+         elementary_stream_type_find(&s->s_components, SCT_T2MI) != NULL;
+}
+
 int
 dvb_pmt_callback
   (mpegts_table_t *mt, const uint8_t *ptr, int len, int tableid)
@@ -686,8 +709,7 @@ dvb_pmt_callback
       restart = s->s_status == SERVICE_RUNNING;
     }
   }
-  /* autoenable */
-  if (elementary_stream_has_audio_or_video(&s->s_components)) {
+  if (dvb_pmt_autoenable(s)) {
     mpegts_service_autoenable(s, "PAT and PMT");
     s->s_verified = 1;
   }
