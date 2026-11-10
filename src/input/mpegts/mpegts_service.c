@@ -584,6 +584,9 @@ mpegts_service_setsourceinfo(service_t *t, source_info_t *si)
 
   si->si_tsid = m->mm_tsid;
   si->si_onid = m->mm_onid;
+  si->si_sid  = service_id16(s);
+  si->si_dvb_ids = m->mm_onid != MPEGTS_ONID_NONE && m->mm_tsid != MPEGTS_TSID_NONE &&
+                   si->si_sid != 0;
 }
 
 /*
