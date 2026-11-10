@@ -557,8 +557,9 @@ dvbbuffer_warm_used(mpegts_mux_t *mm, int delta)
 
   lock_assert(&global_lock);
   /* only DVB muxes: an IPTV mux has no tuner to keep, a warm subscription
-   * would only hold the stream open (or retry a dead one forever) */
-  if (!dvbbuffer_mux_is_dvb(mm))
+   * would only hold the stream open (or retry a dead one forever); not a
+   * sub-mux (no transponder found for it): it has no ring of its own */
+  if (!dvbbuffer_mux_is_dvb(mm) || mpegts_mux_is_submux(mm))
     return;
   LIST_FOREACH(du, &dvbbuffer_used_all, du_link)
     if (du->du_mux == mm)
@@ -589,6 +590,9 @@ dvbbuffer_warm_used(mpegts_mux_t *mm, int delta)
 void
 dvbbuffer_service_used(mpegts_service_t *s, int delta)
 {
+  mpegts_mux_t *mm;
+  dvb_mux_t *p;
+
   lock_assert(&global_lock);
   if (!dvbbuffer_running || s->s_dvb_mux == NULL)
     return;
@@ -601,8 +605,18 @@ dvbbuffer_service_used(mpegts_service_t *s, int delta)
     if (!s->s_dvbbuffer_used)
       return;
     s->s_dvbbuffer_used = 0;
+    /* the mux counted at the start: the link of a sub-mux to its
+     * transponder may have changed since (deleted: forgotten with it) */
+    if ((mm = mpegts_mux_find0(&s->s_dvbbuffer_used_mux)) != NULL)
+      dvbbuffer_warm_used(mm, delta);
+    return;
   }
-  dvbbuffer_warm_used(s->s_dvb_mux, delta);
+  /* a sub-mux: its transponder is kept warm (its ring has the sub-mux) */
+  mm = s->s_dvb_mux;
+  if (mpegts_mux_is_submux(mm) && (p = dvb_mux_submux_parent((dvb_mux_t *)mm)) != NULL)
+    mm = (mpegts_mux_t *)p;
+  uuid_duplicate(&s->s_dvbbuffer_used_mux, &mm->mm_id.in_uuid);
+  dvbbuffer_warm_used(mm, delta);
 }
 
 /*

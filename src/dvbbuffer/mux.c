@@ -48,13 +48,16 @@ int
 dvbbuffer_mux_prebuffer(mpegts_mux_t *mm)
 {
   return dvbbuffer_running && dvbbuffer_conf.enabled && mm->mm_prebuffer &&
-         mm->mm_is_enabled(mm);
+         !mpegts_mux_is_submux(mm) && mm->mm_is_enabled(mm);
 }
 
-/* ring buffer wanted: kept warm (prebuffer or recently used) */
+/* ring buffer wanted: kept warm (prebuffer or recently used); not for a
+ * sub-mux: its stream comes from its transponder, that one has the ring */
 int
 dvbbuffer_mux_wanted(mpegts_mux_t *mm)
 {
+  if (mpegts_mux_is_submux(mm))
+    return 0;
   return dvbbuffer_mux_prebuffer(mm) ||
          (dvbbuffer_running && dvbbuffer_conf.enabled && dvbbuffer_warm_lru(mm));
 }
