@@ -22,6 +22,7 @@
 #include "mpegts_dvb.h"
 #include "queue.h"
 #include "settings.h"
+#include "t2mi.h"
 
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -210,13 +211,14 @@ dvb_mux_class_dab_ip_set(void *o, const void *v)
 }
 
 /*
- * Mux type: a sub-mux (DAB) is carried in a PID of its transponder
+ * Mux type: a sub-mux (T2MI, DAB) is carried in a PID of its transponder
  */
 static htsmsg_t *
 dvb_mux_class_type_list ( void *o, const char *lang )
 {
   static const struct strtab tab[] = {
     { N_("TS"),                       MM_TYPE_TS },
+    { N_("T2MI"),                     MM_TYPE_T2MI },
 #if ENABLE_DVBDAB
     { N_("DAB-MPE"),                  MM_TYPE_DAB_MPE },
     { N_("DAB-ETI"),                  MM_TYPE_DAB_ETI },
@@ -235,11 +237,61 @@ dvb_mux_class_stream_pid_opts ( void *o, uint32_t opts )
   (void) opts;
   if (mm == NULL)
     return PO_HIDDEN;
-  if (mm->mm_type == MM_TYPE_DAB_MPE ||
+  if (mm->mm_type == MM_TYPE_T2MI ||
+      mm->mm_type == MM_TYPE_DAB_MPE ||
       mm->mm_type == MM_TYPE_DAB_ETI ||
       mm->mm_type == MM_TYPE_DAB_TSNI)
     return 0;
   return PO_NOUI | PO_NOSAVE;
+}
+
+/* the T2MI fields only for T2MI muxes */
+static uint32_t
+dvb_mux_class_t2mi_opts ( void *o, uint32_t opts )
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mm->mm_type == MM_TYPE_T2MI)
+    return opts;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
+/* the PLP of a T2MI mux: -1 = the first one with a TS */
+static const void *
+dvb_mux_class_t2mi_plp_get ( void *o )
+{
+  static int plp;
+  const dvb_mux_t *lm = o;
+  plp = lm->lm_tuning.dmc_t2mi_plp_set ? lm->lm_tuning.dmc_t2mi_plp : -1;
+  return &plp;
+}
+
+static int
+dvb_mux_class_t2mi_plp_set ( void *o, const void *v )
+{
+  dvb_mux_t *lm = o;
+  int plp = *(const int *)v;
+  int set = plp >= 0 && plp <= 255;
+
+  if (set == lm->lm_tuning.dmc_t2mi_plp_set &&
+      (!set || plp == lm->lm_tuning.dmc_t2mi_plp))
+    return 0;
+  lm->lm_tuning.dmc_t2mi_plp_set = set;
+  lm->lm_tuning.dmc_t2mi_plp = set ? plp : 0;
+  return 1;
+}
+
+static htsmsg_t *
+dvb_mux_class_t2mi_format_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("Auto"),                     T2MI_FORMAT_AUTO },
+    { N_("T2-MI"),                    T2MI_FORMAT_T2MI },
+    { N_("TS piping"),                T2MI_FORMAT_PIPING },
+  };
+  (void) o;
+  return strtab2htsmsg(tab, 1, lang);
 }
 
 /* the transponder of a sub-mux: internal, saved for sub-muxes only */
@@ -276,7 +328,8 @@ const idclass_t dvb_mux_class =
       .type     = PT_INT,
       .id       = "tstype",
       .name     = N_("Type"),
-      .desc     = N_("Transport stream type: TS (standard) or DAB."),
+      .desc     = N_("Transport stream type: TS (standard), T2MI (a TS "
+                     "carried in a PID: T2-MI or TS piping) or DAB."),
       .off      = offsetof(mpegts_mux_t, mm_type),
       .def.i    = MM_TYPE_TS,
       .list     = dvb_mux_class_type_list,
@@ -286,7 +339,7 @@ const idclass_t dvb_mux_class =
       .type     = PT_U16,
       .id       = "pid",
       .name     = N_("Stream PID"),
-      .desc     = N_("PID containing the encapsulated stream (DAB)."),
+      .desc     = N_("PID containing the encapsulated stream (T2MI, DAB)."),
       .off      = offsetof(dvb_mux_t, lm_tuning.dmc_fe_pid),
       .get_opts = dvb_mux_class_stream_pid_opts,
     },
@@ -310,6 +363,30 @@ const idclass_t dvb_mux_class =
       .off      = offsetof(dvb_mux_t, lm_carrier_sid),
       .opts     = PO_ADVANCED,
       .get_opts = dvb_mux_class_carrier_opts,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "t2mi_plp",
+      .name     = N_("T2MI PLP"),
+      .desc     = N_("The PLP whose TS the mux passes on, -1: the first "
+                     "one with a TS. When a scan finds several, the mux "
+                     "keeps its PLP and each other one gets a mux of "
+                     "its own."),
+      .get      = dvb_mux_class_t2mi_plp_get,
+      .set      = dvb_mux_class_t2mi_plp_set,
+      .get_opts = dvb_mux_class_t2mi_opts,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "t2mi_format",
+      .name     = N_("T2MI format"),
+      .desc     = N_("What the PID carries: T2-MI packets (the feed of "
+                     "DVB-T2 transmitters) or the TS itself (TS piping). "
+                     "Auto: detected."),
+      .off      = offsetof(dvb_mux_t, lm_t2mi_format),
+      .list     = dvb_mux_class_t2mi_format_list,
+      .opts     = PO_ADVANCED | PO_DOC_NLIST,
+      .get_opts = dvb_mux_class_t2mi_opts,
     },
     {
       .type     = PT_STR,
@@ -1441,6 +1518,8 @@ dvb_mux_conf_same ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
       a->dmc_fe_pls_code != b->dmc_fe_pls_code ||
       a->dmc_fe_data_slice != b->dmc_fe_data_slice ||
       a->dmc_fe_pid != b->dmc_fe_pid ||
+      a->dmc_t2mi_plp != b->dmc_t2mi_plp ||
+      a->dmc_t2mi_plp_set != b->dmc_t2mi_plp_set ||
       a->dmc_dab_ip != b->dmc_dab_ip ||
       a->dmc_dab_port != b->dmc_dab_port ||
       a->dmc_dab_eti_padding != b->dmc_dab_eti_padding ||
@@ -1479,6 +1558,8 @@ dvb_mux_submux_sync ( dvb_mux_t *sm )
     return 0;
   memcpy(&dmc, &p->lm_tuning, sizeof(dmc));
   dmc.dmc_fe_pid = sm->lm_tuning.dmc_fe_pid;
+  dmc.dmc_t2mi_plp = sm->lm_tuning.dmc_t2mi_plp;
+  dmc.dmc_t2mi_plp_set = sm->lm_tuning.dmc_t2mi_plp_set;
   dmc.dmc_dab_ip = sm->lm_tuning.dmc_dab_ip;
   dmc.dmc_dab_port = sm->lm_tuning.dmc_dab_port;
   dmc.dmc_dab_eti_padding = sm->lm_tuning.dmc_dab_eti_padding;
@@ -1541,7 +1622,17 @@ dvb_mux_config_save ( mpegts_mux_t *mm, char *filename, size_t fsize )
   return c;
 }
 
-/* "<transponder> <ensemble>[ / PID <n>]" */
+/* " T2MI <PID>[ / PLP <n>]" */
+static void
+dvb_mux_t2mi_name ( const dvb_mux_conf_t *dmc, char *buf, size_t len )
+{
+  if (dmc->dmc_t2mi_plp_set)
+    snprintf(buf, len, " T2MI %u / PLP %u", dmc->dmc_fe_pid, dmc->dmc_t2mi_plp);
+  else
+    snprintf(buf, len, " T2MI %u", dmc->dmc_fe_pid);
+}
+
+/* "<transponder> T2MI <PID>[ / PLP <n>]", "<transponder> <ensemble>[ / PID <n>]" */
 static void
 dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
 {
@@ -1554,6 +1645,10 @@ dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
     return;
   buf += l;
   len -= l;
+  if (mm->mm_type == MM_TYPE_T2MI) {
+    dvb_mux_t2mi_name(dmc, buf, len);
+    return;
+  }
   if (mpegts_mux_is_dab(mm)) {
     /* before the first scan: where the ensemble is */
     if (lm->lm_dab_ensemble && *lm->lm_dab_ensemble) {
