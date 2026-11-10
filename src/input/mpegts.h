@@ -435,8 +435,8 @@ enum mpegts_mux_type
  * in the BBFrames of a multistream transponder (an input stream: TS, GSE,
  * DAB in GSE) */
 #define mpegts_mux_in_pid(mm) \
-  ((mm)->mm_type == MM_TYPE_DAB_MPE || (mm)->mm_type == MM_TYPE_DAB_ETI || \
-   (mm)->mm_type == MM_TYPE_DAB_TSNI)
+  ((mm)->mm_type == MM_TYPE_T2MI || (mm)->mm_type == MM_TYPE_DAB_MPE || \
+   (mm)->mm_type == MM_TYPE_DAB_ETI || (mm)->mm_type == MM_TYPE_DAB_TSNI)
 #define mpegts_mux_in_bbframes(mm) \
   ((mm)->mm_type == MM_TYPE_ISI || (mm)->mm_type == MM_TYPE_GSE || \
    (mm)->mm_type == MM_TYPE_DAB_GSE)
