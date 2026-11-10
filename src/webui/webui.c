@@ -33,6 +33,7 @@
 #include "imagecache.h"
 #include "lang_codes.h"
 #include "intlconv.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #if ENABLE_MPEGTS
 #include "input.h"
 #endif
@@ -1248,6 +1249,21 @@ page_http_playlist_auth
   return page_http_playlist_(hc, remain, opaque, URLAUTH_CODE);
 }
 
+/*
+ * Instant zapping: a stream may start with a burst from the ring buffer
+ * (the backlog of a warm mux) - the queue takes it instead of dropping data
+ * silently
+ */
+static inline size_t
+http_stream_qsize(size_t qsize)
+{
+#if ENABLE_DVBBUFFER
+  if (dvbbuffer_mux_count() > 0 && qsize < 6000000)
+    qsize = 6000000;
+#endif
+  return qsize;
+}
+
 /**
  * Subscribes to a service and starts the streaming loop
  */
@@ -1290,7 +1306,7 @@ http_stream_service(http_connection_t *hc, service_t *service, int weight)
   if ((str = http_arg_get(&hc->hc_req_args, "qsize")))
     qsize = atoll(str);
   else
-    qsize = 1500000;
+    qsize = http_stream_qsize(1500000);
 
   hints = muxer_hints_create(http_arg_get(&hc->hc_args, "User-Agent"));
 
@@ -1399,7 +1415,7 @@ udp_stream_service(http_connection_t *hc, service_t *service, int weight)
   if ((str = http_arg_get(&hc->hc_req_args, "qsize")))
     qsize = atoll(str);
   else
-    qsize = 1500000;
+    qsize = http_stream_qsize(1500000);
 
   hints = muxer_hints_create(http_arg_get(&hc->hc_args, "User-Agent"));
 
@@ -1547,7 +1563,7 @@ http_stream_channel(http_connection_t *hc, channel_t *ch, int weight)
   if ((str = http_arg_get(&hc->hc_req_args, "qsize")))
     qsize = atoll(str);
   else
-    qsize = 1500000;
+    qsize = http_stream_qsize(1500000);
 
   hints = muxer_hints_create(http_arg_get(&hc->hc_args, "User-Agent"));
 
@@ -1646,7 +1662,7 @@ udp_stream_channel(http_connection_t *hc, channel_t *ch, int weight)
   if ((str = http_arg_get(&hc->hc_req_args, "qsize")))
     qsize = atoll(str);
   else
-    qsize = 1500000;
+    qsize = http_stream_qsize(1500000);
 
  hints = muxer_hints_create(http_arg_get(&hc->hc_args, "User-Agent"));
 

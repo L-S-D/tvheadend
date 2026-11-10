@@ -168,6 +168,10 @@ typedef struct mpegts_pid_sub
 #define MPS_TABLES       0x40
 #define MPS_NOPOSTDEMUX  0x80
   int   mps_type;
+#if ENABLE_DVBBUFFER
+  int   mps_backlog;   /* opened on a mux with a ring buffer: gets the ring
+                          content first, no live data before (mi_output_lock) */
+#endif
 #define MPS_WEIGHT_PAT       1000
 #define MPS_WEIGHT_CAT        999
 #define MPS_WEIGHT_SDT        999
@@ -255,6 +259,9 @@ struct mpegts_table
 
   uint8_t mt_subscribed;
   uint8_t mt_defer_cmd;
+  int     mt_backlog;      /* opened on a mux with a ring buffer: the ring
+                              content pass it waits for / got (mm_backlog_gen),
+                              0 = none */
 
 #define MT_DEFER_OPEN_PID  1
 #define MT_DEFER_CLOSE_PID 2
@@ -290,6 +297,7 @@ struct mpegts_table_feed {
   TAILQ_ENTRY(mpegts_table_feed) mtf_link;
   uint8_t mtf_cc_restart;
   int mtf_len;
+  int mtf_backlog;    /* mpegts_input_table_dispatch(): the tables it goes to */
   mpegts_mux_t *mtf_mux;
   uint8_t mtf_tsb[0];
 };
@@ -513,6 +521,19 @@ struct mpegts_mux
    */
 
   uint64_t                    mm_input_pos;
+#if ENABLE_DVBBUFFER
+  /* Instant zapping: ring buffer of this mux, set/cleared
+   * under mi_output_lock; prebuffer = keep this mux warm (persisted) */
+  struct dvbbuffer_mux       *mm_dvbbuffer;
+  int                         mm_prebuffer;
+  int                         mm_backlog_pending; /* PID subscriptions wait
+                                                     for the ring content */
+  int                         mm_backlog_gen;     /* number of that pass */
+  int                         mm_backlog_off;     /* > 0: new subscriptions
+                                                     join live (global_lock) */
+  char                       *mm_ecm_prefetch;    /* ECM PIDs kept in the
+                                                     CA cache (persisted) */
+#endif
   RB_HEAD(, mpegts_pid)       mm_pids;
   LIST_HEAD(, mpegts_pid_sub) mm_all_subs;
   int                         mm_last_pid;
@@ -591,6 +612,9 @@ struct mpegts_service
 
   int      s_dvb_subscription_flags;
   int      s_dvb_subscription_weight;
+#if ENABLE_DVBBUFFER
+  int      s_dvbbuffer_used;    /* counted as mux use for the LRU (global_lock) */
+#endif
 
   mpegts_apids_t             *s_pids;
   idnode_set_t                s_masters;
@@ -1094,7 +1118,7 @@ void tsdebug_encode_keys
   ( uint8_t *dst, uint16_t sid, uint16_t pid,
     uint8_t keytype, uint8_t keylen, uint8_t *even, uint8_t *odd );
 
-void tsdebug_check_tspkt( mpegts_mux_t *mm, uint8_t *pkt, int len );
+void tsdebug_check_tspkt( mpegts_mux_t *mm, const uint8_t *pkt, int len );
 
 void mpegts_table_dispatch(const uint8_t *sec, size_t r, void *mt);
 static inline void mpegts_table_grab(mpegts_table_t *mt)

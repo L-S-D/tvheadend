@@ -62,6 +62,7 @@
 #include "idnode.h"
 #include "imagecache.h"
 #include "timeshift.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #include "fsmonitor.h"
 #include "lang_codes.h"
 #include "esfilter.h"
@@ -170,6 +171,9 @@ const tvh_caps_t tvheadend_capabilities[] = {
   { "timeshift", (uint32_t *)&timeshift_conf.enabled },
 #endif
   { "subtitleinfo", NULL }, /* HTSP: subtitle page and type of the streams */
+#if ENABLE_DVBBUFFER
+  { "dvbbuffer", &dvbbuffer_running },
+#endif
 #if ENABLE_TRACE
   { "trace",     NULL },
 #endif
@@ -1333,6 +1337,7 @@ main(int argc, char **argv)
 #if ENABLE_TIMESHIFT
   tvhftrace(LS_MAIN, timeshift_init);
 #endif
+  tvhftrace(LS_MAIN, dvbbuffer_init);
   tvhftrace(LS_MAIN, tcp_server_init);
   tvhftrace(LS_MAIN, webui_init, opt_xspf);
 #if ENABLE_UPNP
@@ -1417,6 +1422,7 @@ main(int argc, char **argv)
   tvh_mutex_unlock(&global_lock);
 
   tvhftrace(LS_MAIN, epggrab_done);
+  tvhftrace(LS_MAIN, dvbbuffer_done);
 #if ENABLE_MPEGTS
   tvhftrace(LS_MAIN, mpegts_done);
 #endif

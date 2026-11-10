@@ -153,12 +153,14 @@ dvr_rec_subscribe(dvr_entry_t *de)
   pro = de->de_config->dvr_profile;
   prch = malloc(sizeof(*prch));
   profile_chain_init(prch, pro, de->de_channel, 1);
+  prch->prch_dvbbuffer_full = 1;   /* instant zapping: the whole backlog */
   if (profile_chain_open(prch, &de->de_config->dvr_muxcnf, NULL, 0, 0)) {
     profile_chain_close(prch);
     tvherror(LS_DVR, "unable to create new channel streaming chain '%s' for '%s', using default",
              profile_get_name(pro), channel_get_name(de->de_channel, channel_blank_name));
     pro = profile_find_by_name(NULL, NULL);
     profile_chain_init(prch, pro, de->de_channel, 1);
+    prch->prch_dvbbuffer_full = 1;
     if (profile_chain_open(prch, &de->de_config->dvr_muxcnf, NULL, 0, 0)) {
       tvherror(LS_DVR, "unable to create channel streaming default chain '%s' for '%s'",
                profile_get_name(pro), channel_get_name(de->de_channel, channel_blank_name));

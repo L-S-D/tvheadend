@@ -5,3 +5,4 @@ Contents                                          | Description
 [Stream Profiles](class/profile)                  | Stream profile types and profile settings
 [Codec Profiles](class/codec_profile)             | Codec profiles and settings (for use with stream profiles)
 [Stream Filters](class/esfilter_video)            | Elementary stream filtering 
+[Instant Zapping](class/dvbbuffer)                | Warm muxes with a ring buffer
