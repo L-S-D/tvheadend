@@ -22,6 +22,7 @@
 #include "streaming.h"
 #include "access.h"
 #include "plumbing/tsfix.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #include "plumbing/globalheaders.h"
 #if ENABLE_LIBAV
 #include "lang_codes.h"
@@ -33,6 +34,10 @@
 #include "input/mpegts/iptv/iptv_private.h"
 #endif
 #include "dvr/dvr.h"
+
+/* instant zapping: start live - not for recordings, they keep the backlog */
+#define PRCH_DVBBUFFER_LIVE(prch) \
+  ((prch)->prch_pro->pro_dvbbuffer_live && !(prch)->prch_dvbbuffer_full)
 
 extern const idclass_t profile_htsp_class;
 
@@ -101,6 +106,7 @@ profile_create
   LIST_INIT(&pro->pro_accesses);
   pro->pro_swservice = 1;
   pro->pro_contaccess = 1;
+  pro->pro_dvbbuffer_live = 1;
   pro->pro_ca_timeout = 2000;
   if (idnode_insert(&pro->pro_id, uuid, pb->clazz, 0)) {
     if (uuid)
@@ -451,6 +457,24 @@ const idclass_t profile_class =
       .def.i    = PROFILE_SVF_NONE,
       .group    = 1
     },
+#if ENABLE_DVBBUFFER
+    {
+      .type     = PT_BOOL,
+      .id       = "dvbbuffer_live",
+      .name     = N_("Instant zapping: start live"),
+      .desc     = N_("A service started on a warm mux delivers its ring "
+                     "buffer backlog at once. Enabled, the client gets the "
+                     "stream from the newest keyframe (see the instant "
+                     "zapping configuration, \"Live start behind live\") "
+                     "with the audio starting there; teletext comes whole. "
+                     "Disabled, the whole backlog is passed. Recordings "
+                     "always get the whole backlog."),
+      .off      = offsetof(profile_t, pro_dvbbuffer_live),
+      .opts     = PO_ADVANCED,
+      .def.i    = 1,
+      .group    = 1
+    },
+#endif
     { }
   }
 };
@@ -987,6 +1011,8 @@ profile_sharer_destroy(profile_chain_t *prch)
     }
     if (prsh->prsh_tsfix)
       tsfix_destroy(prsh->prsh_tsfix);
+    if (prsh->prsh_start != prsh->prsh_tsfix)
+      dvbbuffer_start_destroy(prsh->prsh_start);
 #if ENABLE_LIBAV
     if (prsh->prsh_transcoder)
       transcoder_destroy(prsh->prsh_transcoder);
@@ -1169,6 +1195,9 @@ profile_chain_close(profile_chain_t *prch)
   }
   if (prch->prch_tsfix) {
     tsfix_destroy(prch->prch_tsfix);
+    if (prch->prch_start != prch->prch_tsfix)
+      dvbbuffer_start_destroy(prch->prch_start);
+    prch->prch_start = NULL;
     prch->prch_tsfix = NULL;
   }
   if (prch->prch_muxer) {
@@ -1221,9 +1250,12 @@ profile_htsp_work(profile_chain_t *prch,
   if (!prsh)
     goto fail;
 
-  if (!prsh->prsh_tsfix)
+  if (!prsh->prsh_tsfix) {
     prsh->prsh_tsfix = tsfix_create(&prsh->prsh_input);
-  prch->prch_share = prsh->prsh_tsfix;
+    prsh->prsh_start = dvbbuffer_start_create(prsh->prsh_tsfix,
+                                              PRCH_DVBBUFFER_LIVE(prch));
+  }
+  prch->prch_share = prsh->prsh_start;
 
 #if ENABLE_TIMESHIFT
   if (timeshift_period > 0)
@@ -1893,6 +1925,7 @@ profile_matroska_open(profile_chain_t *prch,
 
   dst = prch->prch_gh    = globalheaders_create(&prch->prch_sq.sq_st);
   dst = prch->prch_tsfix = tsfix_create(dst);
+  dst = prch->prch_start = dvbbuffer_start_create(dst, PRCH_DVBBUFFER_LIVE(prch));
   prch->prch_st    = dst;
 
   return profile_matroska_reopen(prch, m_cfg, hints, flags);
@@ -2709,8 +2742,10 @@ profile_transcode_work(profile_chain_t *prch,
     if (!dst)
       goto fail;
     prsh->prsh_tsfix = tsfix_create(dst);
+    prsh->prsh_start = dvbbuffer_start_create(prsh->prsh_tsfix,
+                                              PRCH_DVBBUFFER_LIVE(prch));
   }
-  prch->prch_share = prsh->prsh_tsfix;
+  prch->prch_share = prsh->prsh_start;
   streaming_target_init(&prch->prch_input,
                         prsh->prsh_do_queue ?
                           &profile_input_queue_ops : &profile_input_ops, prch,

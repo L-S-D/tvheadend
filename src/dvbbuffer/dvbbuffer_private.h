@@ -31,6 +31,7 @@ typedef struct dvbbuffer_conf {
   uint32_t warm_max;          /* max. number of warm muxes */
   uint32_t lru_max;           /* recently used muxes kept warm too */
   uint32_t lru_weight;        /* ... with this subscription weight */
+  uint32_t start_lag_ms;      /* live start: at least this far behind live */
 } dvbbuffer_conf_t;
 
 extern dvbbuffer_conf_t dvbbuffer_conf;
