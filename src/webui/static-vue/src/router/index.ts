@@ -288,6 +288,19 @@ const codecProfilesGuard: RouteGuard = () => {
   return { name: 'config-stream-profiles' }
 }
 
+/* Config / Stream / Instant Zapping: gated on the `dvbbuffer`
+ * capability (instant zapping compiled in, `--disable-dvbbuffer`
+ * leaves it out). Mirrors legacy ExtJS `static/app/tvheadend.js`
+ * where the tab is only mounted when `tvheadend.capabilities.
+ * indexOf('dvbbuffer') !== -1`. The L3 tab strip in
+ * ConfigStreamLayout also hides the tab; this guard catches
+ * direct-URL access. Same shape as `codecProfilesGuard`. */
+const configStreamInstantZapGuard: RouteGuard = () => {
+  const capabilities = useCapabilitiesStore()
+  if (capabilities.has('dvbbuffer')) return true
+  return { name: 'config-stream-profiles' }
+}
+
 /* Config / Recording / Timeshift: gated on the `timeshift`
  * capability (matches `static/app/tvheadend.js:1170` where the
  * Timeshift tab is only mounted when `tvheadend.capabilities.
@@ -572,6 +585,7 @@ const routes: RouteRecordRaw[] = [
           leaf('subtit', 'config-stream-subtit', () => import('@/views/configuration/EsfilterSubtitView.vue'), 'Subtitle Stream Filters', 'admin', configStreamFiltersGuard),
           leaf('ca', 'config-stream-ca', () => import('@/views/configuration/EsfilterCaView.vue'), 'CA Stream Filters', 'admin', configStreamFiltersGuard),
           leaf('other', 'config-stream-other', () => import('@/views/configuration/EsfilterOtherView.vue'), 'Other Stream Filters', 'admin', configStreamFiltersGuard),
+          leaf('instant-zap', 'config-stream-instant-zap', () => import('@/views/configuration/ConfigStreamInstantZapView.vue'), 'Instant Zapping', 'admin', configStreamInstantZapGuard),
         ],
       },
       {

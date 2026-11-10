@@ -5,7 +5,7 @@
 <script setup lang="ts">
 /*
  * ConfigStreamLayout — L3 navigation scaffold inside Configuration
- * → Stream. Hosts the seven sub-tabs in Classic-UI order per
+ * → Stream. Hosts the nine sub-tabs in Classic-UI order per
  * `static/app/tvheadend.js:1156` + `static/app/esfilter.js:5-18`:
  *
  *   1. Stream Profiles    — always visible to admins
@@ -16,6 +16,7 @@
  *   6. Subtitle Stream Filters — `uilevel === 'expert'`
  *   7. CA Stream Filters       — `uilevel === 'expert'`
  *   8. Other Stream Filters    — `uilevel === 'expert'`
+ *   9. Instant Zapping         — `dvbbuffer` capability
  *
  * Same shape as ConfigChannelEpgLayout: PageTabs row above a
  * router-view. The six esfilter entries are filtered client-side
@@ -44,7 +45,8 @@ interface L3Tab {
    * Filters tab panel). */
   requiredLevel?: UiLevel
   /* Hidden unless the server reports this capability — the Codec
-   * Profiles tab needs `libav` (transcoding compiled in). */
+   * Profiles tab needs `libav` (transcoding compiled in), Instant
+   * Zapping `dvbbuffer`. */
   requiredCapability?: string
 }
 
@@ -84,6 +86,11 @@ const ALL_TABS: L3Tab[] = [
     to: '/configuration/stream/other',
     label: t('Other Stream Filters'),
     requiredLevel: 'expert',
+  },
+  {
+    to: '/configuration/stream/instant-zap',
+    label: t('Instant Zapping'),
+    requiredCapability: 'dvbbuffer',
   },
 ]
 

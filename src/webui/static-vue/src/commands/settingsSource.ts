@@ -3,10 +3,10 @@
 
 /*
  * settingsSource — dynamic command palette source for singleton
- * config fields. Indexes every editable property on the six
+ * config fields. Indexes every editable property on the seven
  * Configuration → … pages whose body is a single idnode editor
- * (Base, Image cache, SAT>IP Server, Timeshift, Debugging, EPG
- * Grabber). Per-entity dataset fields (channel name, mux
+ * (Base, Image cache, SAT>IP Server, Instant Zapping, Timeshift,
+ * Debugging, EPG Grabber). Per-entity dataset fields (channel name, mux
  * frequency, recording title) are deliberately out of scope —
  * dataset lookup is already covered by the Channels / Recordings /
  * Autorecs sources and would otherwise explode the result count
@@ -15,7 +15,7 @@
  * same reason — they're singletons per-instance but rendered as a
  * list-of-instances UX.
  *
- * Permission gate: all six singletons are admin-only at the route
+ * Permission gate: all seven singletons are admin-only at the route
  * level. We short-circuit at the source so non-admins pay zero
  * network cost.
  *
@@ -59,6 +59,7 @@ const PAGES: readonly PageDef[] = [
   { route: 'config-general-base', loadEndpoint: 'config/load', pageTitle: 'General — Base' },
   { route: 'config-general-image-cache', loadEndpoint: 'imagecache/config/load', pageTitle: 'General — Image cache' },
   { route: 'config-general-satip-server', loadEndpoint: 'satips/config/load', pageTitle: 'General — SAT>IP Server' },
+  { route: 'config-stream-instant-zap', loadEndpoint: 'dvbbuffer/config/load', pageTitle: 'Stream — Instant Zapping' },
   { route: 'config-recording-timeshift', loadEndpoint: 'timeshift/config/load', pageTitle: 'Recording — Timeshift' },
   { route: 'config-debugging-config', loadEndpoint: 'tvhlog/config/load', pageTitle: 'Debugging' },
   { route: 'config-channel-epg-grabber', loadEndpoint: 'epggrab/config/load', pageTitle: 'Channel/EPG — EPG Grabber' },
@@ -128,7 +129,7 @@ async function fetchPage(
   } catch {
     /* Silent fail — one disabled module (e.g. satips on a build
      * without `--enable-satip_server`) shouldn't wipe results
-     * for the other five pages. Empty params array means this
+     * for the other six pages. Empty params array means this
      * page just contributes nothing to the source. */
     return { page, params: [], groupByNumber: new Map() }
   }
