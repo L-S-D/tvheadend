@@ -75,6 +75,9 @@ uint32_t dvbbuffer_backlog_packets(void);
    behind live, not the whole backlog; live = 0: everything passes */
 struct streaming_target *dvbbuffer_start_create(struct streaming_target *output, int live);
 void dvbbuffer_start_destroy(struct streaming_target *st);
+/* the same for raw TS chains (pass profiles), in front of the queue */
+struct streaming_target *dvbbuffer_ts_start_create(struct streaming_target *output, int live);
+void dvbbuffer_ts_start_destroy(struct streaming_target *st);
 
 #else
 
@@ -83,6 +86,9 @@ static inline void dvbbuffer_done(void) { }
 static inline struct streaming_target *
 dvbbuffer_start_create(struct streaming_target *output, int live) { return output; }
 static inline void dvbbuffer_start_destroy(struct streaming_target *st) { }
+static inline struct streaming_target *
+dvbbuffer_ts_start_create(struct streaming_target *output, int live) { return output; }
+static inline void dvbbuffer_ts_start_destroy(struct streaming_target *st) { }
 static inline uint32_t dvbbuffer_backlog_packets(void) { return 0; }
 
 #endif
