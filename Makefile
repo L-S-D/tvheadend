@@ -511,6 +511,7 @@ SRCS-DVBBUFFER = \
 	src/dvbbuffer/conf.c \
 	src/dvbbuffer/mux.c \
 	src/dvbbuffer/warm.c \
+	src/dvbbuffer/prefetch.c \
 	src/dvbbuffer/start.c \
 	src/dvbbuffer/tsstart.c \
 	src/dvbbuffer/ring.c

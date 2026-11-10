@@ -514,6 +514,8 @@ struct mpegts_mux
   int                         mm_backlog_gen;     /* number of that pass */
   int                         mm_backlog_off;     /* > 0: new subscriptions
                                                      join live (global_lock) */
+  char                       *mm_ecm_prefetch;    /* ECM PIDs kept in the
+                                                     CA cache (persisted) */
 #endif
   RB_HEAD(, mpegts_pid)       mm_pids;
   LIST_HEAD(, mpegts_pid_sub) mm_all_subs;

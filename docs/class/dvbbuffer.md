@@ -44,6 +44,10 @@ data, and plays within a fraction of a second.
   backlog; a recording that follows the EPG running state still drops its
   first 2 s when that state is not known by then.
 
+* **ECM prefetch**: for the ECM PIDs listed at a warm mux (*ECM prefetch
+  PIDs*) every new ECM goes to a camd35 (UDP) server, and the answer is not
+  used: the keys of these services are in the server's cache when they start.
+
 ---
 
 ## Notes

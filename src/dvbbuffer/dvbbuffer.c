@@ -21,6 +21,7 @@ dvbbuffer_init(void)
   memoryinfo_register(&dvbbuffer_memoryinfo);
 
   dvbbuffer_conf_init();
+  dvbbuffer_prefetch_init();
   dvbbuffer_mux_init();
   dvbbuffer_warm_init();
 }
@@ -36,6 +37,7 @@ dvbbuffer_done(void)
   tvh_mutex_lock(&global_lock);
   dvbbuffer_warm_done();
   dvbbuffer_mux_done();
+  dvbbuffer_prefetch_done();
   dvbbuffer_running = 0;
   memoryinfo_unregister(&dvbbuffer_memoryinfo);
   tvh_mutex_unlock(&global_lock);
