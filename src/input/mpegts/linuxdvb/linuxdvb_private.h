@@ -166,7 +166,9 @@ struct linuxdvb_frontend
   int                       lfe_neumo_supported;    /* 1 if driver supports Neumo extensions */
   uint8_t                   lfe_num_rf_inputs;      /* Number of RF inputs available */
   int8_t                    lfe_default_rf_input;   /* Default RF input */
+  int                       lfe_supports_bbframes;  /* outputs the BBFrames of all input streams */
   int64_t                   lfe_card_id;            /* card_mac_address: the same for the demods of a card */
+  int                       lfe_bbframes;           /* tuned so: the PID filters read them */
 
   /*
    * Virtual frontend RF input binding (for multi-RF-input adapters)

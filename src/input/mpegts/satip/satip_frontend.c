@@ -743,6 +743,10 @@ satip_frontend_is_enabled
     return MI_IS_ENABLED_NEVER;
   if (mm == NULL)
     return MI_IS_ENABLED_OK;
+  /* a multistream transponder as a whole: a SAT>IP server delivers the TS
+   * of one input stream, the streams are tuned themselves (MM_TYPE_ISI) */
+  if (idnode_is_instance(&mm->mm_id, &dvb_mux_class) && ((dvb_mux_t *)mm)->lm_multistream)
+    return MI_IS_ENABLED_NEVER;
   if (lfe->sf_type != DVB_TYPE_S)
     return MI_IS_ENABLED_OK;
   /* delivery system specific check */
