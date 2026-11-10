@@ -72,6 +72,8 @@ typedef struct dvb_mux
 /* the PID the Neumo driver embeds the BBFrames of all input streams in */
 #define DVB_BBFRAMES_PID 0x10e
 
+extern const idclass_t dvb_mux_class;
+
 /*
  * Network
  */
