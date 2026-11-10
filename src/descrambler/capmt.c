@@ -2303,8 +2303,13 @@ capmt_caid_change(th_descrambler_t *td)
   tvh_mutex_unlock(&t->s_stream_mutex);
   tvh_mutex_unlock(&capmt->capmt_mutex);
 
-  if (change)
+  if (change) {
+    /* OSCam stopped descrambling and gets a new CA PMT: the ECM it was
+     * working on is gone - the current one has to go out again, also if
+     * it did not change (as cc_flush_services() does for cclient) */
+    descrambler_flush_table_data((service_t *)t);
     capmt_notify_server(capmt, ct, 1);
+  }
 }
 
 static void

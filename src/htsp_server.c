@@ -45,6 +45,7 @@
 
 #include "settings.h"
 #include "epggrab.h"  //Needed to be able to test for epggrab_conf.epgdb_processparentallabels
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 /* **************************************************************************
  * Datatypes and variables
@@ -202,6 +203,9 @@ typedef struct htsp_subscription {
   int64_t hs_rate;
   int64_t hs_rate_at;       /* start of the current measuring second */
   int64_t hs_rate_bytes;    /* payload since then */
+#if ENABLE_DVBBUFFER
+  int64_t hs_start_burst;   /* mclk() until which the start burst may queue */
+#endif
 
 #define NUM_FILTERED_STREAMS (64*8)
 
@@ -4221,6 +4225,11 @@ htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
   depth = hs->hs_queue_depth;
   if (hs->hs_rate * 3 / 2 > depth)
     depth = hs->hs_rate * 3 / 2;
+#if ENABLE_DVBBUFFER
+  /* instant zapping: room for the start burst from the ring buffer */
+  if (hs->hs_start_burst && mclk() < hs->hs_start_burst)
+    depth *= 8;
+#endif
 
   if(video &&
      ((qlen > depth     && pkt->v.pkt_frametype == PKT_B_FRAME) ||
@@ -4336,6 +4345,11 @@ htsp_subscription_start(htsp_subscription_t *hs, const streaming_start_t *ss)
   const source_info_t *si;
 
   tvhdebug(LS_HTSP, "%s - subscription start", hs->hs_htsp->htsp_logname);
+#if ENABLE_DVBBUFFER
+  /* instant zapping: the stream starts with a burst from the ring buffer -
+   * not a slow client, the queue protection below gets room for it */
+  hs->hs_start_burst = ss->ss_dvbbuffer ? mclk() + sec2mono(2) : 0;
+#endif
 
   for(i = 0; i < ss->ss_num_components; i++) {
     const streaming_start_component_t *ssc = &ss->ss_components[i];

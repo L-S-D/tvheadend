@@ -28,6 +28,7 @@
 #include "dvb_charset.h"
 #include "epggrab.h"
 #include "config.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 #include <assert.h>
 
@@ -484,6 +485,9 @@ mpegts_mux_class_enabled_notify ( void *p, const char *lang )
       mm->mm_scan_result = MM_SCAN_IGNORE;
     }
   }
+#if ENABLE_DVBBUFFER
+  dvbbuffer_mux_enabled_notify();
+#endif
 }
 
 static htsmsg_t *
@@ -714,6 +718,30 @@ const idclass_t mpegts_mux_class =
       .off      = offsetof(mpegts_mux_t, mm_sid_filter),
       .opts     = PO_HIDDEN | PO_EXPERT
     },
+#if ENABLE_DVBBUFFER
+    {
+      .type     = PT_BOOL,
+      .id       = "prebuffer",
+      .name     = N_("Prebuffer (instant zapping)"),
+      .desc     = N_("Keep this mux tuned with a low weight and hold the "
+                     "last seconds of the whole transport stream in RAM."),
+      .off      = offsetof(mpegts_mux_t, mm_prebuffer),
+      .notify   = dvbbuffer_mux_prebuffer_notify,
+      .opts     = PO_ADVANCED
+    },
+    {
+      .type     = PT_STR,
+      .id       = "ecm_prefetch",
+      .name     = N_("ECM prefetch PIDs"),
+      .desc     = N_("ECM PIDs of a prebuffer mux whose ECMs are sent to "
+                     "OSCam (camd35) as they change, so that their keys are "
+                     "in its cache when a service starts. Comma separated, "
+                     "0x for hexadecimal."),
+      .off      = offsetof(mpegts_mux_t, mm_ecm_prefetch),
+      .notify   = dvbbuffer_mux_prefetch_notify,
+      .opts     = PO_ADVANCED
+    },
+#endif
     {
       .type     = PT_TIME,
       .id       = "created",
@@ -785,6 +813,9 @@ mpegts_mux_free ( mpegts_mux_t *mm )
   free(mm->mm_provider_network_name);
   free(mm->mm_crid_authority);
   free(mm->mm_charset);
+#if ENABLE_DVBBUFFER
+  free(mm->mm_ecm_prefetch);
+#endif
   free(mm->mm_epg_module_id);
   free(mm->mm_nicename);
   free(mm);
@@ -796,6 +827,9 @@ mpegts_mux_delete ( mpegts_mux_t *mm, int delconf )
   idnode_save_check(&mm->mm_id, delconf);
 
   tvhinfo(LS_MPEGTS, "%s (%p) - deleting", mm->mm_nicename, mm);
+
+  /* Tell the listeners while the mux is still complete */
+  mpegts_fire_event(mm, ml_mux_delete);
 
   /* Stop */
   mm->mm_stop(mm, 1, SM_CODE_ABORTED);
