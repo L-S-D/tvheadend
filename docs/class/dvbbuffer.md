@@ -39,9 +39,8 @@ data, and plays within a fraction of a second.
 * **Live start**: a client should not play from the start of the backlog,
   seconds behind live. Profiles with *Instant zapping: start live* (Stream
   Profiles) pass the stream on from the newest keyframe at least *Live start
-  behind live* behind live; audio starts there too, teletext comes whole
-  (HTSP, Matroska and transcoding profiles). Recordings always get the
-  whole backlog.
+  behind live* behind live; audio starts there too, teletext comes whole.
+  Recordings always get the whole backlog.
 
 ---
 

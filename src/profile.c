@@ -466,9 +466,10 @@ const idclass_t profile_class =
                      "buffer backlog at once. Enabled, the client gets the "
                      "stream from the newest keyframe (see the instant "
                      "zapping configuration, \"Live start behind live\") "
-                     "with the audio starting there; teletext comes whole. "
-                     "Disabled, the whole backlog is passed. Recordings "
-                     "always get the whole backlog."),
+                     "with the audio starting there; teletext comes whole "
+                     "(MPEG-TS pass profiles: PAT/PMT first). Disabled, "
+                     "the whole backlog is passed. Recordings always get "
+                     "the whole backlog."),
       .off      = offsetof(profile_t, pro_dvbbuffer_live),
       .opts     = PO_ADVANCED,
       .def.i    = 1,
@@ -1200,6 +1201,11 @@ profile_chain_close(profile_chain_t *prch)
     prch->prch_start = NULL;
     prch->prch_tsfix = NULL;
   }
+  if (prch->prch_tsstart) {
+    if (prch->prch_tsstart != &prch->prch_sq.sq_st)
+      dvbbuffer_ts_start_destroy(prch->prch_tsstart);
+    prch->prch_tsstart = NULL;
+  }
   if (prch->prch_muxer) {
     muxer_destroy(prch->prch_muxer);
     prch->prch_muxer = NULL;
@@ -1511,7 +1517,8 @@ profile_mpegts_pass_open(profile_chain_t *prch,
   prch->prch_sq.sq_st.st_reject_filter = SMT_PACKET;
   prch->prch_sq.sq_maxsize = qsize;
 
-  prch->prch_st    = &prch->prch_sq.sq_st;
+  prch->prch_st    = prch->prch_tsstart =
+    dvbbuffer_ts_start_create(&prch->prch_sq.sq_st, PRCH_DVBBUFFER_LIVE(prch));
 
   return profile_mpegts_pass_reopen(prch, m_cfg, hints, flags);
 }
