@@ -17,6 +17,7 @@
  */
 
 #include "input.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #include "tsdemux.h"
 #include "streaming.h"
 #include "access.h"
@@ -498,6 +499,30 @@ mpegts_input_close_pids
   }
 }
 
+#if ENABLE_DVBBUFFER
+/* a subscription that was added (a duplicate would start an empty pass)
+ * on a mux with a ring buffer waits for the ring content of the next pass;
+ * tables get it per table (the other tables of the PID stay live), the
+ * owner of a table subscription is the table, of a service one the service */
+static void
+mpegts_input_backlog_mark(mpegts_mux_t *mm, const mpegts_pid_sub_t *mps)
+{
+  if (!mps->mps_backlog)
+    return;
+  if (!mm->mm_backlog_pending) {
+    mm->mm_backlog_pending = 1;
+    mm->mm_backlog_gen = mm->mm_backlog_gen < INT_MAX ? mm->mm_backlog_gen + 1 : 1;
+  }
+  if (mps->mps_type & (MPS_TABLE | MPS_FTABLE))
+    ((mpegts_table_t *)mps->mps_owner)->mt_backlog = mm->mm_backlog_gen;
+  else if (mps->mps_type & MPS_SERVICE)
+    ((service_t *)mps->mps_owner)->s_dvbbuffer_backlog =
+      ((service_t *)mps->mps_owner)->s_dvbbuffer_start = 1;
+}
+#else
+#define mpegts_input_backlog_mark(mm, mps) ((void)0)
+#endif
+
 mpegts_pid_t *
 mpegts_input_open_pid
   ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight,
@@ -521,12 +546,24 @@ mpegts_input_open_pid
     mps->mps_type   = type;
     mps->mps_weight = weight;
     mps->mps_owner  = owner;
+#if ENABLE_DVBBUFFER
+    /* a mux with a ring buffer: the new subscription gets the ring content
+     * of its PID(s) first (mpegts_input_process()) - except a full mux one
+     * (SAT>IP pids=all, raw mux streams): nothing to find a start in, and
+     * the whole ring is more than its queue holds; and the new PIDs and PMT
+     * monitor of a running service (mm_backlog_off): it is live, the ring
+     * holds the PMT before the change */
+    if (pid != MPEGTS_FULLMUX_PID && !mm->mm_backlog_off &&
+        dvbbuffer_mux_backlog_ready(mm))
+      mps->mps_backlog = 1;
+#endif
     if (pid == MPEGTS_FULLMUX_PID || pid == MPEGTS_TABLES_PID) {
       mp->mp_type |= type;
       LIST_FOREACH(mps2, &mm->mm_all_subs, mps_svcraw_link)
         if (mps2->mps_owner == owner) break;
       if (mps2 == NULL) {
         LIST_INSERT_HEAD(&mm->mm_all_subs, mps, mps_svcraw_link);
+        mpegts_input_backlog_mark(mm, mps);
         tvhdebug(LS_MPEGTS, "%s - open PID %s subscription [%04x/%p]",
                  mm->mm_nicename, (type & MPS_TABLES) ? "tables" : "fullmux", type, owner);
         mm->mm_update_pids_flag = 1;
@@ -545,6 +582,7 @@ mpegts_input_open_pid
         LIST_INSERT_HEAD(&mp->mp_raw_subs, mps, mps_raw_link);
       if (type & MPS_SERVICE)
         LIST_INSERT_HEAD(&mp->mp_svc_subs, mps, mps_svcraw_link);
+      mpegts_input_backlog_mark(mm, mps);
       tvhdebug(LS_MPEGTS, "%s - open PID %04X (%d) [%d/%p]",
                mm->mm_nicename, mp->mp_pid, mp->mp_pid, type, owner);
       mm->mm_update_pids_flag = 1;
@@ -840,6 +878,11 @@ mpegts_input_open_service
   mpegts_apid_t *p;
   int i, reopen = !init;
 
+#if ENABLE_DVBBUFFER
+  if (!init)
+    mm->mm_backlog_off++;
+#endif
+
   /* Add to list */
   tvh_mutex_lock(&mi->mi_output_lock);
   if (!s->s_dvb_active_input) {
@@ -901,6 +944,11 @@ no_pids:
       mpegts_input_open_cat_monitor(mm, s);
   }
 
+#if ENABLE_DVBBUFFER
+  if (!init)
+    mm->mm_backlog_off--;
+#endif
+
   mpegts_mux_update_pids(mm);
 }
 
@@ -926,6 +974,9 @@ mpegts_input_close_service ( mpegts_input_t *mi, mpegts_service_t *s )
     LIST_REMOVE(((service_t*)s), s_active_link);
     s->s_dvb_active_input = NULL;
   }
+#if ENABLE_DVBBUFFER
+  ((service_t *)s)->s_dvbbuffer_backlog = ((service_t *)s)->s_dvbbuffer_start = 0;
+#endif
   /* Close PID */
   tvh_mutex_lock(&s->s_stream_mutex);
   if (s->s_type == STYPE_STD) {
@@ -1299,9 +1350,21 @@ end:
     sb->sb_ptr = 0;    // clear
 }
 
+/* the tables of the data: backlog 0 = live, all tables; > 0 = the ring
+ * content of that pass, only the tables waiting for it (mt_backlog); < 0 =
+ * live while pass -backlog is pending, all others */
+static inline int
+mpegts_input_table_takes(const mpegts_table_t *mt, int backlog)
+{
+  if (backlog > 0)
+    return mt->mt_backlog == backlog;
+  return backlog == 0 || mt->mt_backlog != -backlog;
+}
+
 static void
 mpegts_input_table_dispatch
-  ( mpegts_mux_t *mm, const char *logprefix, const uint8_t *tsb, int tsb_len, int fast )
+  ( mpegts_mux_t *mm, const char *logprefix, const uint8_t *tsb, int tsb_len,
+    int fast, int backlog )
 {
   int i, len = 0, c = 0;
   const uint8_t *tsb2, *tsb2_end;
@@ -1319,6 +1382,8 @@ mpegts_input_table_dispatch
     if (fast && (mt->mt_flags & MT_FAST) == 0)
       continue;
     if (!fast && (mt->mt_flags & MT_FAST) != 0)
+      continue;
+    if (!mpegts_input_table_takes(mt, backlog))
       continue;
     mpegts_table_grab(mt);
     tprofile_start(&mt->mt_profile, "dispatch");
@@ -1361,19 +1426,29 @@ mpegts_input_table_restart
 }
 
 static mpegts_table_feed_t *
-mpegts_input_table_feed_create ( mpegts_input_t *mi, mpegts_mux_t *mm, uint8_t *tsb, int llen )
+mpegts_input_table_feed_create ( mpegts_input_t *mi, mpegts_mux_t *mm, const uint8_t *tsb, int llen )
 {
   mpegts_table_feed_t *mtf;
 
   mtf = malloc(sizeof(mpegts_table_feed_t) + MAX(llen, MPEGTS_MTF_ALLOC_CHUNK));
   mtf->mtf_cc_restart = 0;
   mtf->mtf_len = llen;
+  mtf->mtf_backlog = 0;
   memcpy(mtf->mtf_tsb, tsb, llen);
   mtf->mtf_mux = mm;
   mi->mi_table_queue_size += llen;
   memoryinfo_alloc(&mpegts_input_table_memoryinfo, sizeof(mpegts_table_feed_t) + llen);
   TAILQ_INSERT_TAIL(&mi->mi_table_queue, mtf, mtf_link);
   return mtf;
+}
+
+/* the last queued table data, if more of the same tables may go to it */
+static inline mpegts_table_feed_t *
+mpegts_input_table_feed_last ( mpegts_input_t *mi, int backlog )
+{
+  mpegts_table_feed_t *mtf = TAILQ_LAST(&mi->mi_table_queue, mpegts_table_feed_queue);
+
+  return mtf && mtf->mtf_backlog == backlog ? mtf : NULL;
 }
 
 static void
@@ -1415,21 +1490,128 @@ mpegts_input_table_waiting ( mpegts_input_t *mi, mpegts_mux_t *mm )
   tvh_mutex_unlock(&mm->mm_tables_lock);
 }
 
+#if ENABLE_DVBBUFFER
+/* backlog pass: only the marked subscriptions; live: all but the marked
+ * ones (they get the ring content first) */
+static inline int
+mpegts_input_skip(const mpegts_pid_sub_t *mps, const uint8_t *backlog)
+{
+  return backlog ? !mps->mps_backlog : mps->mps_backlog;
+}
+
+/* a slow table subscription of this PID waits for the ring content */
+static int
+mpegts_input_tables_marked(mpegts_pid_t *mp)
+{
+  mpegts_pid_sub_t *mps;
+
+  RB_FOREACH(mps, &mp->mp_subs, mps_link)
+    if (mps->mps_backlog && (mps->mps_type & MPS_TABLE))
+      return 1;
+  return 0;
+}
+
+/* the table types of the PID that take this data: the ring content is
+ * queued for the slow tables only when one of them waits for it */
+static int
+mpegts_input_table_types(mpegts_pid_t *mp, int type, const uint8_t *backlog)
+{
+  if ((type & MPS_TABLE) && backlog && !mpegts_input_tables_marked(mp))
+    type &= ~MPS_TABLE;
+  return type;
+}
+
+/* the tables of the data (mpegts_input_table_takes()): the ring content to
+ * those waiting for it, live data while they wait to the others */
+static inline int
+mpegts_input_backlog_tables(const mpegts_mux_t *mm, const uint8_t *backlog)
+{
+  if (backlog)
+    return mm->mm_backlog_gen;
+  return mm->mm_backlog_pending ? -mm->mm_backlog_gen : 0;
+}
+
+/* ring content: bytes of this run of the PID before its first payload unit
+ * start (the PID starts there, it is marked), llen = none in it */
+static int
+mpegts_input_backlog_skip(uint8_t *backlog, int pid, const uint8_t *tsb, int llen)
+{
+  int off;
+
+  if (backlog[pid >> 3] & (1 << (pid & 7)))
+    return 0;
+  for (off = 0; off < llen && !(tsb[off + 1] & 0x40); off += 188)
+    ;
+  if (off < llen)
+    backlog[pid >> 3] |= 1 << (pid & 7);
+  return off;
+}
+#else
+static inline int
+mpegts_input_skip(const mpegts_pid_sub_t *mps, const uint8_t *backlog)
+{
+  return 0;
+}
+#endif
+
+/* raw data to a subscription (not the marked ones live, only them in the
+ * ring content pass) */
+static inline void
+mpegts_input_recv_raw(const mpegts_pid_sub_t *mps, const uint8_t *backlog,
+                      uint64_t tspos, const uint8_t *tsb, int llen)
+{
+  if (!mpegts_input_skip(mps, backlog))
+    ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+}
+
+/* data of a service: of its PID subscription (mps), or table data (PAT,
+ * SDT, ...) for its raw stream (mps == NULL) - ring content: only for the
+ * services just started, live: not for them before it */
+static void
+mpegts_input_recv_service(service_t *s, const mpegts_pid_sub_t *mps,
+                          const uint8_t *backlog, int type,
+                          uint64_t tspos, const uint8_t *tsb, int llen)
+{
+  uint16_t pid = ((tsb[1] & 0x1f) << 8) | tsb[2];
+  int f;
+
+  if (mps) {
+    if (mpegts_input_skip(mps, backlog))
+      return;
+  } else if (s->s_type != STYPE_STD) {
+    return;
+  }
+#if ENABLE_DVBBUFFER
+  if (mps == NULL && (backlog ? !s->s_dvbbuffer_backlog : s->s_dvbbuffer_backlog))
+    return;
+#endif
+  f = (type & (MPS_TABLE|MPS_FTABLE)) ||
+      (pid == s->s_components.set_pmt_pid) ||
+      (pid == s->s_components.set_pcr_pid);
+  ts_recv_packet1((mpegts_service_t*)s, tspos, pid, tsb, llen, f);
+}
+
+/*
+ * backlog != NULL: ring content for the marked subscriptions only (no CC
+ * check, statistics, raw mux stream or input position); a PID starts at
+ * its first payload unit start (no partial PES or section first), backlog
+ * is the bitmap of the PIDs started so far
+ */
 static int
 mpegts_input_process
-  ( mpegts_input_t *mi, mpegts_packet_t *mpkt )
+  ( mpegts_input_t *mi, mpegts_mux_t *mm,
+    const uint8_t *data, int len, int cc_restart, uint8_t *backlog )
 {
   uint16_t pid, pid2;
   uint8_t cc, cc2;
-  uint8_t *tsb = mpkt->mp_data, *tsb2, *tsb2_end;
-  int len = mpkt->mp_len, llen;
-  int type = 0, f;
+  const uint8_t *tsb = data, *tsb2, *tsb2_end;
+  int llen;
+  int type = 0, ft;
   mpegts_pid_t *mp;
   mpegts_pid_sub_t *mps;
   service_t *s;
   elementary_stream_t *st;
   int table_wakeup = 0;
-  mpegts_mux_t *mm = mpkt->mp_mux;
   mpegts_mux_instance_t *mmi;
   mpegts_table_feed_t *mtf;
   uint64_t tspos;
@@ -1439,7 +1621,7 @@ mpegts_input_process
 
   assert(mm == mmi->mmi_mux);
 
-  if (mpkt->mp_cc_restart) {
+  if (cc_restart) {
     LIST_FOREACH(s, &mm->mm_transports, s_active_link)
       TAILQ_FOREACH(st, &s->s_components.set_all, es_link)
         st->es_cc = -1;
@@ -1472,13 +1654,24 @@ mpegts_input_process
 
     pid = (tsb[1] << 8) | tsb[2];
 
-    /* Transport error */
-    if (pid & 0x8000) {
-      if ((pid & 0x1FFF) != 0x1FFF)
-        atomic_add(&mmi->tii_stats.te, 1);
-    }
+    /* Transport error (live data only) */
+    if ((pid & 0x8000) && (pid & 0x1FFF) != 0x1FFF && !backlog)
+      atomic_add(&mmi->tii_stats.te, 1);
 
     pid &= 0x1FFF;
+
+#if ENABLE_DVBBUFFER
+    /* ring content: each PID from its first payload unit start on */
+    if (backlog) {
+      int skip = mpegts_input_backlog_skip(backlog, pid, tsb, llen);
+      tsb += skip;
+      len -= skip;
+      tspos += skip;
+      llen -= skip;
+      if (llen == 0)
+        continue;
+    }
+#endif
 
     /* Ignore NULL packets */
     if (pid == 0x1FFF) {
@@ -1491,7 +1684,7 @@ mpegts_input_process
     if ((mp = mpegts_mux_find_pid(mm, pid, 0))) {
 
       /* Low level CC check */
-      if (tsb[3] & 0x10) {
+      if ((tsb[3] & 0x10) && !backlog) {
         for (tsb2 = tsb, tsb2_end = tsb + llen, cc2 = mp->mp_cc;
              tsb2 < tsb2_end; tsb2 += 188) {
           cc = tsb2[3] & 0x0f;
@@ -1509,40 +1702,40 @@ mpegts_input_process
       /* Stream all PIDs */
       LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link)
         if ((mps->mps_type & MPS_ALL) || (type & (MPS_TABLE|MPS_FTABLE)))
-          ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+          mpegts_input_recv_raw(mps, backlog, tspos, tsb, llen);
 
       /* Stream raw PIDs */
       if (type & MPS_RAW) {
         LIST_FOREACH(mps, &mp->mp_raw_subs, mps_raw_link)
-          ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+          mpegts_input_recv_raw(mps, backlog, tspos, tsb, llen);
       }
 
       /* Stream service data */
       if (type & MPS_SERVICE) {
         LIST_FOREACH(mps, &mp->mp_svc_subs, mps_svcraw_link) {
-          s = mps->mps_owner;
-          f = (type & (MPS_TABLE|MPS_FTABLE)) ||
-              (pid == s->s_components.set_pmt_pid) ||
-              (pid == s->s_components.set_pcr_pid);
-          ts_recv_packet1((mpegts_service_t*)s, tspos, pid, tsb, llen, f);
+          mpegts_input_recv_service(mps->mps_owner, mps, backlog, type, tspos, tsb, llen);
         }
       } else
-      /* Stream table data */
+      /* Stream table data (PAT, SDT, ... for the raw stream of the
+       * services) - ring content: only for the services just started */
       if (type & MPS_STREAM) {
         LIST_FOREACH(s, &mm->mm_transports, s_active_link) {
-          if (s->s_type != STYPE_STD) continue;
-          f = (type & (MPS_TABLE|MPS_FTABLE)) ||
-              (pid == s->s_components.set_pmt_pid) ||
-              (pid == s->s_components.set_pcr_pid);
-          ts_recv_packet1((mpegts_service_t*)s, tspos, pid, tsb, llen, f);
+          mpegts_input_recv_service(s, NULL, backlog, type, tspos, tsb, llen);
         }
       }
 
-      /* Table data */
+      /* Table data (with table subscriptions waiting for the ring content:
+       * the ring content to them only, the live data to the others) */
+#if ENABLE_DVBBUFFER
+      ft = mpegts_input_backlog_tables(mm, backlog);
+      type = mpegts_input_table_types(mp, type, backlog);
+#else
+      ft = 0;
+#endif
       if (type & (MPS_TABLE | MPS_FTABLE)) {
         if (!(tsb[1] & 0x80)) {
           if (type & MPS_FTABLE)
-            mpegts_input_table_dispatch(mm, mm->mm_nicename, tsb, llen, 1);
+            mpegts_input_table_dispatch(mm, mm->mm_nicename, tsb, llen, 1, ft);
           if (type & MPS_TABLE) {
             if (mi->mi_table_queue_size >= 2*1024*1024) {
               if (tvhlog_limit(&mi->mi_input_queue_loglimit, 10)) {
@@ -1551,7 +1744,7 @@ mpegts_input_process
                   mpegts_input_analyze_table_queue(mi);
               }
             } else {
-              mtf = TAILQ_LAST(&mi->mi_table_queue, mpegts_table_feed_queue);
+              mtf = mpegts_input_table_feed_last(mi, ft);
               if (mtf && mtf->mtf_mux == mm && mtf->mtf_len + llen <= MPEGTS_MTF_ALLOC_CHUNK) {
                 pid2 = (mtf->mtf_tsb[1] << 8) | mtf->mtf_tsb[2];
                 if (pid == pid2) {
@@ -1567,7 +1760,7 @@ mpegts_input_process
                 mtf = NULL;
               }
               if (mtf == NULL)
-                mpegts_input_table_feed_create(mi, mm, tsb, llen);
+                mpegts_input_table_feed_create(mi, mm, tsb, llen)->mtf_backlog = ft;
               table_wakeup = 1;
             }
           }
@@ -1580,7 +1773,7 @@ mpegts_input_process
 
       /* Stream to all fullmux subscribers */
       LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link)
-        ts_recv_raw((mpegts_service_t *)mps->mps_owner, tspos, tsb, llen);
+        mpegts_input_recv_raw(mps, backlog, tspos, tsb, llen);
 
     }
 
@@ -1590,12 +1783,18 @@ done:
     tspos += llen;
   }
 
+  if (backlog) {
+    if (table_wakeup)
+      tvh_cond_signal(&mi->mi_table_cond, 0);
+    return tsb - data;
+  }
+
   /* Raw stream */
-  if (tsb != mpkt->mp_data &&
+  if (tsb != data &&
       LIST_FIRST(&mmi->mmi_streaming_pad.sp_targets) != NULL) {
 
     streaming_message_t sm;
-    pktbuf_t *pb = pktbuf_alloc(mpkt->mp_data, tsb - mpkt->mp_data);
+    pktbuf_t *pb = pktbuf_alloc(data, tsb - data);
     memset(&sm, 0, sizeof(sm));
     sm.sm_type = SMT_MPEGTS;
     sm.sm_data = pb;
@@ -1608,10 +1807,183 @@ done:
     tvh_cond_signal(&mi->mi_table_cond, 0);
 
   /* Bandwidth monitoring */
-  llen = tsb - mpkt->mp_data;
+  llen = tsb - data;
   atomic_add(&mmi->tii_stats.bps, llen);
   mm->mm_input_pos += llen;
   return llen;
+}
+
+#if ENABLE_DVBBUFFER
+/* the marks go: the subscriptions are live from now on (also when the ring
+ * went before the backlog pass); the number of them - only the
+ * subscription is touched (while a mux stops, its tables are gone before
+ * their PID subscriptions) */
+static int
+mpegts_input_backlog_unmark(mpegts_pid_sub_t *mps)
+{
+  if (!mps->mps_backlog)
+    return 0;
+  mps->mps_backlog = 0;
+  return 1;
+}
+
+static int
+mpegts_input_backlog_done(mpegts_mux_t *mm)
+{
+  mpegts_pid_t *mp;
+  mpegts_pid_sub_t *mps;
+  service_t *s;
+  int subs = 0;
+
+  LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link)
+    subs += mpegts_input_backlog_unmark(mps);
+  RB_FOREACH(mp, &mm->mm_pids, mp_link)
+    RB_FOREACH(mps, &mp->mp_subs, mps_link)
+      subs += mpegts_input_backlog_unmark(mps);
+  LIST_FOREACH(s, &mm->mm_transports, s_active_link)
+    s->s_dvbbuffer_backlog = 0;
+  mm->mm_backlog_pending = 0;
+  return subs;
+}
+
+/* a subscription waits for the ring content (it may be gone again) */
+static int
+mpegts_input_backlog_waiting(mpegts_mux_t *mm)
+{
+  mpegts_pid_t *mp;
+  mpegts_pid_sub_t *mps;
+
+  LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link)
+    if (mps->mps_backlog)
+      return 1;
+  RB_FOREACH(mp, &mm->mm_pids, mp_link)
+    RB_FOREACH(mps, &mp->mp_subs, mps_link)
+      if (mps->mps_backlog)
+        return 1;
+  return 0;
+}
+
+/* the ECM PIDs of the service's PMT into capids; 1 = any */
+static int
+mpegts_input_service_capids(service_t *s, uint8_t *capids)
+{
+  elementary_stream_t *st;
+  int ca = 0;
+
+  tvh_mutex_lock(&s->s_stream_mutex);
+  TAILQ_FOREACH(st, &s->s_components.set_all, es_link)
+    if (st->es_type == SCT_CA && st->es_pid > 0 && st->es_pid < 8192) {
+      capids[st->es_pid >> 3] |= 1 << (st->es_pid & 7);
+      ca = 1;
+    }
+  tvh_mutex_unlock(&s->s_stream_mutex);
+  return ca;
+}
+
+/*
+ * The ECM PIDs of the scrambled services among the new subscriptions
+ * (bitmap capids, 0 = none): of the ECM PIDs in their PMT (the ECM filter
+ * of the CA client follows with the round trip to the CA server), or - when
+ * it is in this pass already - of the PIDs the CA client filters (the CA
+ * system in use)
+ */
+static int
+mpegts_input_backlog_capids(mpegts_mux_t *mm, uint8_t *capids)
+{
+  uint8_t filtered[8192 / 8];
+  mpegts_pid_t *mp;
+  mpegts_pid_sub_t *mps;
+  service_t *last = NULL;
+  size_t i;
+  int ca = 0, fca = 0;
+
+  memset(capids, 0, 8192 / 8);
+  memset(filtered, 0, sizeof(filtered));
+  RB_FOREACH(mp, &mm->mm_pids, mp_link)
+    RB_FOREACH(mps, &mp->mp_subs, mps_link) {
+      if (!mps->mps_backlog)
+        continue;
+      if ((mps->mps_type & MPS_FTABLE) && mp->mp_pid < 8192)
+        filtered[mp->mp_pid >> 3] |= 1 << (mp->mp_pid & 7);
+      if ((mps->mps_type & MPS_SERVICE) == 0 || mps->mps_owner == last)
+        continue;
+      last = mps->mps_owner;
+      ca |= mpegts_input_service_capids(last, capids);
+    }
+  for (i = 0; ca && i < sizeof(filtered); i++)
+    if (capids[i] & filtered[i])
+      fca = 1;
+  for (i = 0; fca && i < sizeof(filtered); i++)
+    capids[i] &= filtered[i];
+  return ca;
+}
+
+/*
+ * PID subscriptions opened since the last chunk (marked in
+ * mpegts_input_open_pid()) get the whole ring content in one pass, in
+ * stream order, through the same dispatch as live data; then the marks go
+ */
+static void
+mpegts_input_backlog(mpegts_input_t *mi, mpegts_mux_t *mm)
+{
+  dvbbuffer_span_t sp;
+  uint8_t started[8192 / 8], capids[8192 / 8];
+  const uint8_t *data;
+  int64_t t0 = getfastmonoclock();
+  uint64_t bytes = 0;
+  int len, subs, ca;
+
+  if (!mpegts_input_backlog_waiting(mm)) {
+    mpegts_input_backlog_done(mm);
+    return;
+  }
+  ca = mpegts_input_backlog_capids(mm, capids);
+  memset(started, 0, sizeof(started));
+  dvbbuffer_mux_backlog(mm, &sp, ca ? capids : NULL);
+  while ((len = dvbbuffer_mux_span(mm, &sp, &data)) > 0) {
+    bytes += len;
+    mpegts_input_process(mi, mm, data, len, 0, started);
+  }
+  subs = mpegts_input_backlog_done(mm);
+  tvhdebug(LS_DVBBUFFER, "%s: ring content to %d new PID subscription(s): %"PRIu64" kB "
+           "scanned in %"PRId64" ms", mm->mm_nicename, subs, bytes / 1024,
+           (getfastmonoclock() - t0) / 1000);
+}
+#endif
+
+static int
+mpegts_input_process_packet
+  ( mpegts_input_t *mi, mpegts_packet_t *mpkt )
+{
+  mpegts_mux_t *mm = mpkt->mp_mux;
+#if ENABLE_DVBBUFFER
+  dvbbuffer_span_t sp;
+  const uint8_t *data;
+  int len, bytes = 0, cc_restart = mpkt->mp_cc_restart;
+
+  /* new PID subscriptions: the ring content first (up to this chunk) */
+  if (mm && mm->mm_backlog_pending) {
+    if (mm->mm_active && mm->mm_dvbbuffer)
+      mpegts_input_backlog(mi, mm);
+    else
+      mpegts_input_backlog_done(mm);
+  }
+
+  /* a warm mux: the chunk goes into its ring buffer first, tvh processes
+   * it from there */
+  if (mm && mm->mm_active && dvbbuffer_mux_feed(mm, mpkt->mp_data, mpkt->mp_len,
+                                                cc_restart, &sp)) {
+    while ((len = dvbbuffer_mux_span(mm, &sp, &data)) > 0) {
+      bytes += mpegts_input_process(mi, mm, data, len, cc_restart, NULL);
+      cc_restart = 0;
+    }
+    if (cc_restart)
+      bytes += mpegts_input_process(mi, mm, mpkt->mp_data, 0, cc_restart, NULL);
+    return bytes;
+  }
+#endif
+  return mpegts_input_process(mi, mm, mpkt->mp_data, mpkt->mp_len,
+                              mpkt->mp_cc_restart, NULL);
 }
 
 /*
@@ -1741,7 +2113,7 @@ mpegts_input_thread ( void * p )
       tvh_mutex_lock(&mi->mi_output_lock);
     }
     tprofile_start(&tprofile, "input");
-    bytes += mpegts_input_process(mi, mp);
+    bytes += mpegts_input_process_packet(mi, mp);
     tprofile_finish(&tprofile);
     update_pids = mp->mp_mux && mp->mp_mux->mm_update_pids_flag;
     tvh_mutex_unlock(&mi->mi_output_lock);
@@ -1811,7 +2183,7 @@ mpegts_input_table_thread ( void *aux )
       if (mm && mm->mm_active) {
         if (mtf->mtf_cc_restart)
           mpegts_input_table_restart(mm, mm->mm_nicename, 0);
-        mpegts_input_table_dispatch(mm, mm->mm_nicename, mtf->mtf_tsb, mtf->mtf_len, 0);
+        mpegts_input_table_dispatch(mm, mm->mm_nicename, mtf->mtf_tsb, mtf->mtf_len, 0, mtf->mtf_backlog);
       }
     }
     tvh_mutex_unlock(&global_lock);

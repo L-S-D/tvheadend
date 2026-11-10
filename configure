@@ -36,6 +36,7 @@ OPTIONS=(
   "timeshift:yes"
   "trace:yes"
   "avahi:auto"
+  "dvbbuffer:yes"
   "zlib:auto"
   "libav:auto"
   "vue_build:auto"
@@ -874,6 +875,10 @@ then
 fi
 if enabled linuxdvb || enabled satip_client || enabled hdhomerun_client || enabled satip_server; then
   enable mpegts_dvb
+fi
+# instant zapping buffers DVB muxes
+if enabled dvbbuffer && ! enabled mpegts_dvb; then
+  disable dvbbuffer
 fi
 
 #
