@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Tvheadend contributors
 
 /*
- * DvbMuxesView — the column set the view hands to IdnodeGrid. The
- * grid loads the abstract `mpegts_mux` class, which has no caption
- * for the tuning fields of the mux subclasses, so the view has to
- * label them itself.
+ * DvbMuxesView — the list view of the Muxes tab (the flat grid of all
+ * muxes): the column set the view hands to IdnodeGrid, and the way
+ * back to the tree. The grid loads the abstract `mpegts_mux` class,
+ * which has no caption for the tuning fields of the mux subclasses,
+ * so the view has to label them itself.
  */
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -14,7 +15,8 @@ import { formatMuxFrequency } from '../muxFrequency'
 import type { BaseRow } from '@/types/grid'
 
 const stubs = await vi.hoisted(() => import('@/test/__helpers__/gridViewTestUtils'))
-vi.mock('@/components/IdnodeGrid.vue', () => stubs.idnodeGrid)
+vi.mock('@/components/IdnodeGrid.vue', () => stubs.idnodeGridWithToolbar)
+vi.mock('@/components/ActionMenu.vue', () => stubs.actionMenu)
 vi.mock('@/components/IdnodeEditor.vue', () => stubs.emptyComponent)
 vi.mock('@/components/IdnodePickEntityDialog.vue', () => stubs.emptyComponent)
 vi.mock('vue-router', () => stubs.vueRouter)
@@ -103,5 +105,15 @@ describe('DvbMuxesView Hide filter', () => {
     expect(hide.current).toBe('default')
     expect(hide.options[0]).toEqual({ value: 'default', label: 'Disabled networks' })
     expect(hide.inactiveValue).toBe('none')
+  })
+})
+
+describe('DvbMuxesView tree view', () => {
+  it('goes back to the tree of the Muxes tab', async () => {
+    mount(DvbMuxesView)
+    const action = stubs.toolbarAction('tree-view')
+    expect(action.label).toBe('Tree view')
+    await action.onClick?.()
+    expect(stubs.router.push).toHaveBeenCalledWith({ name: 'config-dvb-muxes' })
   })
 })

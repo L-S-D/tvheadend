@@ -4,7 +4,14 @@
 -->
 <script setup lang="ts">
 /*
- * Configuration → DVB Inputs → Muxes.
+ * Configuration → DVB Inputs → Muxes → List.
+ *
+ * The Muxes tab shows the muxes as a tree (DvbMuxTreeView.vue); this
+ * is the flat grid of all muxes next to it (route
+ * `config-dvb-mux-list`), with what the tree has not: sortable and
+ * filterable tuning columns, the Hide mode, the column picker, the
+ * phone layout and the `?editUuid=` deep link. The toolbar switches
+ * back to the tree.
  *
  * Mirrors the legacy ExtJS Muxes grid (`static/app/mpegts.js:93-138`,
  * `tvheadend.muxes`). Backed by the `mpegts_mux` parent class
@@ -32,6 +39,8 @@
  * already (see `DvbNetworksView.vue`).
  */
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ListTree } from 'lucide-vue-next'
 import IdnodeGrid from '@/components/IdnodeGrid.vue'
 import IdnodeEditor from '@/components/IdnodeEditor.vue'
 import IdnodePickEntityDialog from '@/components/IdnodePickEntityDialog.vue'
@@ -49,6 +58,7 @@ import { buildAddEditDeleteActions } from '../dvr/dvrToolbarHelpers'
 import { formatMuxFrequency } from './muxFrequency'
 
 const { t } = useI18n()
+const router = useRouter()
 
 /* "Hide" filter — three-option dropdown surfaced in the
  * GridSettingsMenu (above View level). Mirrors the legacy ExtJS
@@ -334,14 +344,26 @@ function onNetworkPicked(networkUuid: string) {
 }
 
 function buildActions(selection: BaseRow[], clearSelection: () => void): ActionDef[] {
-  return buildAddEditDeleteActions({
-    selection,
-    clearSelection,
-    remove,
-    onAdd: onAddClick,
-    onEdit: openEditor,
-    addTooltip: t('Add a new mux'),
-  })
+  return [
+    ...buildAddEditDeleteActions({
+      selection,
+      clearSelection,
+      remove,
+      onAdd: onAddClick,
+      onEdit: openEditor,
+      addTooltip: t('Add a new mux'),
+    }),
+    /* back to the tree of the Muxes tab */
+    {
+      id: 'tree-view',
+      label: t('Tree view'),
+      tooltip: t('Show the muxes as a tree: networks, transponders, sub-muxes and services'),
+      icon: ListTree,
+      onClick: () => {
+        router.push({ name: 'config-dvb-muxes' }).catch(() => {})
+      },
+    },
+  ]
 }
 </script>
 
