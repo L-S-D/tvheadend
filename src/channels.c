@@ -1532,6 +1532,8 @@ channel_tag_map(channel_tag_t *ct, channel_t *ch, void *origin)
     if(ct->ct_enabled && !ct->ct_internal) {
       htsp_tag_update(ct);
       htsp_channel_update(ch);
+    } else if (ct->ct_enabled) {
+      htsp_internal_tag_changed(ct, ch);
     }
     return 1;
   }
@@ -1555,6 +1557,8 @@ channel_tag_mapping_destroy(idnode_list_mapping_t *ilm, void *origin)
       htsp_tag_update(ct);
     if(origin == ct)
       htsp_channel_update(ch);
+  } else if (ct->ct_enabled) {
+    htsp_internal_tag_changed(origin == ch ? ct : NULL, origin == ct ? ch : NULL);
   }
 }
 

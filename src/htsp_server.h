@@ -41,6 +41,7 @@ void htsp_channel_delete(channel_t *ch);
 
 void htsp_tag_add(channel_tag_t *ct);
 void htsp_tag_update(channel_tag_t *ct);
+void htsp_internal_tag_changed(channel_tag_t *ct, channel_t *ch);
 void htsp_tag_delete(channel_tag_t *ct);
 
 void htsp_dvr_entry_add(dvr_entry_t *de);
