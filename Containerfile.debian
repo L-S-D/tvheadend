@@ -8,7 +8,7 @@ ARG TARGET_ARCH="library"
 FROM docker.io/${TARGET_ARCH}/debian:${DEBIAN_VERSION} AS builder
 
 # libdvbdab (DAB/DAB+ in DVB streams), https://github.com/L-S-D/libdvbdab
-ARG LIBDVBDAB_REF="504ff9a725ba2eeea9dffe5cf716add85676c875"
+ARG LIBDVBDAB_REF="41c92db107ec573b7488a91f051d9e8ee3368529"
 
 ENV DEBIAN_FRONTEND noninteractive
 
