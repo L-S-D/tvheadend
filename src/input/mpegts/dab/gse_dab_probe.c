@@ -83,6 +83,19 @@ gse_create_child_mux(mpegts_mux_t *mm, dvb_network_t *ln,
  * Process a single GSE ensemble
  * Returns 1 if ensemble was processed, 0 otherwise
  */
+/* a scan for a known ensemble whose last scan did not succeed, or that
+ * this probe did not find: its result may be from an earlier tuning */
+static void
+gse_requeue_ensemble(dvb_mux_t *lm)
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm;
+
+  if (mm->mm_scan_state != MM_SCAN_STATE_IDLE || !mm->mm_is_enabled(mm))
+    return;
+  mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                SUBSCRIPTION_INITSCAN, 10);
+}
+
 static int
 gse_process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln, dvb_mux_t *outer_dm,
                      const dvbdab_ensemble_t *ens)
@@ -96,6 +109,13 @@ gse_process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln, dvb_mux_t *outer_dm,
   tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB ensemble EID=0x%04X \"%s\" at %s:%d with %d service(s)",
            mm->mm_nicename, ens->eid, ens->label, ip_str, ens->source_port, ens->service_count);
 
+  /* no ensemble id, no label: not a DAB ensemble (other data on IP) */
+  if (ens->eid == 0 && ens->label[0] == '\0') {
+    tvhdebug(LS_MPEGTS, "mux %s: %s:%d is no DAB ensemble, skipped",
+             mm->mm_nicename, ip_str, ens->source_port);
+    return 0;
+  }
+
   dmc = outer_dm->lm_tuning;
   dmc.dmc_dab_ip = ens->source_ip;
   dmc.dmc_dab_port = ens->source_port;
@@ -106,12 +126,44 @@ gse_process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln, dvb_mux_t *outer_dm,
     tvhdebug(LS_MPEGTS, "mux %s: DAB-GSE mux already exists for %s:%d",
              mm->mm_nicename, ip_str, ens->source_port);
     dvb_mux_set_dab_ensemble((mpegts_mux_t *)dab_mux, ens->label);
-    dab_mux->mm_scan_last_seen = gclk();
     idnode_changed(&dab_mux->mm_id);
+    if (dab_mux->mm_scan_result != MM_SCAN_OK &&
+        dab_mux->mm_scan_result != MM_SCAN_PARTIAL &&
+        dab_mux->mm_scan_result != MM_SCAN_IGNORE)
+      gse_requeue_ensemble(dab_mux);
     return 1;
   }
 
   return gse_create_child_mux(mm, ln, &dmc, ens, ip_str) != NULL;
+}
+
+static void
+gse_requeue_missing(mpegts_mux_t *mm, const dvbdab_ensemble_t *ens, int count)
+{
+  const dvb_mux_t *gse = (const dvb_mux_t *)mm;
+  mpegts_mux_t *mm2;
+  dvb_mux_t *lm;
+  int i;
+
+  LIST_FOREACH(mm2, &mm->mm_network->mn_muxes, mm_network_link) {
+    if (mm2->mm_type != MM_TYPE_DAB_GSE)
+      continue;
+    lm = (dvb_mux_t *)mm2;
+    if (lm->lm_tuning.dmc_fe_type != gse->lm_tuning.dmc_fe_type ||
+        deltaU32(lm->lm_tuning.dmc_fe_freq, gse->lm_tuning.dmc_fe_freq) > 2000 ||
+        lm->lm_tuning.u.dmc_fe_qpsk.polarisation != gse->lm_tuning.u.dmc_fe_qpsk.polarisation ||
+        lm->lm_tuning.dmc_fe_stream_id != gse->lm_tuning.dmc_fe_stream_id)
+      continue;
+    for (i = 0; i < count; i++)
+      if (ens[i].source_ip == lm->lm_tuning.dmc_dab_ip &&
+          ens[i].source_port == lm->lm_tuning.dmc_dab_port)
+        break;
+    if (i < count)
+      continue;
+    tvhdebug(LS_MPEGTS, "mux %s: %s not found by the GSE-DAB probe, scanning it",
+             mm->mm_nicename, mm2->mm_nicename);
+    gse_requeue_ensemble(lm);
+  }
 }
 
 /*
@@ -136,6 +188,10 @@ gse_dab_probe_process_results(mpegts_mux_t *mm, dvbdab_streamer_t *streamer)
   for (i = 0; i < count; i++)
     found += gse_process_ensemble(mm, (dvb_network_t *)mm->mm_network,
                                   (dvb_mux_t *)mm, &ensembles[i]);
+
+  /* the known ensembles of this stream the probe did not find get a scan:
+   * one that is gone ends as failed, not with an old OK */
+  gse_requeue_missing(mm, ensembles, count);
 
   dvbdab_streamer_free_all_ensembles(ensembles, count);
 
