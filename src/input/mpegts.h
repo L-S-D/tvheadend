@@ -1030,6 +1030,9 @@ int mpegts_mux_instance_weight ( mpegts_mux_instance_t *mmi );
 
 int mpegts_mux_set_network_name ( mpegts_mux_t *mm, const char *name );
 int mpegts_mux_set_tsid ( mpegts_mux_t *mm, uint32_t tsid, int force );
+/* the mux has a TS of its own (not: a multistream transponder, whose input
+ * streams are its sub-muxes) */
+int mpegts_mux_has_own_ts ( mpegts_mux_t *mm );
 int mpegts_mux_set_onid ( mpegts_mux_t *mm, uint32_t onid );
 int mpegts_mux_set_crid_authority ( mpegts_mux_t *mm, const char *defauth );
 int mpegts_mux_set_epg_module ( mpegts_mux_t *mm, const char *modid );

@@ -292,8 +292,17 @@ isi_probe_create_muxes(mpegts_mux_t *mm, const uint8_t *isi_list, int isi_count,
         ((mpegts_mux_t *)child_mux)->mm_type = MM_TYPE_ISI;
       dvb_mux_submux_link(child_mux, t);
       mpegts_mux_update_nice_name((mpegts_mux_t *)child_mux);
-      child_mux->mm_scan_last_seen = gclk();
       idnode_changed(&child_mux->mm_id);
+      /* on air: a stream whose last scan did not succeed (or that has
+       * none) gets one, its result may be from an earlier tuning */
+      if (child_mux->mm_scan_result != MM_SCAN_OK &&
+          child_mux->mm_scan_result != MM_SCAN_PARTIAL &&
+          child_mux->mm_scan_result != MM_SCAN_IGNORE &&
+          child_mux->mm_scan_state == MM_SCAN_STATE_IDLE &&
+          child_mux->mm_is_enabled((mpegts_mux_t *)child_mux))
+        mpegts_network_scan_queue_add((mpegts_mux_t *)child_mux,
+                                      SUBSCRIPTION_PRIO_SCAN_INIT,
+                                      SUBSCRIPTION_INITSCAN, 10);
       continue;
     }
 
@@ -465,6 +474,12 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
    * the result of its scan */
   if (((dvb_mux_t *)mm)->lm_multistream && isi_count > 0 && found == 0)
     found = isi_count;
+  /* ... and when there are none, the demodulator may tell why */
+  if (evaluate && ((dvb_mux_t *)mm)->lm_multistream && isi_count == 0 &&
+      ((dvb_mux_t *)mm)->lm_matype >= 0 && (((dvb_mux_t *)mm)->lm_matype & 0x20))
+    tvhwarn(LS_MPEGTS, "mux %s: the transponder sends a single stream (MATYPE 0x%02X), "
+            "it is no longer a multistream transponder?", mm->mm_nicename,
+            ((dvb_mux_t *)mm)->lm_matype);
   return found;
 }
 

@@ -237,8 +237,22 @@ mpegts_network_scan_mux_done0
   /* Complete GSE-DAB probe */
   dab_found += mpegts_gse_dab_probe_complete(mm, result != MM_SCAN_NONE);
 
+  /* a multistream transponder has no tables: its result are its input
+   * streams; the services it got from the stream the demodulator chose go */
+  if (!mpegts_mux_has_own_ts(mm) && result != MM_SCAN_NONE) {
+    result = dab_found > 0 ? MM_SCAN_OK : MM_SCAN_FAIL;
+    if (dab_found > 0)
+      tvhinfo(LS_MPEGTS, "%s - scan complete, %d input stream%s", mm->mm_nicename,
+              dab_found, dab_found == 1 ? "" : "s");
+    else
+      tvhwarn(LS_MPEGTS, "%s - scan found no input streams", mm->mm_nicename);
+#if ENABLE_MPEGTS_DVB
+    dvb_mux_transponder_drop_services((dvb_mux_t *)mm);
+#endif
+  }
+
   /* Override result if a probe found content (DAB, input streams) */
-  if (dab_found > 0 && result == MM_SCAN_FAIL) {
+  else if (dab_found > 0 && result == MM_SCAN_FAIL) {
     result = MM_SCAN_OK;
     tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB or input streams found)",
             mm->mm_nicename);

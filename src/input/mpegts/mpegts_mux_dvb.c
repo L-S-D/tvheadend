@@ -37,6 +37,8 @@
 
 static void
 dvb_mux_delete ( mpegts_mux_t *mm, int delconf );
+static int
+dvb_mux_is_epg ( mpegts_mux_t *mm );
 
 extern const idclass_t mpegts_mux_class;
 
@@ -1891,6 +1893,7 @@ dvb_mux_create0
   lm->mm_free             = dvb_mux_free;
   lm->mm_display_name     = dvb_mux_display_name;
   lm->mm_config_save      = dvb_mux_config_save;
+  lm->mm_is_epg           = dvb_mux_is_epg;
 
   mpegts_mux_update_nice_name(mm);
 
@@ -2011,6 +2014,52 @@ dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm )
     idnode_changed(&t->mm_id);
   }
   return t;
+}
+
+/*
+ * A multistream transponder has no TS of its own: the services it got
+ * (before it became one, or from the stream the demodulator chose when
+ * its tables were read) are those of its input streams. The ones without
+ * a channel go, the others stay until their channel has the service of
+ * the input stream; the provider network name goes too (global_lock,
+ * after the channels are loaded).
+ */
+void
+dvb_mux_transponder_drop_services ( dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm;
+  mpegts_service_t *s, *n;
+  int dropped = 0, kept = 0;
+
+  if (!lm->lm_multistream)
+    return;
+  for (s = LIST_FIRST(&mm->mm_services); s; s = n) {
+    n = LIST_NEXT(s, s_dvb_mux_link);
+    if (LIST_FIRST(&s->s_channels)) {
+      if (kept++ == 0)
+        tvhwarn(LS_MPEGTS, "%s - service %s is mapped to a channel: map the one of "
+                "the input stream instead", mm->mm_nicename, s->s_dvb_svcname ?: "?");
+      continue;
+    }
+    service_destroy((service_t *)s, 1);
+    dropped++;
+  }
+  if (dropped || kept)
+    tvhinfo(LS_MPEGTS, "%s - multistream transponder: %d service(s) removed, %d kept "
+            "(mapped)", mm->mm_nicename, dropped, kept);
+  /* the provider network name from that stream's NIT goes with them */
+  if (mm->mm_provider_network_name) {
+    free(mm->mm_provider_network_name);
+    mm->mm_provider_network_name = NULL;
+    idnode_changed(&mm->mm_id);
+  }
+}
+
+/* a multistream transponder has no EPG of its own */
+static int
+dvb_mux_is_epg ( mpegts_mux_t *mm )
+{
+  return ((dvb_mux_t *)mm)->lm_multistream ? MM_EPG_DISABLE : mm->mm_epg;
 }
 
 void

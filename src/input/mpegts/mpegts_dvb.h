@@ -139,6 +139,7 @@ dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 void       dvb_network_link_multistream ( dvb_network_t *ln );
 dvb_mux_t *dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm );
+void       dvb_mux_transponder_drop_services ( dvb_mux_t *lm );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
 
 /* the input that runs the sub-muxes (mpegts_submux.c) */

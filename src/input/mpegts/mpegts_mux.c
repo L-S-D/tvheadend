@@ -867,6 +867,17 @@ mpegts_mux_is_epg ( mpegts_mux_t *mm )
   return mm->mm_epg;
 }
 
+int
+mpegts_mux_has_own_ts ( mpegts_mux_t *mm )
+{
+#if ENABLE_MPEGTS_DVB
+  extern const idclass_t dvb_mux_class;
+  if (idnode_is_instance(&mm->mm_id, &dvb_mux_class) && ((dvb_mux_t *)mm)->lm_multistream)
+    return 0;
+#endif
+  return 1;
+}
+
 static void
 mpegts_mux_create_instances ( mpegts_mux_t *mm )
 {
@@ -1168,6 +1179,13 @@ mpegts_mux_scan_done ( mpegts_mux_t *mm, const char *buf, int res )
   /* the end of this scan is put off for the DAB probe */
   if (mpegts_dab_probe_waiting(mm))
     return;
+
+  /* no tables: the input streams the ISI probe found are the result
+   * (mpegts_network_scan_mux_done0) */
+  if (!mpegts_mux_has_own_ts(mm)) {
+    mpegts_network_scan_mux_end(mm, MM_SCAN_FAIL, 0);
+    return;
+  }
 
   /* Log */
   tvh_mutex_lock(&mm->mm_tables_lock);

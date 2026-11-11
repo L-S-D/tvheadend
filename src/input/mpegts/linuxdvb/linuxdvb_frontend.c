@@ -1549,9 +1549,11 @@ linuxdvb_frontend_monitor ( void *aux )
       } while (ERRNO_AGAIN(e));
       tvh_mutex_unlock(&lfe->lfe_dvr_lock);
 
-      /* Table handlers */
-      psi_tables_install((mpegts_input_t *)lfe, mm,
-                         ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys);
+      /* Table handlers - not for a multistream transponder: the tables
+       * read there would be those of the stream the demodulator chose */
+      if (mpegts_mux_has_own_ts(mm))
+        psi_tables_install((mpegts_input_t *)lfe, mm,
+                           ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys);
 
     /* Re-arm (quick) */
     } else {
