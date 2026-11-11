@@ -615,7 +615,8 @@ tsfix_input_packet(tsfix_t *tf, streaming_message_t *sm)
 
   if (pkt->pkt_dts == PTS_UNSET) {
     if (tfs->tfs_last_dts_in == PTS_UNSET) {
-      if (tfs->tfs_type == SCT_TELETEXT) {
+      /* teletext, and the AIT without a PCR (parser_deliver) */
+      if (tfs->tfs_type == SCT_TELETEXT || tfs->tfs_type == SCT_HBBTV) {
         sm = streaming_msg_create_pkt(pkt);
         streaming_target_deliver2(tf->tf_output, sm);
       }

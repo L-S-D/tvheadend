@@ -119,6 +119,10 @@ parser_deliver(parser_t *t, parser_es_t *st, th_pkt_t *pkt)
   if (pkt->pkt_dts == PTS_UNSET) {
     if (pkt->pkt_pts == PTS_UNSET && !pkt->pkt_payload) /* error notification */
       goto deliver;
+    /* an AIT section needs no clock: without a PCR (the PCR PID of a
+     * scrambled service is held back until its key) it passes as it is */
+    if (pkt->pkt_type == SCT_HBBTV)
+      goto deliver;
     pkt_trace(LS_PARSER, pkt, "dts drop");
     pkt_ref_dec(pkt);
     pkt = parser_error_packet(t, st, 1);
