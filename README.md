@@ -41,7 +41,7 @@ TVF's settings under *Internet access*:
    by destination itself (for example `*.de` through a German exit, everything else direct). Nothing
    to set up in tvheadend.
 3. **A proxy per channel, set in tvheadend**: create an *internal* channel tag named
-   `hbbtv-proxy <proxy URL>`, for example `hbbtv-proxy http://192.168.0.5:8906`, and put the channels
+   `hbbtv-proxy <proxy URL>`, for example `hbbtv-proxy http://192.0.2.10:8906`, and put the channels
    into it; `hbbtv-proxy direct` keeps a channel off a global proxy. TVF asks tvheadend for the
    internal tags with the HTSP extension of the branch `pr/htsp-internal-tags` (`internalTags` in
    `enableAsyncMetadata`) and sends the HbbTV traffic of each channel through the proxy of its tag;
