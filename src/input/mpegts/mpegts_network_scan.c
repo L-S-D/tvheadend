@@ -240,12 +240,13 @@ mpegts_network_scan_mux_done0
   /* a multistream transponder has no tables: its result are its input
    * streams; the services it got from the stream the demodulator chose go */
   if (!mpegts_mux_has_own_ts(mm) && result != MM_SCAN_NONE) {
+    const char *what = type0 == MM_TYPE_GSE ? "DAB ensemble" : "input stream";
     result = dab_found > 0 ? MM_SCAN_OK : MM_SCAN_FAIL;
     if (dab_found > 0)
-      tvhinfo(LS_MPEGTS, "%s - scan complete, %d input stream%s", mm->mm_nicename,
-              dab_found, dab_found == 1 ? "" : "s");
+      tvhinfo(LS_MPEGTS, "%s - scan complete, %d %s%s", mm->mm_nicename,
+              dab_found, what, dab_found == 1 ? "" : "s");
     else
-      tvhwarn(LS_MPEGTS, "%s - scan found no input streams", mm->mm_nicename);
+      tvhwarn(LS_MPEGTS, "%s - scan found no %ss", mm->mm_nicename, what);
 #if ENABLE_MPEGTS_DVB
     dvb_mux_transponder_drop_services((dvb_mux_t *)mm);
 #endif

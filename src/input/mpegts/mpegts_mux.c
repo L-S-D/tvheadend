@@ -870,6 +870,9 @@ mpegts_mux_is_epg ( mpegts_mux_t *mm )
 int
 mpegts_mux_has_own_ts ( mpegts_mux_t *mm )
 {
+  /* a GSE stream carries IP: its DAB ensembles are its sub-muxes */
+  if (mm->mm_type == MM_TYPE_GSE)
+    return 0;
 #if ENABLE_MPEGTS_DVB
   extern const idclass_t dvb_mux_class;
   if (idnode_is_instance(&mm->mm_id, &dvb_mux_class) && ((dvb_mux_t *)mm)->lm_multistream)

@@ -425,9 +425,11 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
   tvhdebug(LS_MPEGTS, "%s - from PID 0x%04x of %s", mm->mm_nicename, pid,
            parent->mm_nicename);
 
-  /* the tables of the sub-mux open their PIDs before the stream comes */
+  /* the tables of the sub-mux open their PIDs before the stream comes
+   * (a GSE stream has none: IP, its DAB ensembles have them) */
   mm->mm_active = mmi;
-  psi_tables_install(mi, mm, ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys);
+  if (mpegts_mux_has_own_ts(mm))
+    psi_tables_install(mi, mm, ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys);
   return 0;
 }
 
