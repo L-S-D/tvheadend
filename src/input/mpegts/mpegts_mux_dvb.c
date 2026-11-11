@@ -672,6 +672,79 @@ dvb_mux_dvbs_class_orbital_set ( void *o, const void *s )
   return 0;
 }
 
+/*
+ * DVB-S2 stream information (read only, from the Neumo driver)
+ */
+static const char *
+dvb_mux_modcod2str ( int modcod )
+{
+  static const char *tab[] = {
+    NULL,
+    "QPSK 1/4", "QPSK 1/3", "QPSK 2/5", "QPSK 1/2", "QPSK 3/5", "QPSK 2/3",
+    "QPSK 3/4", "QPSK 4/5", "QPSK 5/6", "QPSK 8/9", "QPSK 9/10",
+    "8PSK 3/5", "8PSK 2/3", "8PSK 3/4", "8PSK 5/6", "8PSK 8/9", "8PSK 9/10",
+    "16APSK 2/3", "16APSK 3/4", "16APSK 4/5", "16APSK 5/6", "16APSK 8/9",
+    "16APSK 9/10",
+    "32APSK 3/4", "32APSK 4/5", "32APSK 5/6", "32APSK 8/9", "32APSK 9/10",
+  };
+  return modcod > 0 && modcod < (int)ARRAY_SIZE(tab) ? tab[modcod] : NULL;
+}
+
+static const void *
+dvb_mux_dvbs_class_coding_get ( void *o )
+{
+  dvb_mux_t *lm = o;
+  static const char *s;
+
+  if (lm->lm_matype < 0)
+    s = "";
+  else
+    s = (lm->lm_matype & 0x10) ? "CCM" : "ACM/VCM";
+  return &s;
+}
+
+static const void *
+dvb_mux_dvbs_class_matype_get ( void *o )
+{
+  static const char *types[] = { "generic packetized", "generic continuous",
+                                 "reserved", "TS" };
+  static const char *rolloffs[] = { "0.35", "0.25", "0.20", "low" };
+  dvb_mux_t *lm = o;
+  static char buf[128];
+  static const char *s;
+  int m = lm->lm_matype;
+
+  if (m < 0)
+    buf[0] = '\0';
+  else
+    snprintf(buf, sizeof(buf), "0x%02X: %s, %s, %s, rolloff %s%s%s", m,
+             types[(m >> 6) & 3], (m & 0x20) ? "single stream" : "multistream",
+             (m & 0x10) ? "CCM" : "ACM/VCM", rolloffs[m & 3],
+             (m & 0x08) ? ", ISSY" : "", (m & 0x04) ? ", NPD" : "");
+  s = buf;
+  return &s;
+}
+
+static const void *
+dvb_mux_dvbs_class_modcod_get ( void *o )
+{
+  dvb_mux_t *lm = o;
+  static char buf[32];
+  static const char *s;
+  const char *name;
+
+  if (lm->lm_matype >= 0 && !(lm->lm_matype & 0x10))
+    snprintf(buf, sizeof(buf), "variable");
+  else if ((name = dvb_mux_modcod2str(lm->lm_modcod)) != NULL)
+    snprintf(buf, sizeof(buf), "%s", name);
+  else if (lm->lm_modcod > 0)
+    snprintf(buf, sizeof(buf), "MODCOD %d", lm->lm_modcod);
+  else
+    buf[0] = '\0';
+  s = buf;
+  return &s;
+}
+
 const idclass_t dvb_mux_dvbs_class =
 {
   .ic_super      = &dvb_mux_class,
@@ -745,6 +818,50 @@ const idclass_t dvb_mux_dvbs_class =
       .off      = offsetof(dvb_mux_t, lm_tuning.dmc_fe_pls_code),
       .def.u32	= 1,
       .opts     = PO_EXPERT
+    },
+    {
+      .type     = PT_STR,
+      .id       = "coding",
+      .name     = N_("Coding and modulation"),
+      .desc     = N_("CCM (constant) or ACM/VCM (adaptive or variable "
+                     "coding and modulation) of the DVB-S2 stream, from its "
+                     "MATYPE at the last lock (Neumo driver)."),
+      .get      = dvb_mux_dvbs_class_coding_get,
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_ADVANCED,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "modcod",
+      .name     = N_("MODCOD"),
+      .desc     = N_("Modulation and code rate of the DVB-S2 stream at the "
+                     "last lock (Neumo driver); \"variable\" for ACM/VCM."),
+      .get      = dvb_mux_dvbs_class_modcod_get,
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_ADVANCED,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "matype",
+      .name     = N_("MATYPE"),
+      .desc     = N_("The MATYPE byte of the DVB-S2 stream at the last lock "
+                     "(Neumo driver): stream type, single or multistream, "
+                     "CCM or ACM/VCM, rolloff, ISSY and null packet deletion."),
+      .get      = dvb_mux_dvbs_class_matype_get,
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_EXPERT,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "matype_raw",
+      .name     = N_("MATYPE (raw)"),
+      .off      = offsetof(dvb_mux_t, lm_matype),
+      .def.i    = -1,
+      .opts     = PO_RDONLY | PO_HIDDEN | PO_NOUI,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "modcod_raw",
+      .name     = N_("MODCOD (raw)"),
+      .off      = offsetof(dvb_mux_t, lm_modcod),
+      .opts     = PO_RDONLY | PO_HIDDEN | PO_NOUI,
     },
     {
       .type     = PT_STR,
@@ -1755,6 +1872,7 @@ dvb_mux_create0
 
   /* Defaults */
   dvb_mux_conf_init((mpegts_network_t*)ln, &lm->lm_tuning, delsys);
+  lm->lm_matype = -1;
 
   /* Parent init and load config */
   if (!(mm = mpegts_mux_create0(mm, idc, uuid,

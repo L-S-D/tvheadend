@@ -820,6 +820,9 @@ linuxdvb_frontend_stop_mux
   /* Not locked */
   lfe->lfe_ready   = 0;
   lfe->lfe_locked  = 0;
+#if ENABLE_LINUXDVB_NEUMO
+  lfe->lfe_stream_info = mclk() + sec2mono(2);   /* MATYPE valid after the lock */
+#endif
   lfe->lfe_status  = 0;
   lfe->lfe_status2 = 0;
 
@@ -1371,6 +1374,51 @@ linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
 }
 #endif /* ENABLE_LINUXDVB_NEUMO */
 
+#if ENABLE_LINUXDVB_NEUMO
+/*
+ * The MATYPE and MODCOD of the DVB-S2 stream to the mux (global_lock),
+ * shown read only at the mux; saved when they change. The MODCOD of an
+ * ACM/VCM stream changes from frame to frame: not kept.
+ */
+static void
+linuxdvb_frontend_stream_info ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
+{
+  struct dtv_property props[3];
+  struct dtv_properties cmdseq = { .num = 3, .props = props };
+  dvb_mux_t *lm = (dvb_mux_t *)mm;
+  int matype, modcod;
+
+  if (!lfe->lfe_neumo_supported || lfe->lfe_type != DVB_TYPE_S || mm == NULL)
+    return;
+  if (mclk() < lfe->lfe_stream_info)
+    return;
+  lfe->lfe_stream_info = mclk() + sec2mono(30);
+
+  memset(props, 0, sizeof(props));
+  props[0].cmd = DTV_MATYPE;
+  props[1].cmd = DTV_MAIN_MODCOD;
+  props[2].cmd = DTV_DELIVERY_SYSTEM;
+  if (ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &cmdseq))
+    return;
+  matype = (int)props[0].u.data;
+  /* DVB-S has no BBHEADER: the driver may still report a MATYPE (0) */
+  if (props[2].u.data != SYS_DVBS2)
+    matype = -1;
+  else if (matype < 0 || matype > 0xff)   /* not known yet */
+    return;
+  modcod = matype >= 0 && (matype & 0x10) && props[1].u.data < 0x20 ? (int)props[1].u.data : 0;
+  if (matype == lm->lm_matype && modcod == lm->lm_modcod)
+    return;
+  if (matype < 0)
+    tvhdebug(LS_LINUXDVB, "%s - DVB-S, no MATYPE", mm->mm_nicename);
+  else
+    tvhdebug(LS_LINUXDVB, "%s - MATYPE 0x%02X, MODCOD %d", mm->mm_nicename, matype, modcod);
+  lm->lm_matype = matype;
+  lm->lm_modcod = modcod;
+  idnode_changed(&mm->mm_id);
+}
+#endif
+
 static void
 linuxdvb_frontend_monitor ( void *aux )
 {
@@ -1520,6 +1568,11 @@ linuxdvb_frontend_monitor ( void *aux )
       return;
     lfe->lfe_monitor = mclk() + ms2mono(period);
   }
+
+#if ENABLE_LINUXDVB_NEUMO
+  if (lfe->lfe_locked && status == SIGNAL_GOOD)
+    linuxdvb_frontend_stream_info(lfe, mm);
+#endif
 
 
   tvh_mutex_lock(&mmi->tii_stats_mutex);

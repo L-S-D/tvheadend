@@ -67,6 +67,14 @@ typedef struct dvb_mux
    * streams are its sub-muxes (MM_TYPE_ISI, GSE); it has no services
    */
   int lm_multistream;
+
+  /*
+   * DVB-S2 stream as the Neumo driver reported it at the last lock: the
+   * MATYPE byte of the BBHEADER (-1 = not known) and the MODCOD of a CCM
+   * stream (0 = not known, variable for ACM/VCM)
+   */
+  int lm_matype;
+  int lm_modcod;
 } dvb_mux_t;
 
 /* the PID the Neumo driver embeds the BBFrames of all input streams in */

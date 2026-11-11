@@ -168,6 +168,7 @@ struct linuxdvb_frontend
   int8_t                    lfe_default_rf_input;   /* Default RF input */
   int                       lfe_supports_bbframes;  /* outputs the BBFrames of all input streams */
   int                       lfe_bbframes;           /* tuned so: the PID filters read them */
+  int64_t                   lfe_stream_info;        /* mclk() of the next MATYPE/MODCOD read */
 
   /*
    * Virtual frontend RF input binding (for multi-RF-input adapters)
