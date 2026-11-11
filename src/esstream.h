@@ -66,7 +66,8 @@ enum streaming_component_type {
   SCT_OPUS,
   SCT_FLAC,
   SCT_AC4,
-  SCT_LAST = SCT_AC4
+  SCT_DSMCC,   /* DSM-CC stream descriptors: stream events (ISO/IEC 13818-6) */
+  SCT_LAST = SCT_DSMCC
 };
 
 #define SCT_MASK(t) (1 << (t))
