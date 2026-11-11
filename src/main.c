@@ -175,6 +175,7 @@ const tvh_caps_t tvheadend_capabilities[] = {
 #if ENABLE_LIBAV
   { "libav",     NULL },
 #endif
+  { "streamevents", (uint32_t *)&config.hbbtv }, /* HTSP: stream DSMCC */
   { NULL, NULL }
 };
 

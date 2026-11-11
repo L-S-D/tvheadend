@@ -369,6 +369,12 @@ dvb_psi_parse_pmt
         hts_stream_type = SCT_HBBTV;
       break;
 
+    case 0x0c:
+      /* DSM-CC stream descriptors: the stream events of HbbTV applications */
+      if (config.hbbtv)
+        hts_stream_type = SCT_DSMCC;
+      break;
+
     case 0x06:
       /* 0x06 is Chinese Cable TV AC-3 audio track */
       /* but mark it so only when no more descriptors exist */
