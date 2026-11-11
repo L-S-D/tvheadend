@@ -49,6 +49,17 @@ describe('DvbMuxesView tuning columns', () => {
     expect(fmt?.(658000000, cable)).toBe('658000000 Hz')
   })
 
+  it('shows the mux type by name and the ISI', () => {
+    mount(DvbMuxesView)
+    const type = column('tstype')
+    expect(type?.label).toBe('Type')
+    expect(Array.isArray(type?.enumSource) && type?.enumSource.length).toBeGreaterThan(1)
+    const fmt = column('stream_id')?.format
+    const row = { uuid: 's' } as BaseRow
+    expect(fmt?.(3, row)).toBe('3')
+    expect(fmt?.(-1, row)).toBe('')
+  })
+
   it('makes the tuning columns wide enough for their full header', () => {
     /* Measured in Chrome at 1440 px: the header cell needs about
      * 46 px beside the label for padding, the sort arrow and the

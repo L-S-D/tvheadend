@@ -197,6 +197,37 @@ const cols: ColumnDef[] = [
     phoneRole: 'primary',
     editable: true,
   },
+  /* `tstype` = mm_type (`MM_TYPE_*` in src/input/mpegts.h): every
+   * mux class has it (read only on the `mpegts_mux` class, editable
+   * on the DVB muxes), IPTV muxes are TS. */
+  {
+    field: 'tstype',
+    label: t('Type'),
+    sortable: true,
+    filterType: 'enum',
+    width: 130,
+    cellComponent: EnumNameCell,
+    enumSource: [
+      { key: 0, val: t('TS') },
+      { key: 7, val: t('TS (input stream)') },
+      { key: 1, val: t('T2MI') },
+      { key: 2, val: t('DAB-MPE') },
+      { key: 3, val: t('DAB-ETI') },
+      { key: 6, val: t('DAB-TSNI') },
+      { key: 4, val: t('DAB-GSE') },
+      { key: 5, val: t('GSE') },
+    ],
+  },
+  /* The input stream of a DVB-S2 multistream transponder (PLP of
+   * DVB-T2); -1 = none. */
+  {
+    field: 'stream_id',
+    label: t('ISI'),
+    sortable: true,
+    filterType: 'numeric',
+    width: 80,
+    format: (v: unknown) => (typeof v === 'number' && v >= 0 ? String(v) : ''),
+  },
   /* Hz or kHz depending on the subclass, see muxFrequency.ts. */
   {
     field: 'frequency',

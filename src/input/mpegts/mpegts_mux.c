@@ -529,6 +529,24 @@ mpegts_mux_ac3_list ( void *o, const char *lang )
 
 CLASS_DOC(mpegts_mux)
 
+/*
+ * The type of the mux (TS or a sub-mux carried in its transponder), read
+ * only here for the grid of all muxes: the DVB muxes have the editable
+ * field of the same id, with the same list
+ */
+static htsmsg_t *
+mpegts_mux_class_type_list ( void *o, const char *lang )
+{
+#if ENABLE_MPEGTS_DVB
+  extern const idclass_t dvb_mux_class;
+  const property_t *p = prop_find(dvb_mux_class.ic_properties, "tstype");
+
+  if (p && p->list)
+    return p->list(o, lang);
+#endif
+  return NULL;
+}
+
 const idclass_t mpegts_mux_class =
 {
   .ic_class      = "mpegts_mux",
@@ -597,6 +615,16 @@ const idclass_t mpegts_mux_class =
       .desc     = N_("The name (or frequency) the mux is on."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .get      = mpegts_mux_class_get_name,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "tstype",
+      .name     = N_("Type"),
+      .desc     = N_("Transport stream type: TS or a sub-mux carried in "
+                     "its transponder (DAB, T2MI, an input stream ...)."),
+      .off      = offsetof(mpegts_mux_t, mm_type),
+      .list     = mpegts_mux_class_type_list,
+      .opts     = PO_RDONLY | PO_NOSAVE,
     },
     {
       .type     = PT_STR,
