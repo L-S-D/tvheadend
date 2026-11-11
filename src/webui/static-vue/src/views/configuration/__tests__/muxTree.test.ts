@@ -22,6 +22,7 @@ import {
   MUX_TYPE_T2MI,
   shortName,
   subMuxScan,
+  subtreeCounts,
   tuningLabel,
   withoutAddress,
   withoutType,
@@ -277,5 +278,19 @@ describe('filterTree', () => {
     const f = filterTree(tree, () => false, (n) => n.key === 'o')
     expect(f.show.has('o')).toBe(true)
     expect(f.open.has('o')).toBe(true)
+  })
+})
+
+describe('subtreeCounts', () => {
+  it('adds the services and channels of all levels below a mux', () => {
+    const tree = buildMuxTree([
+      { uuid: 't', name: '12226V', multistream: true, num_svc: 0, num_chn: 0 },
+      { uuid: 'i', name: '12226V ISI 14', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 14, num_svc: 19, num_chn: 2 },
+      { uuid: 'd', name: '12226V ISI 14 DAB', parent_mux: 'i', tstype: MUX_TYPE_DAB_MPE, pid: 1001, num_svc: 12, num_chn: 1 },
+      { uuid: 'r', name: '12226V Riks', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171, num_svc: 19 },
+    ])
+    expect(subtreeCounts(tree[0])).toEqual({ svc: 50, chn: 3 })
+    const isi171 = tree[0].children.find((c) => c.virtual)
+    expect(isi171 && subtreeCounts(isi171)).toEqual({ svc: 19, chn: 0 })
   })
 })

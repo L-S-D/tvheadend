@@ -74,6 +74,7 @@ import {
   servicesByMux,
   serviceTypeName,
   subMuxScan,
+  subtreeCounts,
   tuningLabel,
   type CarrierInfo,
   type MuxRow,
@@ -848,6 +849,19 @@ function nameTitle(r: FlatRow): string | undefined {
   return [row.name, r.wide ? tuningLabel(row) : '', row.pnetwork_name].filter(Boolean).join(' — ')
 }
 
+/* Services and Channels: a mux with sub-muxes counts all levels below */
+function countLabel(node: MuxTreeNode, what: 'svc' | 'chn'): string {
+  if (!node.children.length) return String((what === 'svc' ? node.row?.num_svc : node.row?.num_chn) ?? '')
+  return String(subtreeCounts(node)[what])
+}
+
+function countTitle(node: MuxTreeNode, what: 'svc' | 'chn'): string | undefined {
+  if (!node.children.length) return undefined
+  const own = (what === 'svc' ? node.row?.num_svc : node.row?.num_chn) ?? 0
+  const all = subtreeCounts(node)[what]
+  return t('{0} own + {1} in sub-muxes', own, all - own)
+}
+
 function scanSummary(node: MuxTreeNode): string {
   const s = subMuxScan(node)
   return `${s.ok}/${s.total}`
@@ -1101,8 +1115,8 @@ onMounted(loadNetworks)
                   · {{ scanSummary(r.node) }}
                 </span>
               </td>
-              <td class="mux-tree__num">{{ r.node.row.num_svc ?? '' }}</td>
-              <td class="mux-tree__num">{{ r.node.row.num_chn ?? '' }}</td>
+              <td class="mux-tree__num" :title="countTitle(r.node, 'svc')">{{ countLabel(r.node, 'svc') }}</td>
+              <td class="mux-tree__num" :title="countTitle(r.node, 'chn')">{{ countLabel(r.node, 'chn') }}</td>
             </template>
             <template v-else-if="r.node?.virtual">
               <td class="mux-tree__muted">{{ t('input stream') }}</td>
@@ -1110,7 +1124,8 @@ onMounted(loadNetworks)
               <td class="mux-tree__muted" :title="t('Sub-muxes scanned with success')">
                 {{ scanSummary(r.node) }}
               </td>
-              <td colspan="2" />
+              <td class="mux-tree__num mux-tree__muted">{{ countLabel(r.node, 'svc') }}</td>
+              <td class="mux-tree__num mux-tree__muted">{{ countLabel(r.node, 'chn') }}</td>
             </template>
             <template v-else-if="r.service">
               <td>{{ serviceTypeName(r.service.dvb_servicetype) }}</td>

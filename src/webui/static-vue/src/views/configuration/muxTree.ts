@@ -409,6 +409,18 @@ export function subMuxScan(node: MuxTreeNode): { ok: number; total: number } {
   return { ok, total }
 }
 
+/* the services and channels of a node and of all sub-muxes below it */
+export function subtreeCounts(node: MuxTreeNode): { svc: number; chn: number } {
+  let svc = node.row?.num_svc ?? 0
+  let chn = node.row?.num_chn ?? 0
+  for (const c of node.children) {
+    const sub = subtreeCounts(c)
+    svc += sub.svc
+    chn += sub.chn
+  }
+  return { svc, chn }
+}
+
 /* every node key with children: for "expand all" */
 export function expandableKeys(nodes: MuxTreeNode[], out: string[] = []): string[] {
   for (const n of nodes) {
