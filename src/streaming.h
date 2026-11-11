@@ -399,6 +399,9 @@ struct streaming_start_component {
   uint8_t ssc_muxer_disabled;
   
   pktbuf_t *ssc_gh;
+
+  uint16_t ssc_caid;       /* CA stream: its CA system (the first of the PMT) */
+  uint32_t ssc_providerid;
 };
 
 

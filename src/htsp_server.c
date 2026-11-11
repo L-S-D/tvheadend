@@ -4340,6 +4340,12 @@ htsp_subscription_start(htsp_subscription_t *hs, const streaming_start_t *ss)
       htsmsg_add_u32(c, "ancillary_id", ssc->es_ancillary_id);
     }
 
+    if(ssc->es_type == SCT_CA && ssc->ssc_caid) {
+      htsmsg_add_u32(c, "caid", ssc->ssc_caid);
+      htsmsg_add_u32(c, "providerid", ssc->ssc_providerid);
+      htsmsg_add_str(c, "caname", caid2name(ssc->ssc_caid));
+    }
+
     if(SCT_ISVIDEO(ssc->es_type)) {
       if(ssc->es_width)
         htsmsg_add_u32(c, "width", ssc->es_width);
