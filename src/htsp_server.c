@@ -164,6 +164,11 @@ typedef struct htsp_connection {
 
   access_t *htsp_granted_access;
 
+  /**
+   * The client asked for the internal channel tags too (enableAsyncMetadata)
+   */
+  int htsp_internal_tags;
+
   uint8_t htsp_challenge[32];
 
 } htsp_connection_t;
@@ -747,13 +752,27 @@ htsp_channel_tag_get_identifier(channel_tag_t *ct)
   return ct->ct_htsp_id;
 }
 
+/*
+ * A channel tag the connection gets: an enabled tag the user may see
+ * (private ones), an internal tag only when the client asked for those
+ */
+static int
+htsp_tag_visible(htsp_connection_t *htsp, channel_tag_t *ct)
+{
+  if (!ct->ct_enabled)
+    return 0;
+  if (ct->ct_internal && !htsp->htsp_internal_tags)
+    return 0;
+  return channel_tag_access(ct, htsp->htsp_granted_access, 1);
+}
+
 static channel_tag_t *
 htsp_channel_tag_find_by_id(htsp_connection_t *htsp, uint32_t id)
 {
   channel_tag_t *ct;
 
   TAILQ_FOREACH(ct, &channel_tags, ct_link) {
-    if (!channel_tag_access(ct, htsp->htsp_granted_access, 0))
+    if (!htsp_tag_visible(htsp, ct))
       continue;
     if (id == ct->ct_htsp_id)
       return ct;
@@ -892,7 +911,7 @@ htsp_build_channel(channel_t *ch, const char *method, htsp_connection_t *htsp)
 
   LIST_FOREACH(ilm, &ch->ch_ctms, ilm_in2_link) {
     ct = (channel_tag_t *)ilm->ilm_in1;
-    if(channel_tag_access(ct, htsp->htsp_granted_access, 0))
+    if(htsp_tag_visible(htsp, ct))
       htsmsg_add_u32(tags, NULL, htsp_channel_tag_get_identifier(ct));
   }
 
@@ -951,6 +970,8 @@ htsp_build_tag(htsp_connection_t *htsp, channel_tag_t *ct, const char *method, i
   if (!strempty(icon))
     htsmsg_add_str(out, "tagIcon", htsp_image(htsp, icon, buf, sizeof(buf), 34, 0));
   htsmsg_add_u32(out, "tagTitledIcon", ct->ct_titled_icon);
+  if (ct->ct_internal)
+    htsmsg_add_u32(out, "tagInternal", 1);
 
   if(members != NULL) {
     LIST_FOREACH(ilm, &ct->ct_ctms, ilm_in1_link)
@@ -1681,6 +1702,10 @@ htsp_method_async(htsp_connection_t *htsp, htsmsg_t *in)
     if (htsp->htsp_epg_window)
       htsp->htsp_epg_window = MAX(htsp->htsp_epg_window, 600);
   }
+  /* the internal channel tags too: set with the first request (the tags
+   * are sent with it) */
+  if (!(htsp->htsp_async_mode & HTSP_ASYNC_ON))
+    htsp->htsp_internal_tags = htsmsg_get_u32_or_default(in, "internalTags", 0) ? 1 : 0;
   if ((lang = htsmsg_get_str(in, "language")) != NULL) {
     if (lang[0]) {
       htsp->htsp_language = strdup(lang);
@@ -1710,7 +1735,7 @@ htsp_method_async(htsp_connection_t *htsp, htsmsg_t *in)
 
   /* Send all enabled and external tags */
   TAILQ_FOREACH(ct, &channel_tags, ct_link)
-    if(channel_tag_access(ct, htsp->htsp_granted_access, 0))
+    if(htsp_tag_visible(htsp, ct))
       htsp_send_message(htsp, htsp_build_tag(htsp, ct, "tagAdd", 0), NULL);
 
   /* Send all channels */
@@ -1720,7 +1745,7 @@ htsp_method_async(htsp_connection_t *htsp, htsmsg_t *in)
 
   /* Send all enabled and external tags (now with channel mappings) */
   TAILQ_FOREACH(ct, &channel_tags, ct_link)
-    if(channel_tag_access(ct, htsp->htsp_granted_access, 0))
+    if(htsp_tag_visible(htsp, ct))
       htsp_send_message(htsp, htsp_build_tag(htsp, ct, "tagUpdate", 1), NULL);
 
   /* Send all autorecs */
@@ -3859,7 +3884,7 @@ htsp_channel_delete(channel_t *ch)
 static htsmsg_t *
 htsp_tag_update_msg(htsp_connection_t *htsp, void *tag)
 {
-  if (!channel_tag_access(tag, htsp->htsp_granted_access, 0))
+  if (!htsp_tag_visible(htsp, tag))
     return NULL;
   return htsp_build_tag(htsp, tag, "tagUpdate", 1);
 }
@@ -3874,15 +3899,51 @@ htsp_tag_add(channel_tag_t *ct)
 }
 
 /**
+ * The update of a tag for the connections that get it, a delete for the
+ * others (in case the tag was ever sent to them)
+ */
+static htsmsg_t *
+htsp_tag_update_or_delete_msg(htsp_connection_t *htsp, void *tag)
+{
+  channel_tag_t *ct = tag;
+  htsmsg_t *m;
+
+  if (htsp_tag_visible(htsp, ct))
+    return htsp_build_tag(htsp, ct, "tagUpdate", 1);
+  m = htsmsg_create_map();
+  htsmsg_add_u32(m, "tagId", htsp_channel_tag_get_identifier(ct));
+  htsmsg_add_str(m, "method", "tagDelete");
+  return m;
+}
+
+/**
  * Called from channel.c when an exported tag is changed
  */
 void
 htsp_tag_update(channel_tag_t *ct)
 {
-  if (ct->ct_enabled && !ct->ct_internal)
-    htsp_async_send_cb(htsp_tag_update_msg, HTSP_ASYNC_ON, ct);
-  else // in case the tag was ever sent to the client
-    htsp_tag_delete(ct);
+  htsp_async_send_cb(htsp_tag_update_or_delete_msg, HTSP_ASYNC_ON, ct);
+}
+
+/**
+ * Called from channel.c when an internal tag gets or loses a channel: only
+ * the connections that asked for the internal tags hear of it (ct: the
+ * update of the tag, ch: of the channel; either may be NULL)
+ */
+void
+htsp_internal_tag_changed(channel_tag_t *ct, channel_t *ch)
+{
+  htsp_connection_t *htsp;
+
+  lock_assert(&global_lock);
+  LIST_FOREACH(htsp, &htsp_async_connections, htsp_async_link) {
+    if (!(htsp->htsp_async_mode & HTSP_ASYNC_ON) || !htsp->htsp_internal_tags)
+      continue;
+    if (ct && htsp_tag_visible(htsp, ct))
+      htsp_send_message(htsp, htsp_build_tag(htsp, ct, "tagUpdate", 1), NULL);
+    if (ch && htsp_user_access_channel(htsp, ch))
+      htsp_send_message(htsp, htsp_build_channel(ch, "channelUpdate", htsp), NULL);
+  }
 }
 
 
