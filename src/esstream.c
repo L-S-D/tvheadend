@@ -640,6 +640,21 @@ elementary_stream_build_start(elementary_set_t *set)
   TAILQ_FOREACH(st, &set->set_filter, es_filter_link) {
     streaming_start_component_t *ssc = &ss->ss_components[n++];
     *(elementary_info_t *)ssc = *(elementary_info_t *)st;
+    if (st->es_type == SCT_CA) {
+      /* a CA id tvh uses for this ECM stream (one a CA filter does not
+       * exclude); es_caids is not in the order of the PMT (new ones go to
+       * the head, a reload turns it round), so of several: one of them */
+      caid_t *c;
+      LIST_FOREACH(c, &st->es_caids, link)
+        if (c->use)
+          break;
+      if (c == NULL)
+        c = LIST_FIRST(&st->es_caids);
+      if (c) {
+        ssc->ssc_caid = c->caid;
+        ssc->ssc_providerid = c->providerid;
+      }
+    }
   }
 
   ss->ss_pcr_pid = set->set_pcr_pid;

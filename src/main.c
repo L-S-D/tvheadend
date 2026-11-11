@@ -157,6 +157,7 @@ const tvh_caps_t tvheadend_capabilities[] = {
 #if ENABLE_CWC || ENABLE_CAPMT || ENABLE_CONSTCW || ENABLE_CCCAM || ENABLE_LINUXDVB_CA
   { "caclient", NULL },
 #endif
+  { "scrambledinfo", NULL }, /* HTSP: CA systems, earlyStart, reportNoAccess */
 #if ENABLE_LINUXDVB || ENABLE_SATIP_CLIENT || ENABLE_HDHOMERUN_CLIENT
   { "tvadapters", NULL },
 #endif
