@@ -128,6 +128,198 @@ mpegts_service_class_load(struct idnode *self, htsmsg_t *c)
                                 : EIT_PROCESSING_DEFAULT;
 }
 
+/*
+ * Read only, for the service grids: the type as text, the mux the service
+ * comes from (a sub-mux: its type, input stream, PID, ensemble), a short
+ * summary of its streams, the DVB ids of its mux and HbbTV
+ */
+static const void *
+mpegts_service_class_get_type ( void *ptr )
+{
+  static const char *s;
+  s = service_servicetype_txt((service_t *)ptr);
+  return &s;
+}
+
+#if ENABLE_MPEGTS_DVB
+/* the name of the mux type, from the list of the DVB mux class */
+static void
+mpegts_service_mux_type_name ( int type, char *buf, size_t len )
+{
+  extern const idclass_t dvb_mux_class;
+  const property_t *p = prop_find(dvb_mux_class.ic_properties, "tstype");
+  htsmsg_t *l = p && p->list ? p->list(NULL, NULL) : NULL;
+  htsmsg_field_t *f;
+  htsmsg_t *e;
+  int64_t key;
+
+  snprintf(buf, len, "%d", type);
+  if (l == NULL)
+    return;
+  HTSMSG_FOREACH(f, l)
+    if ((e = htsmsg_field_get_map(f)) != NULL &&
+        !htsmsg_get_s64(e, "key", &key) && key == type) {
+      strlcpy(buf, htsmsg_get_str(e, "val") ?: buf, len);
+      break;
+    }
+  htsmsg_destroy(l);
+}
+#endif
+
+static const void *
+mpegts_service_class_get_source ( void *ptr )
+{
+  static char buf[192];
+  static const char *s = buf;
+  mpegts_service_t *ms = ptr;
+  mpegts_mux_t *mm = ms->s_dvb_mux;
+
+  buf[0] = '\0';
+#if ENABLE_MPEGTS_DVB
+  extern const idclass_t dvb_mux_class;
+  if (mm && idnode_is_instance(&mm->mm_id, &dvb_mux_class)) {
+    dvb_mux_t *lm = (dvb_mux_t *)mm;
+    const dvb_mux_conf_t *dmc = &lm->lm_tuning;
+    const char *label = lm->lm_dab_ensemble ?: mm->mm_provider_network_name;
+    char type[32];
+    size_t l = 0;
+
+    mpegts_service_mux_type_name(mm->mm_type, type, sizeof(type));
+    /* a TS: an input stream says what it is, else "TS" */
+    if (strncmp(type, "TS", 2) || dmc->dmc_fe_stream_id < 0)
+      l = snprintf(buf, sizeof(buf), "%s", strncmp(type, "TS", 2) ? type : "TS");
+    if (dmc->dmc_fe_stream_id >= 0 && l < sizeof(buf))
+      l += snprintf(buf + l, sizeof(buf) - l, "%sISI %d", l ? " · " : "",
+                    dmc->dmc_fe_stream_id);
+    if (mm->mm_type != MM_TYPE_TS && dmc->dmc_fe_pid > 0 && l < sizeof(buf))
+      l += snprintf(buf + l, sizeof(buf) - l, " · PID %d", dmc->dmc_fe_pid);
+    if (mm->mm_type != MM_TYPE_TS && label && *label && l < sizeof(buf))
+      snprintf(buf + l, sizeof(buf) - l, " · %s", label);
+  }
+#endif
+  return &s;
+}
+
+/* the short name of a stream type for the summary, NULL: not listed */
+static const char *
+mpegts_service_stream_name ( streaming_component_type_t type )
+{
+  switch (type) {
+  case SCT_MPEG2VIDEO: return "MPEG-2";
+  case SCT_H264:       return "H.264";
+  case SCT_HEVC:       return "HEVC";
+  case SCT_MPEG2AUDIO: return "MP2";
+  case SCT_AC3:        return "AC-3";
+  case SCT_EAC3:       return "E-AC-3";
+  case SCT_AAC:
+  case SCT_MP4A:       return "AAC";
+  case SCT_AC4:        return "AC-4";
+  case SCT_DVBSUB:     return "DVB-Sub";
+  case SCT_TEXTSUB:    return "TXT-Sub";  /* teletext subtitles */
+  case SCT_TELETEXT:   return "TXT";
+  default:
+    if (SCT_ISAV(type))
+      return streaming_component_type2txt(type);
+    return NULL;
+  }
+}
+
+/* "H.264 1080 · MP2 ×2, AC-3, AD · DVB-Sub · TXT" */
+static const void *
+mpegts_service_class_get_streams ( void *ptr )
+{
+  static char buf[256];
+  static const char *s = buf;
+  service_t *t = ptr;
+  elementary_stream_t *st;
+  const char *names[3][8];
+  int counts[3][8] = { { 0 } }, n[3] = { 0 }, group, i, ad = 0, video = 0;
+  char vbuf[48] = "";
+  size_t l = 0;
+
+  buf[0] = '\0';
+  tvh_mutex_lock(&t->s_stream_mutex);
+  TAILQ_FOREACH(st, &t->s_components.set_all, es_link) {
+    const char *name = mpegts_service_stream_name(st->es_type);
+    if (name == NULL)
+      continue;
+    if (SCT_ISVIDEO(st->es_type)) {
+      if (video++ == 0) {
+        if (st->es_height > 0)
+          snprintf(vbuf, sizeof(vbuf), "%s %d", name, st->es_height);
+        else
+          snprintf(vbuf, sizeof(vbuf), "%s", name);
+      }
+      continue;
+    }
+    if (SCT_ISAUDIO(st->es_type)) {
+      group = 0;
+      if (st->es_audio_type == 3)   /* visual impaired commentary (ISO 639 descriptor) */
+        ad = 1;
+    } else {
+      group = SCT_ISSUBTITLE(st->es_type) ? 1 : 2;
+    }
+    for (i = 0; i < n[group] && strcmp(names[group][i], name); i++)
+      ;
+    if (i == n[group]) {
+      if (n[group] == 8)
+        continue;
+      names[group][n[group]++] = name;
+    }
+    counts[group][i]++;
+  }
+  tvh_mutex_unlock(&t->s_stream_mutex);
+
+  if (vbuf[0]) {
+    if (video > 1)
+      l = snprintf(buf, sizeof(buf), "%s +%d", vbuf, video - 1);
+    else
+      l = snprintf(buf, sizeof(buf), "%s", vbuf);
+  }
+  for (group = 0; group < 3; group++) {
+    if (n[group] == 0 || l >= sizeof(buf))
+      continue;
+    l += snprintf(buf + l, sizeof(buf) - l, "%s", l ? " · " : "");
+    for (i = 0; i < n[group] && l < sizeof(buf); i++) {
+      if (counts[group][i] > 1)
+        l += snprintf(buf + l, sizeof(buf) - l, "%s%s ×%d", i ? ", " : "",
+                      names[group][i], counts[group][i]);
+      else
+        l += snprintf(buf + l, sizeof(buf) - l, "%s%s", i ? ", " : "", names[group][i]);
+    }
+    if (group == 0 && ad && l < sizeof(buf))
+      l += snprintf(buf + l, sizeof(buf) - l, ", AD");
+  }
+  return &s;
+}
+
+static const void *
+mpegts_service_class_get_onid ( void *ptr )
+{
+  static int v;
+  mpegts_mux_t *mm = ((mpegts_service_t *)ptr)->s_dvb_mux;
+  v = mm && mm->mm_onid != MPEGTS_ONID_NONE ? (int)mm->mm_onid : -1;
+  return &v;
+}
+
+static const void *
+mpegts_service_class_get_tsid ( void *ptr )
+{
+  static int v;
+  mpegts_mux_t *mm = ((mpegts_service_t *)ptr)->s_dvb_mux;
+  v = mm && mm->mm_tsid != MPEGTS_TSID_NONE ? (int)mm->mm_tsid : -1;
+  return &v;
+}
+
+static const void *
+mpegts_service_class_get_hbbtv ( void *ptr )
+{
+  static int v;
+  service_t *t = ptr;
+  v = t->s_hbbtv != NULL && !htsmsg_is_empty(t->s_hbbtv);
+  return &v;
+}
+
 CLASS_DOC(mpegts_service)
 PROP_DOC(eit_processing)
 
@@ -165,12 +357,40 @@ const idclass_t mpegts_service_class =
       .get      = mpegts_service_class_get_mux_uuid,
     },
     {
+      .type     = PT_STR,
+      .id       = "source",
+      .name     = N_("Source"),
+      .desc     = N_("Where the service comes from: TS, or the sub-mux "
+                     "of its transponder (input stream, T2MI, DAB) with "
+                     "its ISI, PID and ensemble or network."),
+      .opts     = PO_RDONLY | PO_NOSAVE,
+      .get      = mpegts_service_class_get_source,
+    },
+    {
       .type     = PT_U16,
       .id       = "sid",
       .name     = N_("Service ID"),
       .desc     = N_("The service ID as set by the provider."),
       .opts     = PO_RDONLY | PO_ADVANCED,
       .off      = offsetof(mpegts_service_t, s_components.set_service_id),
+    },
+    {
+      .type     = PT_INT,
+      .id       = "onid",
+      .name     = N_("Original network ID"),
+      .desc     = N_("The original network ID of the mux of the service "
+                     "(-1: not known)."),
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+      .get      = mpegts_service_class_get_onid,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "tsid",
+      .name     = N_("Transport stream ID"),
+      .desc     = N_("The transport stream ID of the mux of the service "
+                     "(-1: not known)."),
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+      .get      = mpegts_service_class_get_tsid,
     },
     {
       .type     = PT_U16,
@@ -211,6 +431,33 @@ const idclass_t mpegts_service_class =
       .desc     = N_("The service name as set by the provider."),
       .opts     = PO_RDONLY,
       .off      = offsetof(mpegts_service_t, s_dvb_svcname),
+    },
+    {
+      .type     = PT_STR,
+      .id       = "type",
+      .name     = N_("Type"),
+      .desc     = N_("The type of the service: SD, HD, UHD TV, radio or "
+                     "other (as clients get it)."),
+      .opts     = PO_RDONLY | PO_NOSAVE,
+      .get      = mpegts_service_class_get_type,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "streams",
+      .name     = N_("Streams"),
+      .desc     = N_("The streams of the service in short: video (codec, "
+                     "height), audio (AD: audio description), subtitles, "
+                     "teletext."),
+      .opts     = PO_RDONLY | PO_NOSAVE,
+      .get      = mpegts_service_class_get_streams,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "hbbtv",
+      .name     = N_("HbbTV"),
+      .desc     = N_("The service has HbbTV applications."),
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+      .get      = mpegts_service_class_get_hbbtv,
     },
     {
       .type     = PT_STR,

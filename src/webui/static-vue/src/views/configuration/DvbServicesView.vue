@@ -262,6 +262,19 @@ const cols: ColumnDef[] = [
     phoneRole: 'primary',
     editable: true,
   },
+  /* Read only, computed by the server (mpegts_service.c): the type as
+   * clients get it (SDTV, HDTV, UHDTV, Radio, Other) and a summary of
+   * the streams ("H.264 1080 · MP2 ×2, AC-3 · DVB-Sub · TXT"). */
+  { field: 'type', sortable: true, filterType: 'string', width: 100 },
+  { field: 'streams', sortable: true, filterType: 'string', width: 300 },
+  {
+    field: 'hbbtv',
+    sortable: true,
+    filterType: 'boolean',
+    width: 100,
+    cellComponent: BooleanCell,
+    hiddenByDefault: true,
+  },
 
   /* ---- remaining service_class (parent) ---- */
   {
@@ -322,8 +335,28 @@ const cols: ColumnDef[] = [
     targetUuidField: 'multiplex_uuid',
     targetAccessKey: 'admin',
   },
+  /* The sub-mux the service comes from: "ISI 14", "T2MI · PID 4096 ·
+   * MX-7", "DAB-GSE · ISI 171 · NRK Reg1" - "TS" for a plain mux. */
+  { field: 'source', sortable: true, filterType: 'string', width: 240 },
   { field: 'multiplex_uuid', sortable: true, filterType: 'string', width: 280, editable: true },
   { field: 'sid', sortable: true, filterType: 'numeric', width: 100, editable: true },
+  /* The DVB ids of the mux, with the SID the triplet (-1: not known). */
+  {
+    field: 'onid',
+    sortable: true,
+    filterType: 'numeric',
+    width: 110,
+    hiddenByDefault: true,
+    format: (v: unknown) => (typeof v === 'number' && v >= 0 ? String(v) : ''),
+  },
+  {
+    field: 'tsid',
+    sortable: true,
+    filterType: 'numeric',
+    width: 110,
+    hiddenByDefault: true,
+    format: (v: unknown) => (typeof v === 'number' && v >= 0 ? String(v) : ''),
+  },
   { field: 'lcn', sortable: true, filterType: 'numeric', width: 110, editable: true },
   { field: 'lcn_minor', sortable: true, filterType: 'numeric', width: 110, editable: true },
   { field: 'lcn2', sortable: true, filterType: 'numeric', width: 110, editable: true },
