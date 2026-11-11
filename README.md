@@ -12,8 +12,8 @@
   prefetch for each of them.
 - **More stream details over HTSP:** component tags, subtitle page and type, initial teletext page,
   audio type and receiver mix, the DVB ids (ONID, TSID, SID) of the channel, and a queue that keeps
-  at least 1.5 s of the stream. [TVF](https://github.com/L-S-D/tvfrontend), a client for LG webOS
-  TVs, uses them.
+  at least 1.5 s of the stream, and on request the internal channel tags. [TVF](https://github.com/L-S-D/tvfrontend),
+  a client for LG webOS TVs, uses them.
 - **DAB radio from DVB** with [libdvbdab](https://github.com/L-S-D/libdvbdab): ETI-NA, MPE, TS NI
   and DAB over GSE.
 - **Neumo DVB driver** (for example TBS 6909X): multistream (ISI), GSE, blind tuning, Unicable
@@ -29,6 +29,25 @@
 - **capmt fixes for OSCam:** ECM flush, CSA-ALT, message order, forced CA id.
 - Smaller fixes: the timeshift option *Include teletext*, the local language codes qaa..qtz, a higher
   service priority beats an already tuned mux.
+
+### HbbTV through a proxy (TVF)
+
+The HbbTV apps of some channels only work from their home country. TVF can therefore send the
+HbbTV traffic of a channel (pages, videos, licences) through a proxy. There are three ways, chosen in
+TVF's settings under *Internet access*:
+
+1. **No proxy** (*direct*): enough when the apps of all channels are reachable from where you are.
+2. **One global proxy**: all HbbTV traffic goes to one proxy, typically a "smart" proxy that decides
+   by destination itself (for example `*.de` through a German exit, everything else direct). Nothing
+   to set up in tvheadend.
+3. **A proxy per channel, set in tvheadend**: create an *internal* channel tag named
+   `hbbtv-proxy <proxy URL>`, for example `hbbtv-proxy http://192.168.0.5:8906`, and put the channels
+   into it; `hbbtv-proxy direct` keeps a channel off a global proxy. TVF asks tvheadend for the
+   internal tags with the HTSP extension of the branch `pr/htsp-internal-tags` (`internalTags` in
+   `enableAsyncMetadata`) and sends the HbbTV traffic of each channel through the proxy of its tag;
+   that tag wins over the setting under *Internet access*, which applies to the channels without
+   one. Internal tags are not sent to other HTSP clients: Kodi sees neither the tags nor any change
+   to its channels or groups. (TVF uses the tags from its next release on.)
 
 ### Branches
 
