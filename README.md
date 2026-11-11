@@ -47,7 +47,7 @@ TVF's settings under *Internet access*:
    `enableAsyncMetadata`) and sends the HbbTV traffic of each channel through the proxy of its tag;
    that tag wins over the setting under *Internet access*, which applies to the channels without
    one. Internal tags are not sent to other HTSP clients: Kodi sees neither the tags nor any change
-   to its channels or groups. (TVF uses the tags from its next release on.)
+   to its channels or groups.
 
 ### Branches
 
