@@ -1276,7 +1276,7 @@ dvb_sat_position_from_str( const char *buf )
 }
 
 uint32_t
-dvb_sat_pls( dvb_mux_conf_t *dmc )
+dvb_sat_pls( const dvb_mux_conf_t *dmc )
 {
   if (dmc->dmc_fe_pls_mode == DVB_PLS_ROOT) {
     uint32_t x, g;

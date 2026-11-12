@@ -613,6 +613,80 @@ dvb_network_find_mux
   return (dvb_mux_t *)mm;
 }
 
+/*
+ * The satellite mux of the transport stream onid/tsid whose carrier lies on
+ * the one described by dmc: the same polarisation, input stream and PLS
+ * (compared as gold code: root 1 and gold 0 are the same sequence), and
+ * the frequencies closer than half the sum of both symbol rates, so that
+ * the main lobes of the two carriers overlap. Two carriers cannot
+ * share their frequencies: an entry like this is the same transponder with
+ * other parameters (some satellites carry several NITs that do not agree),
+ * not another transponder. Another transport stream there (a feed in a
+ * slot that changes hands) is left to the scan.
+ * Only a mux that works with its parameters: enabled, its last scan OK -
+ * else the first description seen would win, also a wrong one that never
+ * worked. With ignored a mux set to ignore (such another description).
+ */
+static dvb_mux_t *
+dvb_network_find_overlap
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc, uint32_t onid, uint32_t tsid,
+    int ignored )
+{
+  mpegts_mux_t *mm;
+  const dvb_mux_conf_t *c;
+  uint64_t span;
+  uint32_t pls;
+
+  if (dmc->dmc_fe_type != DVB_TYPE_S ||
+      onid == MPEGTS_ONID_NONE || tsid == MPEGTS_TSID_NONE)
+    return NULL;
+  pls = dvb_sat_pls(dmc);
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    if (mm->mm_onid != onid || mm->mm_tsid != tsid) continue;
+    if (ignored ? mm->mm_enabled != MM_IGNORE :
+                  (mm->mm_enabled != MM_ENABLE || !MM_SCAN_CHECK_OK(mm))) continue;
+    c = &((dvb_mux_t *)mm)->lm_tuning;
+    if (c->dmc_fe_type != DVB_TYPE_S ||
+        c->u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation ||
+        c->dmc_fe_stream_id != dmc->dmc_fe_stream_id ||
+        dvb_sat_pls(c) != pls)
+      continue;
+    /* frequencies in kHz, symbol rates in symbols/s */
+    span = ((uint64_t)c->u.dmc_fe_qpsk.symbol_rate +
+            dmc->u.dmc_fe_qpsk.symbol_rate) / 1000;
+    if (2 * (uint64_t)deltaU32(c->dmc_fe_freq, dmc->dmc_fe_freq) < span)
+      return (dvb_mux_t *)mm;
+  }
+  return NULL;
+}
+
+/*
+ * A mux whose scan failed: the NIT may describe its transport stream with
+ * other parameters too, added as ignored while this one worked
+ * (dvb_network_create_mux) - that description may be the right one now.
+ * It is not enabled by itself (a scan fails in a rain fade too, and the
+ * user may have set a mux to ignore): a notice says so.
+ */
+void
+dvb_network_scan_failed ( mpegts_mux_t *mm )
+{
+  dvb_mux_t *lm, *other;
+  char buf1[128], buf2[128];
+
+  if (!idnode_is_instance(&mm->mm_network->mn_id, &dvb_network_class))
+    return;
+  lm = (dvb_mux_t *)mm;
+  other = dvb_network_find_overlap((dvb_network_t *)mm->mm_network, &lm->lm_tuning,
+                                   mm->mm_onid, mm->mm_tsid, 1);
+  if (other == NULL)
+    return;
+  dvb_mux_conf_str(&lm->lm_tuning, buf1, sizeof(buf1));
+  dvb_mux_conf_str(&other->lm_tuning, buf2, sizeof(buf2));
+  tvhnotice(LS_MPEGTS, "%s (%s) failed its scan; the NIT describes it also as %s, "
+            "set to ignore (%s): enable that mux to try it",
+            mm->mm_nicename, buf1, buf2, other->mm_nicename);
+}
+
 static htsmsg_t *
 dvb_network_config_save ( mpegts_network_t *mn, char *filename, size_t fsize )
 {
@@ -713,7 +787,18 @@ dvb_network_create_mux
         save = 0;
     }
     if (save) {
+      dvb_mux_t *same = force ? NULL : dvb_network_find_overlap(ln, dmc, onid, tsid, 0);
       mm = dvb_mux_create0(ln, onid, tsid, dmc, NULL, NULL);
+      if (mm && same) {
+        /* another description of a transponder we have: kept, so that this
+         * NIT entry does not come back as a new mux, but not tuned */
+        char buf1[128], buf2[128];
+        mm->mm_enabled = MM_IGNORE;
+        dvb_mux_conf_str(dmc, buf1, sizeof(buf1));
+        dvb_mux_conf_str(&same->lm_tuning, buf2, sizeof(buf2));
+        tvhinfo(LS_MPEGTS, "the NIT describes %s (%s) as %s, added as ignored",
+                same->mm_nicename, buf2, buf1);
+      }
       mpegts_mux_post_create((mpegts_mux_t *)mm);
       if (tvhtrace_enabled()) {
         char buf[128];
