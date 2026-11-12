@@ -2058,6 +2058,7 @@ parse_mpeg_ts(parser_t *t, parser_es_t *st, const uint8_t *data,
     break;
 
   case SCT_HBBTV:
+  case SCT_DSMCC:
     st->es_parse_callback = parse_hbbtv;
     break;
 

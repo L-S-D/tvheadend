@@ -248,6 +248,7 @@ tvh_transcoder_start(TVHTranscoder *self, tvh_ss_t *ss_src)
             switch (ssc_src->es_type) {
             case SCT_CA:
             case SCT_HBBTV:
+            case SCT_DSMCC:
             case SCT_TELETEXT:
                 break;
             default:
