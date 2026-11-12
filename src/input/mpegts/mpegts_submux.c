@@ -440,7 +440,11 @@ mpegts_submux_done ( void )
 
   if (mi == NULL)
     return;
+  /* like the other inputs: deleting one needs the global lock (it is
+   * released while the input threads are joined) */
+  tvh_mutex_lock(&global_lock);
   submux_input = NULL;
   mpegts_input_stop_all(mi);
   mpegts_input_delete(mi, 0);
+  tvh_mutex_unlock(&global_lock);
 }
