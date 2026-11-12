@@ -37,6 +37,8 @@
 
 static void
 dvb_mux_delete ( mpegts_mux_t *mm, int delconf );
+static int
+dvb_mux_is_epg ( mpegts_mux_t *mm );
 
 extern const idclass_t mpegts_mux_class;
 
@@ -142,7 +144,7 @@ dvb_mux_class_dab_ip_opts(void *o, uint32_t opts)
   (void) opts;
   if (mm == NULL)
     return PO_HIDDEN;
-  if (mm->mm_type == MM_TYPE_DAB_MPE)
+  if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE)
     return 0;
   return PO_NOUI | PO_NOSAVE;
 }
@@ -217,10 +219,15 @@ dvb_mux_class_type_list ( void *o, const char *lang )
 {
   static const struct strtab tab[] = {
     { N_("TS"),                       MM_TYPE_TS },
+    { N_("TS (input stream)"),        MM_TYPE_ISI },
 #if ENABLE_DVBDAB
     { N_("DAB-MPE"),                  MM_TYPE_DAB_MPE },
     { N_("DAB-ETI"),                  MM_TYPE_DAB_ETI },
     { N_("DAB-TSNI"),                 MM_TYPE_DAB_TSNI },
+#endif
+#if ENABLE_LINUXDVB_NEUMO && ENABLE_DVBDAB
+    { N_("DAB-GSE"),                  MM_TYPE_DAB_GSE },
+    { N_("GSE"),                      MM_TYPE_GSE },
 #endif
   };
   (void) o;
@@ -287,6 +294,15 @@ const idclass_t dvb_mux_class =
       .off      = offsetof(dvb_mux_t, lm_parent),
       .opts     = PO_RDONLY,
       .get_opts = dvb_mux_class_parent_opts,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "multistream",
+      .name     = N_("Multistream transponder"),
+      .desc     = N_("A DVB-S2 transponder with several input streams: "
+                     "they are its sub-muxes, it has the tuning."),
+      .off      = offsetof(dvb_mux_t, lm_multistream),
+      .opts     = PO_RDONLY | PO_ADVANCED,
     },
     {
       .type     = PT_STR,
@@ -658,6 +674,79 @@ dvb_mux_dvbs_class_orbital_set ( void *o, const void *s )
   return 0;
 }
 
+/*
+ * DVB-S2 stream information (read only, from the Neumo driver)
+ */
+static const char *
+dvb_mux_modcod2str ( int modcod )
+{
+  static const char *tab[] = {
+    NULL,
+    "QPSK 1/4", "QPSK 1/3", "QPSK 2/5", "QPSK 1/2", "QPSK 3/5", "QPSK 2/3",
+    "QPSK 3/4", "QPSK 4/5", "QPSK 5/6", "QPSK 8/9", "QPSK 9/10",
+    "8PSK 3/5", "8PSK 2/3", "8PSK 3/4", "8PSK 5/6", "8PSK 8/9", "8PSK 9/10",
+    "16APSK 2/3", "16APSK 3/4", "16APSK 4/5", "16APSK 5/6", "16APSK 8/9",
+    "16APSK 9/10",
+    "32APSK 3/4", "32APSK 4/5", "32APSK 5/6", "32APSK 8/9", "32APSK 9/10",
+  };
+  return modcod > 0 && modcod < (int)ARRAY_SIZE(tab) ? tab[modcod] : NULL;
+}
+
+static const void *
+dvb_mux_dvbs_class_coding_get ( void *o )
+{
+  dvb_mux_t *lm = o;
+  static const char *s;
+
+  if (lm->lm_matype < 0)
+    s = "";
+  else
+    s = (lm->lm_matype & 0x10) ? "CCM" : "ACM/VCM";
+  return &s;
+}
+
+static const void *
+dvb_mux_dvbs_class_matype_get ( void *o )
+{
+  static const char *types[] = { "generic packetized", "generic continuous",
+                                 "reserved", "TS" };
+  static const char *rolloffs[] = { "0.35", "0.25", "0.20", "low" };
+  dvb_mux_t *lm = o;
+  static char buf[128];
+  static const char *s;
+  int m = lm->lm_matype;
+
+  if (m < 0)
+    buf[0] = '\0';
+  else
+    snprintf(buf, sizeof(buf), "0x%02X: %s, %s, %s, rolloff %s%s%s", m,
+             types[(m >> 6) & 3], (m & 0x20) ? "single stream" : "multistream",
+             (m & 0x10) ? "CCM" : "ACM/VCM", rolloffs[m & 3],
+             (m & 0x08) ? ", ISSY" : "", (m & 0x04) ? ", NPD" : "");
+  s = buf;
+  return &s;
+}
+
+static const void *
+dvb_mux_dvbs_class_modcod_get ( void *o )
+{
+  dvb_mux_t *lm = o;
+  static char buf[32];
+  static const char *s;
+  const char *name;
+
+  if (lm->lm_matype >= 0 && !(lm->lm_matype & 0x10))
+    snprintf(buf, sizeof(buf), "variable");
+  else if ((name = dvb_mux_modcod2str(lm->lm_modcod)) != NULL)
+    snprintf(buf, sizeof(buf), "%s", name);
+  else if (lm->lm_modcod > 0)
+    snprintf(buf, sizeof(buf), "MODCOD %d", lm->lm_modcod);
+  else
+    buf[0] = '\0';
+  s = buf;
+  return &s;
+}
+
 const idclass_t dvb_mux_dvbs_class =
 {
   .ic_super      = &dvb_mux_class,
@@ -731,6 +820,50 @@ const idclass_t dvb_mux_dvbs_class =
       .off      = offsetof(dvb_mux_t, lm_tuning.dmc_fe_pls_code),
       .def.u32	= 1,
       .opts     = PO_EXPERT
+    },
+    {
+      .type     = PT_STR,
+      .id       = "coding",
+      .name     = N_("Coding and modulation"),
+      .desc     = N_("CCM (constant) or ACM/VCM (adaptive or variable "
+                     "coding and modulation) of the DVB-S2 stream, from its "
+                     "MATYPE at the last lock (Neumo driver)."),
+      .get      = dvb_mux_dvbs_class_coding_get,
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_ADVANCED,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "modcod",
+      .name     = N_("MODCOD"),
+      .desc     = N_("Modulation and code rate of the DVB-S2 stream at the "
+                     "last lock (Neumo driver); \"variable\" for ACM/VCM."),
+      .get      = dvb_mux_dvbs_class_modcod_get,
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_ADVANCED,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "matype",
+      .name     = N_("MATYPE"),
+      .desc     = N_("The MATYPE byte of the DVB-S2 stream at the last lock "
+                     "(Neumo driver): stream type, single or multistream, "
+                     "CCM or ACM/VCM, rolloff, ISSY and null packet deletion."),
+      .get      = dvb_mux_dvbs_class_matype_get,
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_EXPERT,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "matype_raw",
+      .name     = N_("MATYPE (raw)"),
+      .off      = offsetof(dvb_mux_t, lm_matype),
+      .def.i    = -1,
+      .opts     = PO_RDONLY | PO_HIDDEN | PO_NOUI,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "modcod_raw",
+      .name     = N_("MODCOD (raw)"),
+      .off      = offsetof(dvb_mux_t, lm_modcod),
+      .opts     = PO_RDONLY | PO_HIDDEN | PO_NOUI,
     },
     {
       .type     = PT_STR,
@@ -1338,32 +1471,56 @@ const idclass_t dvb_mux_dab_class =
  * *************************************************************************/
 
 /*
- * Sub-muxes (DAB) are carried in a PID of a transponder and have its
- * tuning. They keep the uuid of the transponder and follow its tuning when
- * it changes (NIT, blind scan, the user): at its save, and when they start.
+ * Sub-muxes are carried in a PID of a transponder (DAB), or in the BBFrames
+ * of a multistream transponder (its input streams), and have its tuning.
+ * They keep the uuid of the transponder and follow its tuning when it
+ * changes (NIT, blind scan, the user): at its save, and when they start.
  * All with global_lock.
  */
+
+/* the same frequency (and polarisation) */
+static int
+dvb_mux_same_frequency ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
+{
+  if (a->dmc_fe_type != b->dmc_fe_type ||
+      a->dmc_fe_freq != b->dmc_fe_freq)
+    return 0;
+  if (a->dmc_fe_type == DVB_TYPE_S &&
+      (a->u.dmc_fe_qpsk.polarisation != b->u.dmc_fe_qpsk.polarisation ||
+       a->u.dmc_fe_qpsk.orbital_pos != b->u.dmc_fe_qpsk.orbital_pos))
+    return 0;
+  return 1;
+}
 
 /* the same transponder: what a sub-mux copied from it */
 static int
 dvb_mux_same_transponder ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
 {
-  if (a->dmc_fe_type != b->dmc_fe_type ||
-      a->dmc_fe_freq != b->dmc_fe_freq ||
-      a->dmc_fe_stream_id != b->dmc_fe_stream_id)
-    return 0;
-  if (a->dmc_fe_type == DVB_TYPE_S &&
-      a->u.dmc_fe_qpsk.polarisation != b->u.dmc_fe_qpsk.polarisation)
-    return 0;
-  return 1;
+  return dvb_mux_same_frequency(a, b) && a->dmc_fe_stream_id == b->dmc_fe_stream_id;
 }
 
 uint16_t
 dvb_mux_stream_pid ( mpegts_mux_t *mm )
 {
-  if (!mpegts_mux_is_submux(mm))
+  if (mpegts_mux_in_bbframes(mm))
+    return DVB_BBFRAMES_PID;
+  if (!mpegts_mux_in_pid(mm))
     return 0;
   return ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_pid;
+}
+
+/* a mux that can carry the sub-mux: a multistream transponder for an input
+ * stream, the transponder with the same input stream for a PID */
+static int
+dvb_mux_can_carry ( const dvb_mux_t *p, const dvb_mux_t *sm )
+{
+  const mpegts_mux_t *mm = (const mpegts_mux_t *)sm;
+
+  if (mpegts_mux_is_submux((const mpegts_mux_t *)p))
+    return 0;
+  if (mpegts_mux_in_bbframes(mm))
+    return p->lm_multistream && dvb_mux_same_frequency(&p->lm_tuning, &sm->lm_tuning);
+  return !p->lm_multistream && dvb_mux_same_transponder(&p->lm_tuning, &sm->lm_tuning);
 }
 
 void
@@ -1389,12 +1546,12 @@ dvb_mux_submux_parent ( dvb_mux_t *sm )
   if (sm->lm_parent) {
     p = mpegts_mux_find(sm->lm_parent);
     if (p != NULL && p != mm && p->mm_network == mm->mm_network &&
-        !mpegts_mux_is_submux(p) && idnode_is_instance(&p->mm_id, &dvb_mux_class))
+        !mpegts_mux_is_submux(p) && idnode_is_instance(&p->mm_id, &dvb_mux_class) &&
+        (!mpegts_mux_in_bbframes(mm) || ((dvb_mux_t *)p)->lm_multistream))
       return (dvb_mux_t *)p;
   }
   LIST_FOREACH(p, &mm->mm_network->mn_muxes, mm_network_link)
-    if (p != mm && !mpegts_mux_is_submux(p) &&
-        dvb_mux_same_transponder(&((dvb_mux_t *)p)->lm_tuning, &sm->lm_tuning)) {
+    if (p != mm && dvb_mux_can_carry((dvb_mux_t *)p, sm)) {
       dvb_mux_submux_link(sm, (dvb_mux_t *)p);
       return (dvb_mux_t *)p;
     }
@@ -1455,6 +1612,8 @@ dvb_mux_submux_sync ( dvb_mux_t *sm )
   if (p == NULL)
     return 0;
   memcpy(&dmc, &p->lm_tuning, sizeof(dmc));
+  if (mpegts_mux_in_bbframes((mpegts_mux_t *)sm))
+    dmc.dmc_fe_stream_id = sm->lm_tuning.dmc_fe_stream_id;
   dmc.dmc_fe_pid = sm->lm_tuning.dmc_fe_pid;
   dmc.dmc_dab_ip = sm->lm_tuning.dmc_dab_ip;
   dmc.dmc_dab_port = sm->lm_tuning.dmc_dab_port;
@@ -1531,6 +1690,11 @@ dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
     return;
   buf += l;
   len -= l;
+  if (mm->mm_type == MM_TYPE_ISI || mm->mm_type == MM_TYPE_GSE) {
+    snprintf(buf, len, " %sISI %d", mm->mm_type == MM_TYPE_GSE ? "GSE " : "",
+             dmc->dmc_fe_stream_id);
+    return;
+  }
   if (mpegts_mux_is_dab(mm)) {
     /* before the first scan: where the ensemble is */
     if (lm->lm_dab_ensemble && *lm->lm_dab_ensemble) {
@@ -1539,9 +1703,11 @@ dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
         snprintf(buf, len, " %s / PID %u", lm->lm_dab_ensemble, dmc->dmc_fe_pid);
       else
         snprintf(buf, len, " %s", lm->lm_dab_ensemble);
-    } else if (mm->mm_type == MM_TYPE_DAB_MPE)
-      snprintf(buf, len, " DAB-MPE %u.%u.%u.%u:%u", (ip >> 24) & 0xFF,
-               (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, dmc->dmc_dab_port);
+    } else if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE)
+      snprintf(buf, len, " %s %u.%u.%u.%u:%u",
+               mm->mm_type == MM_TYPE_DAB_MPE ? "DAB-MPE" : "DAB-GSE",
+               (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
+               dmc->dmc_dab_port);
     else if (mm->mm_type == MM_TYPE_DAB_ETI)
       snprintf(buf, len, " ETI-NA %u", dmc->dmc_fe_pid);
     else
@@ -1708,6 +1874,7 @@ dvb_mux_create0
 
   /* Defaults */
   dvb_mux_conf_init((mpegts_network_t*)ln, &lm->lm_tuning, delsys);
+  lm->lm_matype = -1;
 
   /* Parent init and load config */
   if (!(mm = mpegts_mux_create0(mm, idc, uuid,
@@ -1726,6 +1893,7 @@ dvb_mux_create0
   lm->mm_free             = dvb_mux_free;
   lm->mm_display_name     = dvb_mux_display_name;
   lm->mm_config_save      = dvb_mux_config_save;
+  lm->mm_is_epg           = dvb_mux_is_epg;
 
   mpegts_mux_update_nice_name(mm);
 
@@ -1761,4 +1929,157 @@ dvb_mux_create0
   }
 
   return lm;
+}
+
+/*
+ * Multistream transponders: the input streams of a DVB-S2 transponder are its
+ * sub-muxes. Muxes of input streams from before (each with the whole tuning,
+ * one per stream) get their transponder: the mux of the transponder without
+ * a stream, made if there is none. A transponder is a multistream one with an
+ * input stream that is not TS (GSE), or with two TS streams at least - one
+ * stream set by hand for a single stream transponder stays a mux of its own.
+ */
+
+/* a mux of an input stream, not yet in a multistream transponder */
+static int
+dvb_mux_unlinked_stream ( dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm, *p;
+
+  if (lm->lm_tuning.dmc_fe_type != DVB_TYPE_S ||
+      lm->lm_tuning.dmc_fe_delsys != DVB_SYS_DVBS2 ||
+      lm->lm_tuning.dmc_fe_stream_id == DVB_NO_STREAM_ID_FILTER ||
+      lm->lm_tuning.dmc_fe_stream_id < 0 ||
+      (mm->mm_type != MM_TYPE_TS && !mpegts_mux_in_bbframes(mm)))
+    return 0;
+  if (lm->lm_parent && (p = mpegts_mux_find(lm->lm_parent)) != NULL &&
+      p != mm && ((dvb_mux_t *)p)->lm_multistream)
+    return 0;
+  return 1;
+}
+
+/* the transponder of lm has several input streams */
+static int
+dvb_mux_has_streams ( dvb_network_t *ln, dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm;
+  dvb_mux_t *lm2;
+  int other = -2;
+
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    lm2 = (dvb_mux_t *)mm;
+    if (lm2->lm_tuning.dmc_fe_stream_id == DVB_NO_STREAM_ID_FILTER ||
+        !dvb_mux_same_frequency(&lm2->lm_tuning, &lm->lm_tuning))
+      continue;
+    if (mm->mm_type == MM_TYPE_GSE || mm->mm_type == MM_TYPE_DAB_GSE ||
+        mm->mm_type == MM_TYPE_ISI)
+      return 1;
+    if (mm->mm_type != MM_TYPE_TS)
+      continue;
+    if (other != -2 && other != lm2->lm_tuning.dmc_fe_stream_id)
+      return 1;
+    other = lm2->lm_tuning.dmc_fe_stream_id;
+  }
+  return 0;
+}
+
+/* the mux of the multistream transponder lm is an input stream of */
+dvb_mux_t *
+dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm;
+  dvb_mux_t *t;
+  dvb_mux_conf_t dmc;
+
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    t = (dvb_mux_t *)mm;
+    if (mm->mm_type == MM_TYPE_TS &&
+        t->lm_tuning.dmc_fe_stream_id == DVB_NO_STREAM_ID_FILTER &&
+        dvb_mux_same_frequency(&t->lm_tuning, &lm->lm_tuning))
+      break;
+  }
+  if (mm == NULL) {
+    memcpy(&dmc, &lm->lm_tuning, sizeof(dmc));
+    dmc.dmc_fe_stream_id = DVB_NO_STREAM_ID_FILTER;
+    dmc.dmc_fe_pid = 0;
+    dmc.dmc_dab_ip = 0;
+    dmc.dmc_dab_port = 0;
+    t = dvb_mux_create0(ln, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE, &dmc, NULL, NULL);
+    if (t == NULL)
+      return NULL;
+    tvhinfo(LS_MPEGTS, "%s: transponder of the input streams created", t->mm_nicename);
+  }
+  if (!t->lm_multistream) {
+    t->lm_multistream = 1;
+    idnode_changed(&t->mm_id);
+  }
+  return t;
+}
+
+/*
+ * A multistream transponder has no TS of its own: the services it got
+ * (before it became one, or from the stream the demodulator chose when
+ * its tables were read) are those of its input streams. The ones without
+ * a channel go, the others stay until their channel has the service of
+ * the input stream; the provider network name goes too (global_lock,
+ * after the channels are loaded).
+ */
+void
+dvb_mux_transponder_drop_services ( dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm;
+  mpegts_service_t *s, *n;
+  int dropped = 0, kept = 0;
+
+  if (!lm->lm_multistream)
+    return;
+  for (s = LIST_FIRST(&mm->mm_services); s; s = n) {
+    n = LIST_NEXT(s, s_dvb_mux_link);
+    if (LIST_FIRST(&s->s_channels)) {
+      if (kept++ == 0)
+        tvhwarn(LS_MPEGTS, "%s - service %s is mapped to a channel: map the one of "
+                "the input stream instead", mm->mm_nicename, s->s_dvb_svcname ?: "?");
+      continue;
+    }
+    service_destroy((service_t *)s, 1);
+    dropped++;
+  }
+  if (dropped || kept)
+    tvhinfo(LS_MPEGTS, "%s - multistream transponder: %d service(s) removed, %d kept "
+            "(mapped)", mm->mm_nicename, dropped, kept);
+  /* the provider network name from that stream's NIT goes with them */
+  if (mm->mm_provider_network_name) {
+    free(mm->mm_provider_network_name);
+    mm->mm_provider_network_name = NULL;
+    idnode_changed(&mm->mm_id);
+  }
+}
+
+/* a multistream transponder has no EPG of its own */
+static int
+dvb_mux_is_epg ( mpegts_mux_t *mm )
+{
+  return ((dvb_mux_t *)mm)->lm_multistream ? MM_EPG_DISABLE : mm->mm_epg;
+}
+
+void
+dvb_network_link_multistream ( dvb_network_t *ln )
+{
+  mpegts_mux_t *mm;
+  dvb_mux_t *lm, *t;
+
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    lm = (dvb_mux_t *)mm;
+    if (!dvb_mux_unlinked_stream(lm) || !dvb_mux_has_streams(ln, lm))
+      continue;
+    t = dvb_mux_multistream_transponder(ln, lm);
+    if (t == NULL)
+      continue;
+    if (mm->mm_type == MM_TYPE_TS)
+      mm->mm_type = MM_TYPE_ISI;
+    dvb_mux_submux_link(lm, t);
+    mpegts_mux_update_nice_name(mm);
+    tvhinfo(LS_MPEGTS, "%s: input stream of the transponder %s", mm->mm_nicename,
+            t->mm_nicename);
+  }
 }

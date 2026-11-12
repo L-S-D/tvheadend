@@ -19,6 +19,7 @@
 
 #include "tvheadend.h"
 #include "linuxdvb_private.h"
+#include "config.h"
 #include "notify.h"
 #include "atomic.h"
 #include "tvhpoll.h"
@@ -30,8 +31,29 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <assert.h>
+#include <poll.h>
 #include <linux/dvb/dmx.h>
 #include <linux/dvb/frontend.h> 
+
+#if ENABLE_LINUXDVB_NEUMO
+#include <linux/dvb/dmx.h>
+/* a demux filter on the stream of the frontend itself (Neumo driver): in
+ * BBFrame mode the BBFrames of all input streams, in DVB_BBFRAMES_PID */
+#ifndef DMX_SET_FE_STREAM
+#define DMX_SET_FE_STREAM _IO('o', 55)
+#endif
+/* the dvr buffer for a multistream transponder: all of its streams */
+#define LINUXDVB_BBFRAMES_DVR_BUFFER (16 * 1024 * 1024)
+
+/* a multistream transponder tuned so that all input streams come */
+static int
+linuxdvb_frontend_bbframes_mux ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
+{
+  return lfe->lfe_supports_bbframes && mm != NULL &&
+         idnode_is_instance(&mm->mm_id, &dvb_mux_class) &&
+         ((dvb_mux_t *)mm)->lm_multistream;
+}
+#endif
 
 #define NOSIGNAL(x) (((x) & FE_HAS_SIGNAL) == 0)
 
@@ -627,6 +649,19 @@ linuxdvb_frontend_is_enabled
     return MI_IS_ENABLED_NEVER;
   if (mm == NULL)
     return MI_IS_ENABLED_OK;
+  /* a multistream transponder delivers its input streams as BBFrames (only a
+   * Neumo frontend; others tune the streams themselves) */
+  if (idnode_is_instance(&mm->mm_id, &dvb_mux_class) && ((dvb_mux_t *)mm)->lm_multistream) {
+#if ENABLE_LINUXDVB_NEUMO
+    if (!lfe->lfe_supports_bbframes)
+#endif
+      return MI_IS_ENABLED_NEVER;
+  }
+#if ENABLE_LINUXDVB_NEUMO
+  /* ... and its input streams come from it (the sub-mux input) */
+  if (mm->mm_type == MM_TYPE_ISI && lfe->lfe_supports_bbframes)
+    return MI_IS_ENABLED_NEVER;
+#endif
   if (lfe->lfe_in_setup)
     return MI_IS_ENABLED_RETRY;
   if (lfe->lfe_type != DVB_TYPE_S)
@@ -642,8 +677,13 @@ linuxdvb_frontend_is_enabled
       if (lfe->lfe_master && !strcmp(lfe->lfe_master, idnode_uuid_as_str(&lfe2->ti_id, ubuf))) {
         if (lfe2->lfe_satconf == NULL)
           return MI_IS_ENABLED_NEVER; /* invalid master */
-        if (lfe2->lfe_refcount <= 0)
+        if (lfe2->lfe_refcount <= 0) {
+          /* a free RF input of a Neumo card: this tuner sets it up itself
+           * (the master's demod may be busy on another input) */
+          if (linuxdvb_frontend_rf_port(lfe))
+            goto ok;
           return MI_IS_ENABLED_RETRY; /* prefer master */
+        }
         if (linuxdvb_satconf_match_mux(lfe2->lfe_satconf, mm))
           goto ok;
         return MI_IS_ENABLED_RETRY;
@@ -673,6 +713,88 @@ ok:
   return MI_IS_ENABLED_OK;
 }
 
+#if ENABLE_LINUXDVB_NEUMO
+/* a master tuner: other tuners have it as their master */
+static int
+linuxdvb_frontend_has_slaves ( linuxdvb_frontend_t *lfe )
+{
+  tvh_hardware_t *th;
+  linuxdvb_adapter_t *la;
+  linuxdvb_frontend_t *lfe2;
+  char ubuf[UUID_HEX_SIZE];
+
+  idnode_uuid_as_str(&lfe->ti_id, ubuf);
+  LIST_FOREACH(th, &tvh_hardware, th_link) {
+    if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class)) continue;
+    la = (linuxdvb_adapter_t*)th;
+    LIST_FOREACH(lfe2, &la->la_frontends, lfe_link)
+      if (lfe2->lfe_master && !strcmp(lfe2->lfe_master, ubuf))
+        return 1;
+  }
+  return 0;
+}
+
+/* close the frontend device of an idle demod: none of its virtual frontends
+ * is in use (they share the device). Returns 1 when a device was open */
+static int
+linuxdvb_frontend_demod_close ( linuxdvb_frontend_t *lfe )
+{
+  linuxdvb_frontend_t *lfe2;
+  int open = 0;
+
+  LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link)
+    if (lfe_group(lfe, lfe2) && lfe2->lfe_refcount > 0)
+      return 0;
+  LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link)
+    if (lfe_group(lfe, lfe2)) {
+      open |= lfe2->lfe_fe_fd > 0;
+      mtimer_disarm(&lfe2->lfe_monitor_timer);
+      linuxdvb_frontend_close_fd(lfe2, NULL);
+    }
+  return open;
+}
+
+/*
+ * The driver releases the reservation of an RF input by a demod only when its
+ * frontend device is closed (the frontend sleeps): an idle demod that set up
+ * the input or joined it keeps it, and the next tuner setting up the input
+ * only becomes its slave - its LNB and DiSEqC commands fail (EPERM). Closes
+ * the idle demods of the tuners sharing the RF input of lfe (its master and
+ * the master's slaves), lfe's own too unless except_own. Returns the number
+ * of devices closed.
+ */
+int
+linuxdvb_frontend_rf_input_release ( linuxdvb_frontend_t *lfe, int except_own )
+{
+  tvh_hardware_t *th;
+  linuxdvb_adapter_t *la;
+  linuxdvb_frontend_t *master = lfe, *lfe2;
+  char ubuf[UUID_HEX_SIZE];
+  int n = 0;
+
+  if (!linuxdvb_frontend_rf_port(lfe))
+    return 0;
+  if (lfe->lfe_master) {
+    master = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL);
+    if (master == NULL)
+      return 0;
+  }
+  idnode_uuid_as_str(&master->ti_id, ubuf);
+  LIST_FOREACH(th, &tvh_hardware, th_link) {
+    if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class)) continue;
+    la = (linuxdvb_adapter_t*)th;
+    LIST_FOREACH(lfe2, &la->la_frontends, lfe_link) {
+      if (lfe2 != master && (lfe2->lfe_master == NULL || strcmp(lfe2->lfe_master, ubuf)))
+        continue;
+      if (lfe2->lfe_fe_fd <= 0 || (except_own && lfe_group(lfe, lfe2)))
+        continue;
+      n += linuxdvb_frontend_demod_close(lfe2);
+    }
+  }
+  return n;
+}
+#endif
+
 static void
 linuxdvb_frontend_stop_mux
   ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
@@ -698,6 +820,9 @@ linuxdvb_frontend_stop_mux
   /* Not locked */
   lfe->lfe_ready   = 0;
   lfe->lfe_locked  = 0;
+#if ENABLE_LINUXDVB_NEUMO
+  lfe->lfe_stream_info = mclk() + sec2mono(2);   /* MATYPE valid after the lock */
+#endif
   lfe->lfe_status  = 0;
   lfe->lfe_status2 = 0;
 
@@ -732,6 +857,22 @@ linuxdvb_frontend_stop_mux
   lfe->lfe_in_setup = 0;
   lfe->lfe_freq = 0;
   mpegts_pid_done(&lfe->lfe_pids);
+
+#if ENABLE_LINUXDVB_NEUMO
+  /* An idle demod of a shared input (master and slaves) is closed - all its
+   * virtual frontends, they share the device; when the input is free, every
+   * idle demod that set it up or joined it (linuxdvb_frontend_rf_input_release:
+   * the master's demod stays reserved after the master was stopped while a
+   * slave still used the input) */
+  if (linuxdvb_frontend_rf_port(lfe) && lfe->lfe_refcount <= 0 &&
+      (lfe->lfe_master || linuxdvb_frontend_has_slaves(lfe))) {
+    linuxdvb_frontend_demod_close(lfe);
+    lfe2 = lfe->lfe_master ?
+      (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL) : lfe;
+    if (lfe2 && lfe2->lfe_refcount <= 0)
+      linuxdvb_frontend_rf_input_release(lfe, 0);
+  }
+#endif
 }
 
 static int
@@ -761,14 +902,74 @@ linuxdvb_frontend_warm_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
   return 0;
 }
 
+#if ENABLE_LINUXDVB_NEUMO
+/* tries for the RF input of a slave tuner, 25 ms apart (its master may still
+ * be configuring the input) */
+#define LINUXDVB_SLAVE_RF_TRIES 20
+
+/*
+ * A tuner joining an RF input of a Neumo card that another tuner set up
+ * sends no LNB or DiSEqC commands of its own, but it still has to listen
+ * on that input - otherwise the demod stays on the driver's default input
+ * (another cable): it reserves the input as a slave. 0 = ok, -1 = failed
+ */
+int
+linuxdvb_frontend_rf_input_slave ( linuxdvb_frontend_t *lfe )
+{
+  struct fe_rf_input_control ic;
+  struct dtv_property prop;
+  struct dtv_properties props;
+  struct dvb_frontend_event ev;
+  char name[256];
+  int i, r = FE_RESERVATION_RETRY;
+
+  if (lfe->lfe_rf_input < 0 || !lfe->lfe_neumo_supported)
+    return 0;
+  lfe->mi_display_name((mpegts_input_t*)lfe, name, sizeof(name));
+  if (linuxdvb_frontend_open_fd(lfe, name))
+    return -1;
+  /* a clean frontend first, as for a master (linuxdvb_satconf_ele_tune()) */
+  prop.cmd = DTV_CLEAR;
+  props.num = 1;
+  props.props = &prop;
+  ioctl(lfe->lfe_fe_fd, FE_SET_PROPERTY, &props);
+  while (ioctl(lfe->lfe_fe_fd, FE_GET_EVENT, &ev) >= 0)
+    ;
+  memset(&ic, 0, sizeof(ic));
+  ic.owner = 0xffffffff;      /* legacy owner, config_id as the master's */
+  ic.config_id = 1;
+  ic.rf_in = lfe->lfe_rf_input;
+  ic.mode = FE_RESERVATION_MODE_SLAVE;
+  for (i = 0; i < LINUXDVB_SLAVE_RF_TRIES && r == FE_RESERVATION_RETRY; i++) {
+    if (i)
+      tvh_safe_usleep(25000);
+    r = ioctl(lfe->lfe_fe_fd, FE_SET_RF_INPUT, &ic);
+  }
+  switch (r) {
+  case FE_RESERVATION_MASTER:
+  case FE_RESERVATION_SLAVE:
+  case FE_RESERVATION_UNCHANGED:
+  case FE_RESERVATION_NOT_SUPPORTED:
+    tvhtrace(LS_LINUXDVB, "%s - slave tuner on RF input %d (result=%d)",
+             name, lfe->lfe_rf_input, r);
+    return 0;
+  default:
+    tvherror(LS_LINUXDVB, "%s - RF input %d for the slave tuner failed: result=%d",
+             name, lfe->lfe_rf_input, r);
+    return -1;
+  }
+}
+#endif
+
 static int
 linuxdvb_frontend_start_mux
   ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int weight )
 {
-  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2;
+  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2, *master = NULL;
   int res, f;
 
   assert(lfe->lfe_in_setup == 0);
+
 
   lfe->lfe_refcount++;
   lfe->lfe_in_setup = 1;
@@ -784,20 +985,39 @@ linuxdvb_frontend_start_mux
       f = linuxdvb_satconf_lnb_freq(lfe2->lfe_satconf, mmi);
       if (f <= 0)
         goto end;
+      master = lfe2;
       if (lfe2->lfe_refcount++ == 0) {
+#if ENABLE_LINUXDVB_NEUMO
+        if (linuxdvb_frontend_rf_port(lfe)) {
+          /* a free RF input of a Neumo card: this tuner sets it up with the
+           * configuration of the master (the input's) and tunes */
+          lfe2->lfe_satconf->ls_drive = (mpegts_input_t *)lfe;
+          res = linuxdvb_satconf_start_mux(lfe2->lfe_satconf, mmi, 0);
+          goto end;
+        }
+#endif
         lfe2->lfe_in_setup = 1;
         lfe2->lfe_ioctls   = 0;
         res = linuxdvb_satconf_start_mux(lfe2->lfe_satconf, mmi, 0);
         if (res)
           goto end;
       }
+#if ENABLE_LINUXDVB_NEUMO
+      if (linuxdvb_frontend_rf_input_slave(lfe)) {
+        res = SM_CODE_TUNING_FAILED;
+        goto end;
+      }
+#endif
       res = linuxdvb_frontend_tune1((linuxdvb_frontend_t*)mi, mmi, f);
     }
     goto end;
   }
 
-  if (lfe->lfe_satconf)
+  if (lfe->lfe_satconf) {
+    if (lfe->lfe_refcount <= 1)
+      lfe->lfe_satconf->ls_drive = NULL;
     res = linuxdvb_satconf_start_mux(lfe->lfe_satconf, mmi, lfe->lfe_refcount > 1);
+  }
   else
     res = linuxdvb_frontend_tune1((linuxdvb_frontend_t*)mi, mmi, -1);
 
@@ -805,6 +1025,19 @@ end:
   if (res) {
     lfe->lfe_in_setup = 0;
     lfe->lfe_refcount--;
+    /* a slave counted itself on its master (the input) */
+    if (master && --master->lfe_refcount <= 0) {
+      master->lfe_refcount = 0;
+      master->lfe_in_setup = 0;
+      if (master->lfe_satconf)
+        linuxdvb_satconf_post_stop_mux(master->lfe_satconf);
+    }
+#if ENABLE_LINUXDVB_NEUMO
+    /* the failed tuner may have reserved the input: free it again when no
+     * tuner uses it (or every following tuner only becomes its slave) */
+    if (lfe->lfe_refcount <= 0 && (master ? master->lfe_refcount : lfe->lfe_refcount) <= 0)
+      linuxdvb_frontend_rf_input_release(lfe, 0);
+#endif
   }
   return res;
 }
@@ -830,6 +1063,11 @@ linuxdvb_frontend_update_pids
   /* The DAB probe looks for DAB content in all PIDs */
   if (mm->mm_dab_probe_ctx)
     lfe->lfe_pids.all = 1;
+#if ENABLE_LINUXDVB_NEUMO
+  /* the ISI probe reads the headers of the BBFrames */
+  if (mm->mm_isi_probe_ctx && lfe->lfe_bbframes)
+    mpegts_pid_add(&lfe->lfe_pids, DVB_BBFRAMES_PID, MPS_WEIGHT_RAW);
+#endif
   tvh_mutex_unlock(&lfe->lfe_dvr_lock);
 
   if (lfe->lfe_dvr_pipe.wr > 0)
@@ -883,6 +1121,303 @@ ioctl_bad( linuxdvb_frontend_t *lfe, int bit )
 {
   lfe->lfe_ioctls |= 1 << bit;
 }
+
+#if ENABLE_LINUXDVB_NEUMO
+/*
+ * Linux DVB to TVH conversion helpers for blindscan
+ */
+static dvb_fe_modulation_t
+linuxdvb2tvh_modulation(int mod)
+{
+  switch (mod) {
+    case QPSK:     return DVB_MOD_QPSK;
+    case QAM_16:   return DVB_MOD_QAM_16;
+    case QAM_32:   return DVB_MOD_QAM_32;
+    case QAM_64:   return DVB_MOD_QAM_64;
+    case QAM_128:  return DVB_MOD_QAM_128;
+    case QAM_256:  return DVB_MOD_QAM_256;
+    case QAM_AUTO: return DVB_MOD_QAM_AUTO;
+    case VSB_8:    return DVB_MOD_VSB_8;
+    case VSB_16:   return DVB_MOD_VSB_16;
+#if DVB_VER_ATLEAST(5,1)
+    case PSK_8:    return DVB_MOD_PSK_8;
+    case APSK_16:  return DVB_MOD_APSK_16;
+    case APSK_32:  return DVB_MOD_APSK_32;
+    case DQPSK:    return DVB_MOD_DQPSK;
+#endif
+#if DVB_VER_ATLEAST(5,7)
+    case QAM_4_NR: return DVB_MOD_QAM_4_NR;
+#endif
+#if DVB_VER_ATLEAST(5,12)
+    case APSK_8_L:    return DVB_MOD_APSK_8_L;
+    case APSK_16_L:   return DVB_MOD_APSK_16_L;
+    case APSK_32_L:   return DVB_MOD_APSK_32_L;
+    case APSK_64:     return DVB_MOD_APSK_64;
+    case APSK_64_L:   return DVB_MOD_APSK_64_L;
+    case APSK_128:    return DVB_MOD_APSK_128;
+    case APSK_256:    return DVB_MOD_APSK_256;
+#endif
+    default:       return DVB_MOD_NONE;
+  }
+}
+
+static dvb_fe_code_rate_t
+linuxdvb2tvh_fec(int fec)
+{
+  switch (fec) {
+    case FEC_NONE:  return DVB_FEC_NONE;
+    case FEC_AUTO:  return DVB_FEC_AUTO;
+    case FEC_1_2:   return DVB_FEC_1_2;
+    case FEC_2_3:   return DVB_FEC_2_3;
+    case FEC_3_4:   return DVB_FEC_3_4;
+    case FEC_4_5:   return DVB_FEC_4_5;
+    case FEC_5_6:   return DVB_FEC_5_6;
+    case FEC_6_7:   return DVB_FEC_6_7;
+    case FEC_7_8:   return DVB_FEC_7_8;
+    case FEC_8_9:   return DVB_FEC_8_9;
+#if DVB_VER_ATLEAST(5,0)
+    case FEC_3_5:   return DVB_FEC_3_5;
+    case FEC_9_10:  return DVB_FEC_9_10;
+#endif
+#if DVB_VER_ATLEAST(5,7)
+    case FEC_2_5:   return DVB_FEC_2_5;
+#endif
+#if DVB_VER_ATLEAST(5,12)
+    case FEC_1_3:   return DVB_FEC_1_3;
+    case FEC_1_4:   return DVB_FEC_1_4;
+    case FEC_4_15:  return DVB_FEC_4_15;
+    case FEC_5_9:   return DVB_FEC_5_9;
+    case FEC_7_9:   return DVB_FEC_7_9;
+    case FEC_7_15:  return DVB_FEC_7_15;
+    case FEC_8_15:  return DVB_FEC_8_15;
+    case FEC_9_20:  return DVB_FEC_9_20;
+    case FEC_11_15: return DVB_FEC_11_15;
+    case FEC_11_20: return DVB_FEC_11_20;
+    case FEC_11_45: return DVB_FEC_11_45;
+    case FEC_13_18: return DVB_FEC_13_18;
+    case FEC_13_45: return DVB_FEC_13_45;
+    case FEC_14_45: return DVB_FEC_14_45;
+    case FEC_23_36: return DVB_FEC_23_36;
+    case FEC_25_36: return DVB_FEC_25_36;
+    case FEC_26_45: return DVB_FEC_26_45;
+    case FEC_28_45: return DVB_FEC_28_45;
+    case FEC_32_45: return DVB_FEC_32_45;
+    case FEC_77_90: return DVB_FEC_77_90;
+#endif
+    default:        return DVB_FEC_NONE;
+  }
+}
+
+#if DVB_VER_ATLEAST(5,0)
+static dvb_fe_pilot_t
+linuxdvb2tvh_pilot(int pilot)
+{
+  switch (pilot) {
+    case PILOT_ON:   return DVB_PILOT_ON;
+    case PILOT_OFF:  return DVB_PILOT_OFF;
+    case PILOT_AUTO: return DVB_PILOT_AUTO;
+    default:         return DVB_PILOT_AUTO;
+  }
+}
+
+static dvb_fe_rolloff_t
+linuxdvb2tvh_rolloff(int rolloff)
+{
+  switch (rolloff) {
+    case ROLLOFF_35:   return DVB_ROLLOFF_35;
+    case ROLLOFF_20:   return DVB_ROLLOFF_20;
+    case ROLLOFF_25:   return DVB_ROLLOFF_25;
+    case ROLLOFF_AUTO: return DVB_ROLLOFF_AUTO;
+#if DVB_VER_ATLEAST(5,12)
+    case ROLLOFF_5:    return DVB_ROLLOFF_5;
+    case ROLLOFF_10:   return DVB_ROLLOFF_10;
+    case ROLLOFF_15:   return DVB_ROLLOFF_15;
+#endif
+    default:           return DVB_ROLLOFF_AUTO;
+  }
+}
+#endif /* DVB_VER_ATLEAST(5,0) */
+
+/*
+ * Update mux parameters from blindscan results after lock
+ * Only updates: delsys, modulation, fec, pilot, rolloff, pls_mode, pls_code
+ * Does NOT update: frequency
+ * Symbol rate only if difference > 100kHz
+ */
+static void
+linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
+{
+  struct dtv_property props[10];
+  struct dtv_properties dtv_prop;
+  dvb_mux_conf_t *dmc = &lm->lm_tuning;
+  int updated = 0;
+  char buf[256];
+
+  if (!lfe->lfe_neumo_supported)
+    return;
+
+  /* Only for DVB-S/S2 */
+  if (lfe->lfe_type != DVB_TYPE_S)
+    return;
+
+  lfe->mi_display_name((mpegts_input_t*)lfe, buf, sizeof(buf));
+
+  memset(props, 0, sizeof(props));
+  props[0].cmd = DTV_DELIVERY_SYSTEM;
+  props[1].cmd = DTV_MODULATION;
+  props[2].cmd = DTV_INNER_FEC;
+  props[3].cmd = DTV_SYMBOL_RATE;
+  props[4].cmd = DTV_PILOT;
+  props[5].cmd = DTV_ROLLOFF;
+  props[6].cmd = DTV_STREAM_ID;
+  dtv_prop.num = 7;
+  dtv_prop.props = props;
+
+  if (ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &dtv_prop)) {
+    tvhwarn(LS_LINUXDVB, "%s - blindscan FE_GET_PROPERTY failed: %s",
+            buf, strerror(errno));
+    return;
+  }
+
+  /* Delivery System - use existing linuxdvb2tvh_delsys */
+  dvb_fe_delivery_system_t delsys = linuxdvb2tvh_delsys(props[0].u.data);
+  if (delsys != DVB_SYS_NONE && delsys != dmc->dmc_fe_delsys) {
+    tvhdebug(LS_LINUXDVB, "%s - blindscan update delsys: %d -> %d",
+             buf, dmc->dmc_fe_delsys, delsys);
+    dmc->dmc_fe_delsys = delsys;
+    updated = 1;
+  }
+
+  /* Modulation */
+  dvb_fe_modulation_t mod = linuxdvb2tvh_modulation(props[1].u.data);
+  if (mod != DVB_MOD_NONE && mod != dmc->dmc_fe_modulation) {
+    tvhdebug(LS_LINUXDVB, "%s - blindscan update modulation: %d -> %d",
+             buf, dmc->dmc_fe_modulation, mod);
+    dmc->dmc_fe_modulation = mod;
+    updated = 1;
+  }
+
+  /* FEC */
+  dvb_fe_code_rate_t fec = linuxdvb2tvh_fec(props[2].u.data);
+  if (fec != DVB_FEC_NONE && fec != DVB_FEC_AUTO && fec != dmc->u.dmc_fe_qpsk.fec_inner) {
+    tvhdebug(LS_LINUXDVB, "%s - blindscan update fec: %d -> %d",
+             buf, dmc->u.dmc_fe_qpsk.fec_inner, fec);
+    dmc->u.dmc_fe_qpsk.fec_inner = fec;
+    updated = 1;
+  }
+
+  /* Symbol rate - only update if difference > 100kHz, otherwise keep tuned value */
+  uint32_t sr = props[3].u.data;
+  int32_t sr_diff = (int32_t)sr - (int32_t)dmc->u.dmc_fe_qpsk.symbol_rate;
+  if (sr > 0) {
+    if (sr_diff > 100000 || sr_diff < -100000) {
+      tvhdebug(LS_LINUXDVB, "%s - blindscan update symbol_rate: %u -> %u",
+               buf, dmc->u.dmc_fe_qpsk.symbol_rate, sr);
+      dmc->u.dmc_fe_qpsk.symbol_rate = sr;
+      updated = 1;
+    } else {
+      /* Within 100kHz - use tuned value for consistency */
+      sr = dmc->u.dmc_fe_qpsk.symbol_rate;
+    }
+  }
+
+#if DVB_VER_ATLEAST(5,0)
+  /* Pilot - only for DVB-S2 */
+  if (dmc->dmc_fe_delsys == DVB_SYS_DVBS2) {
+    dvb_fe_pilot_t pilot = linuxdvb2tvh_pilot(props[4].u.data);
+    if (pilot != DVB_PILOT_AUTO && pilot != dmc->dmc_fe_pilot) {
+      tvhdebug(LS_LINUXDVB, "%s - blindscan update pilot: %d -> %d",
+               buf, dmc->dmc_fe_pilot, pilot);
+      dmc->dmc_fe_pilot = pilot;
+      updated = 1;
+    }
+
+    /* Rolloff */
+    dvb_fe_rolloff_t rolloff = linuxdvb2tvh_rolloff(props[5].u.data);
+    if (rolloff != DVB_ROLLOFF_AUTO && rolloff != dmc->dmc_fe_rolloff) {
+      tvhdebug(LS_LINUXDVB, "%s - blindscan update rolloff: %d -> %d",
+               buf, dmc->dmc_fe_rolloff, rolloff);
+      dmc->dmc_fe_rolloff = rolloff;
+      updated = 1;
+    }
+
+#if DVB_VER_ATLEAST(5,9)
+    /* PLS Mode and Code - only update if not default (Gold code 0) */
+    uint32_t stream_id = props[6].u.data;
+    if (stream_id != DVB_NO_STREAM_ID_FILTER) {
+      uint32_t pls_code = (stream_id >> 8) & 0x3FFFF;
+      uint32_t pls_mode = (stream_id >> 26) & 0x3;
+      /* Only update if non-default (mode != ROOT or code != 0) */
+      if (pls_mode != 0 || pls_code != 0) {
+        if (pls_code != dmc->dmc_fe_pls_code) {
+          tvhdebug(LS_LINUXDVB, "%s - blindscan update pls_code: %u -> %u",
+                   buf, dmc->dmc_fe_pls_code, pls_code);
+          dmc->dmc_fe_pls_code = pls_code;
+          updated = 1;
+        }
+        if (pls_mode != dmc->dmc_fe_pls_mode) {
+          tvhdebug(LS_LINUXDVB, "%s - blindscan update pls_mode: %u -> %u",
+                   buf, dmc->dmc_fe_pls_mode, pls_mode);
+          dmc->dmc_fe_pls_mode = pls_mode;
+          updated = 1;
+        }
+      }
+    }
+#endif /* DVB_VER_ATLEAST(5,9) */
+  }
+#endif /* DVB_VER_ATLEAST(5,0) */
+
+  if (updated) {
+    tvhinfo(LS_LINUXDVB, "%s - mux parameters updated from blindscan", buf);
+    idnode_changed(&lm->mm_id);
+  }
+}
+#endif /* ENABLE_LINUXDVB_NEUMO */
+
+#if ENABLE_LINUXDVB_NEUMO
+/*
+ * The MATYPE and MODCOD of the DVB-S2 stream to the mux (global_lock),
+ * shown read only at the mux; saved when they change. The MODCOD of an
+ * ACM/VCM stream changes from frame to frame: not kept.
+ */
+static void
+linuxdvb_frontend_stream_info ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
+{
+  struct dtv_property props[3];
+  struct dtv_properties cmdseq = { .num = 3, .props = props };
+  dvb_mux_t *lm = (dvb_mux_t *)mm;
+  int matype, modcod;
+
+  if (!lfe->lfe_neumo_supported || lfe->lfe_type != DVB_TYPE_S || mm == NULL)
+    return;
+  if (mclk() < lfe->lfe_stream_info)
+    return;
+  lfe->lfe_stream_info = mclk() + sec2mono(30);
+
+  memset(props, 0, sizeof(props));
+  props[0].cmd = DTV_MATYPE;
+  props[1].cmd = DTV_MAIN_MODCOD;
+  props[2].cmd = DTV_DELIVERY_SYSTEM;
+  if (ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &cmdseq))
+    return;
+  matype = (int)props[0].u.data;
+  /* DVB-S has no BBHEADER: the driver may still report a MATYPE (0) */
+  if (props[2].u.data != SYS_DVBS2)
+    matype = -1;
+  else if (matype < 0 || matype > 0xff)   /* not known yet */
+    return;
+  modcod = matype >= 0 && (matype & 0x10) && props[1].u.data < 0x20 ? (int)props[1].u.data : 0;
+  if (matype == lm->lm_matype && modcod == lm->lm_modcod)
+    return;
+  if (matype < 0)
+    tvhdebug(LS_LINUXDVB, "%s - DVB-S, no MATYPE", mm->mm_nicename);
+  else
+    tvhdebug(LS_LINUXDVB, "%s - MATYPE 0x%02X, MODCOD %d", mm->mm_nicename, matype, modcod);
+  lm->lm_matype = matype;
+  lm->lm_modcod = modcod;
+  idnode_changed(&mm->mm_id);
+}
+#endif
 
 static void
 linuxdvb_frontend_monitor ( void *aux )
@@ -992,7 +1527,16 @@ linuxdvb_frontend_monitor ( void *aux )
     if (status == SIGNAL_GOOD) {
       tvhdebug(LS_LINUXDVB, "%s - locked", buf);
       lfe->lfe_locked = 1;
-  
+
+#if ENABLE_LINUXDVB_NEUMO
+      /* Update mux parameters from blindscan results if enabled */
+      if (config.blindscan_update_mux &&
+          config.blindscan_mode >= 1 &&
+          mm->mm_scan_state == MM_SCAN_STATE_ACTIVE) {
+        linuxdvb_frontend_blindscan_update_mux(lfe, (dvb_mux_t *)mm);
+      }
+#endif
+
       /* Start input */
       tvh_pipe(O_NONBLOCK, &lfe->lfe_dvr_pipe);
       tvh_mutex_lock(&lfe->lfe_dvr_lock);
@@ -1005,9 +1549,11 @@ linuxdvb_frontend_monitor ( void *aux )
       } while (ERRNO_AGAIN(e));
       tvh_mutex_unlock(&lfe->lfe_dvr_lock);
 
-      /* Table handlers */
-      psi_tables_install((mpegts_input_t *)lfe, mm,
-                         ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys);
+      /* Table handlers - not for a multistream transponder: the tables
+       * read there would be those of the stream the demodulator chose */
+      if (mpegts_mux_has_own_ts(mm))
+        psi_tables_install((mpegts_input_t *)lfe, mm,
+                           ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys);
 
     /* Re-arm (quick) */
     } else {
@@ -1024,6 +1570,11 @@ linuxdvb_frontend_monitor ( void *aux )
       return;
     lfe->lfe_monitor = mclk() + ms2mono(period);
   }
+
+#if ENABLE_LINUXDVB_NEUMO
+  if (lfe->lfe_locked && status == SIGNAL_GOOD)
+    linuxdvb_frontend_stream_info(lfe, mm);
+#endif
 
 
   tvh_mutex_lock(&mmi->tii_stats_mutex);
@@ -1246,6 +1797,14 @@ linuxdvb_frontend_open_pid0
     return;
   }
 
+#if ENABLE_LINUXDVB_NEUMO
+  /* BBFrame mode: the filter reads the stream of the frontend (the BBFrames),
+   * set before the filter itself */
+  if (lfe->lfe_bbframes && ioctl(fd, DMX_SET_FE_STREAM) < 0)
+    tvherror(LS_LINUXDVB, "%s - DMX_SET_FE_STREAM failed for pid %d [e=%s]",
+             name, pid, strerror(errno));
+#endif
+
   /* Install filter */
   tvhtrace(LS_LINUXDVB, "%s - open PID %04X (%d) fd %d", name, pid, pid, fd);
   memset(&dmx_param, 0, sizeof(dmx_param));
@@ -1374,6 +1933,11 @@ linuxdvb_frontend_input_thread ( void *aux )
     tvherror(LS_LINUXDVB, "%s - failed to open %s", name, lfe->lfe_dvr_path);
     return NULL;
   }
+#if ENABLE_LINUXDVB_NEUMO
+  if (lfe->lfe_bbframes &&
+      ioctl(dvr, DMX_SET_BUFFER_SIZE, LINUXDVB_BBFRAMES_DVR_BUFFER) < 0)
+    tvhwarn(LS_LINUXDVB, "%s - dvr buffer for BBFrames not set [e=%s]", name, strerror(errno));
+#endif
 
   /* Setup poll */
   efd = tvhpoll_create(2);
@@ -1887,6 +2451,30 @@ linuxdvb_frontend_tune0
 
   /* DVB-S */
   } else if (lfe->lfe_type == DVB_TYPE_S) {
+#if ENABLE_LINUXDVB_NEUMO
+    /* the driver keeps the BBFrame output across DTV_CLEAR: set it always */
+    lfe->lfe_bbframes = linuxdvb_frontend_bbframes_mux(lfe, (mpegts_mux_t *)lm);
+    if (lfe->lfe_supports_bbframes)
+      S2CMD(DTV_OUTPUT_BBFRAMES, lfe->lfe_bbframes);
+    /* Neumo driver: use blind tuning for auto-detection
+     * blindscan_mode: 0=never, 1=scanning only, 2=always */
+    if (lfe->lfe_neumo_supported &&
+        (config.blindscan_mode == 2 ||
+         (config.blindscan_mode == 1 &&
+          /* the tune that starts a scan: mpegts_mux_scan_active() sets
+           * ACTIVE only after mi_start_mux() */
+          (((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_ACTIVE ||
+           ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_PEND ||
+           ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_IPEND)))) {
+      S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
+      //S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
+    } else if (lfe->lfe_neumo_supported) {
+      /* not set, the algorithm is 0 = ALGORITHM_WARM: a warm start finds
+       * the carrier only when frequency and symbol rate are (nearly)
+       * exact; a cold start searches the default range and is not slower */
+      S2CMD(DTV_ALGORITHM,       ALGORITHM_COLD);
+    }
+#endif
     S2CMD(DTV_SYMBOL_RATE,       p.u.qpsk.symbol_rate);
     S2CMD(DTV_INNER_FEC,         p.u.qpsk.fec_inner);
     S2CMD(DTV_MODULATION,        TR(modulation, mod_tbl, QPSK));
@@ -1898,6 +2486,20 @@ linuxdvb_frontend_tune0
       r = dmc->dmc_fe_stream_id != DVB_NO_STREAM_ID_FILTER ? (dmc->dmc_fe_stream_id & 0xFF) |
           ((dmc->dmc_fe_pls_code & 0x3FFFF)<<8) | ((dmc->dmc_fe_pls_mode & 0x3)<<26) :
           DVB_NO_STREAM_ID_FILTER;
+#if ENABLE_LINUXDVB_NEUMO
+      /* all input streams: no stream filter, the PLS on its own */
+      if (lfe->lfe_bbframes) {
+        r = DVB_NO_STREAM_ID_FILTER;
+        S2CMD(DTV_PLS_MODE,      dmc->dmc_fe_pls_mode);
+        S2CMD(DTV_PLS_CODE,      dmc->dmc_fe_pls_code);
+      } else if (lfe->lfe_neumo_supported && r == DVB_NO_STREAM_ID_FILTER) {
+        /* single input stream: the neumo driver takes the PLS from
+         * DTV_PLS_MODE/CODE or the stream id only, it ignores
+         * DTV_SCRAMBLING_SEQUENCE_INDEX */
+        S2CMD(DTV_PLS_MODE,      dmc->dmc_fe_pls_mode);
+        S2CMD(DTV_PLS_CODE,      dmc->dmc_fe_pls_code);
+      }
+#endif
 #if DVB_VER_ATLEAST(5,9)
       S2CMD(DTV_STREAM_ID,       r);
 #if DVB_VER_ATLEAST(5,11)
@@ -1956,6 +2558,15 @@ linuxdvb_frontend_tune0
   } else if (lfe->lfe_type == DVB_TYPE_DAB) {
 #endif /* 5.0+ */
   }
+
+#if ENABLE_LINUXDVB_NEUMO
+  /* Neumo DVB: Include DTV_SET_SEC_CONFIGURED in same ioctl as DTV_TUNE
+   * Only sent when FE_SET_RF_INPUT was successfully called */
+  if (lfe->lfe_sec_configured) {
+    S2CMD(DTV_SET_SEC_CONFIGURED, 1);
+    lfe->lfe_sec_configured = 0;  /* Clear after use */
+  }
+#endif
 
   /* Tune */
   S2CMD(DTV_TUNE, 0);
@@ -2101,28 +2712,54 @@ linuxdvb_frontend_t *
 linuxdvb_frontend_create
   ( htsmsg_t *conf, linuxdvb_adapter_t *la, int number,
     const char *fe_path, const char *dmx_path, const char *dvr_path,
-    dvb_fe_type_t type, const char *name )
+    dvb_fe_type_t type, const char *name, int8_t rf_input )
 {
   const idclass_t *idc;
   const char *str, *uuid = NULL, *muuid = NULL;
-  char id[16], lname[256], buf[256];
+  char id[32], alt[32], lname[256], buf[256];
   linuxdvb_frontend_t *lfe;
-  htsmsg_t *oconf = conf, *scconf;
+  htsmsg_t *oconf = conf, *scconf, *c;
   ssize_t r;
   int fd;
 
-  /* Internal config ID */
-  snprintf(id, sizeof(id), "%s #%d", dvb_type2str(type), number);
-  if (conf)
-    conf = htsmsg_get_map(conf, id);
+  /* Internal config ID - include RF input for virtual frontends */
+  if (rf_input >= 0)
+    snprintf(id, sizeof(id), "%s #%d RF%d", dvb_type2str(type), number, rf_input);
+  else
+    snprintf(id, sizeof(id), "%s #%d", dvb_type2str(type), number);
+  /* The first RF input and a frontend without RF inputs are the same tuner
+   * across a driver change: each takes the entry of the other when it has
+   * none of its own (the file keeps that entry until the next save) */
+  alt[0] = '\0';
+  if (rf_input == 0)
+    snprintf(alt, sizeof(alt), "%s #%d", dvb_type2str(type), number);
+  else if (rf_input < 0)
+    snprintf(alt, sizeof(alt), "%s #%d RF0", dvb_type2str(type), number);
+  if (conf) {
+    c = htsmsg_get_map(conf, id);
+    if (c == NULL && alt[0])
+      c = htsmsg_get_map(conf, alt);
+    conf = c;
+  }
   if (conf)
     uuid = htsmsg_get_str(conf, "uuid");
 
-  /* Tuner slave */
-  snprintf(buf, sizeof(buf), "master for #%d", number);
+  /* Tuner slave: the key has the RF input of a virtual frontend (the
+   * slaves of one adapter's RF inputs have masters of their own) */
+  if (rf_input >= 0)
+    snprintf(buf, sizeof(buf), "master for #%d RF%d", number, rf_input);
+  else
+    snprintf(buf, sizeof(buf), "master for #%d", number);
   if (conf && type == DVB_TYPE_S) {
     /* use the original configuration here */
     muuid = htsmsg_get_str(oconf, buf);
+    if (muuid == NULL && rf_input == 0) {
+      snprintf(buf, sizeof(buf), "master for #%d", number);
+      muuid = htsmsg_get_str(oconf, buf);
+    } else if (muuid == NULL && rf_input < 0) {
+      snprintf(buf, sizeof(buf), "master for #%d RF0", number);
+      muuid = htsmsg_get_str(oconf, buf);
+    }
     if (muuid && uuid && !strcmp(muuid, uuid))
       muuid = NULL;
   }
@@ -2171,6 +2808,7 @@ linuxdvb_frontend_create
   lfe = calloc(1, sizeof(linuxdvb_frontend_t));
   lfe->lfe_number = number;
   lfe->lfe_type   = type;
+  lfe->lfe_rf_input = rf_input;
   lfe->lfe_master = muuid ? strdup(muuid) : NULL;
   lfe->lfe_name   = strdup(name);
   lfe->lfe_ibuf_size = 188000;
@@ -2198,9 +2836,12 @@ linuxdvb_frontend_create
   lfe->mi_get_priority = linuxdvb_frontend_get_priority;
   lfe->mi_get_grace    = linuxdvb_frontend_get_grace;
 
-  /* Default name */
+  /* Default name - include RF input for virtual frontends */
   if (!lfe->mi_name) {
-    snprintf(lname, sizeof(lname), "%s : %s", name, id);
+    if (rf_input >= 0)
+      snprintf(lname, sizeof(lname), "%s : %s : RF-In #%d", name, dvb_type2str(type), rf_input);
+    else
+      snprintf(lname, sizeof(lname), "%s : %s", name, id);
     lfe->mi_name = strdup(lname);
   }
 
@@ -2209,10 +2850,42 @@ linuxdvb_frontend_create
   lfe->lfe_dmx_path = strdup(dmx_path);
   lfe->lfe_dvr_path = strdup(dvr_path);
 
+#if ENABLE_LINUXDVB_NEUMO
+  /* Neumo capability detection via FE_GET_EXTENDED_INFO */
+  lfe->lfe_neumo_detected = 0;
+  lfe->lfe_neumo_supported = 0;
+  lfe->lfe_num_rf_inputs = 0;
+  lfe->lfe_default_rf_input = -1;
+  fd = tvh_open(fe_path, O_RDONLY | O_NONBLOCK, 0);
+  if (fd >= 0) {
+    struct dvb_frontend_extended_info ext_info;
+    memset(&ext_info, 0, sizeof(ext_info));
+    if (ioctl(fd, FE_GET_EXTENDED_INFO, &ext_info) >= 0) {
+      lfe->lfe_neumo_detected = 1;
+      if (ext_info.supports_neumo) {
+        lfe->lfe_neumo_supported = 1;
+        lfe->lfe_num_rf_inputs = ext_info.num_rf_inputs;
+        lfe->lfe_default_rf_input = ext_info.default_rf_input;
+        lfe->lfe_supports_bbframes = ext_info.supports_bbframes;
+        tvhinfo(LS_LINUXDVB, "%s Neumo driver detected: %d RF inputs, default=%d%s",
+                fe_path, ext_info.num_rf_inputs, ext_info.default_rf_input,
+                ext_info.supports_bbframes ? ", BBFrames" : "");
+      } else {
+        tvhtrace(LS_LINUXDVB, "%s - FE_GET_EXTENDED_INFO: supports_neumo=0", fe_path);
+      }
+    } else {
+      tvhtrace(LS_LINUXDVB, "%s - FE_GET_EXTENDED_INFO not supported", fe_path);
+    }
+    close(fd);
+  }
+#endif
+
   /* Input callbacks */
   lfe->ti_wizard_get          = linuxdvb_frontend_wizard_get;
   lfe->ti_wizard_set          = linuxdvb_frontend_wizard_set;
   lfe->mi_is_enabled          = linuxdvb_frontend_is_enabled;
+  /* an input stream of a multistream transponder: tuned with its stream */
+  lfe->mi_mux_types          |= (1u << MM_TYPE_ISI);
   lfe->mi_warm_mux            = linuxdvb_frontend_warm_mux;
   lfe->mi_start_mux           = linuxdvb_frontend_start_mux;
   lfe->mi_stop_mux            = linuxdvb_frontend_stop_mux;
@@ -2253,7 +2926,7 @@ linuxdvb_frontend_create
 void
 linuxdvb_frontend_save ( linuxdvb_frontend_t *lfe, htsmsg_t *fe )
 {
-  char id[16];
+  char id[32];
   htsmsg_t *m = htsmsg_create_map();
 
   /* Save frontend */
@@ -2268,12 +2941,18 @@ linuxdvb_frontend_save ( linuxdvb_frontend_t *lfe, htsmsg_t *fe )
   }
   htsmsg_delete_field(m, "fe_master");
 
-  /* Add to list */
-  snprintf(id, sizeof(id), "%s #%d", dvb_type2str(lfe->lfe_type), lfe->lfe_number);
+  /* Add to list - include RF input for virtual frontends */
+  if (lfe->lfe_rf_input >= 0)
+    snprintf(id, sizeof(id), "%s #%d RF%d", dvb_type2str(lfe->lfe_type), lfe->lfe_number, lfe->lfe_rf_input);
+  else
+    snprintf(id, sizeof(id), "%s #%d", dvb_type2str(lfe->lfe_type), lfe->lfe_number);
   htsmsg_add_msg(fe, id, m);
 
   if (lfe->lfe_master) {
-    snprintf(id, sizeof(id), "master for #%d", lfe->lfe_number);
+    if (lfe->lfe_rf_input >= 0)
+      snprintf(id, sizeof(id), "master for #%d RF%d", lfe->lfe_number, lfe->lfe_rf_input);
+    else
+      snprintf(id, sizeof(id), "master for #%d", lfe->lfe_number);
     htsmsg_add_str(fe, id, lfe->lfe_master);
   }
 }

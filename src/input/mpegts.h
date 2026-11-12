@@ -424,16 +424,28 @@ enum mpegts_mux_type
   MM_TYPE_TS       = 0,  /* Standard transport stream (default) */
   MM_TYPE_DAB_MPE  = 2,  /* DAB via MPE (IP multicast in MPE sections) */
   MM_TYPE_DAB_ETI  = 3,  /* DAB via ETI-NA (direct ETI encapsulation) */
+  MM_TYPE_DAB_GSE  = 4,  /* DAB via GSE (IP multicast in GSE) */
+  MM_TYPE_GSE      = 5,  /* GSE stream (may upgrade to DAB-GSE if DAB detected) */
   MM_TYPE_DAB_TSNI = 6,  /* DAB via TS NI V.11 (incrementing table_id 0x69-0x9A) */
+  MM_TYPE_ISI      = 7,  /* the TS of one input stream of a multistream transponder */
 };
 
-/* a mux carried inside another one (in a PID of its transponder) */
-#define mpegts_mux_is_submux(mm) ((mm)->mm_type != MM_TYPE_TS)
+/* a mux carried inside another one: in a PID of its transponder (DAB), or
+ * in the BBFrames of a multistream transponder (an input stream: TS, GSE,
+ * DAB in GSE) */
+#define mpegts_mux_in_pid(mm) \
+  ((mm)->mm_type == MM_TYPE_DAB_MPE || (mm)->mm_type == MM_TYPE_DAB_ETI || \
+   (mm)->mm_type == MM_TYPE_DAB_TSNI)
+#define mpegts_mux_in_bbframes(mm) \
+  ((mm)->mm_type == MM_TYPE_ISI || (mm)->mm_type == MM_TYPE_GSE || \
+   (mm)->mm_type == MM_TYPE_DAB_GSE)
+#define mpegts_mux_is_submux(mm) \
+  (mpegts_mux_in_pid(mm) || mpegts_mux_in_bbframes(mm))
 
 /* a DAB ensemble converted to a TS (libdvbdab) */
 #define mpegts_mux_is_dab(mm) \
   ((mm)->mm_type == MM_TYPE_DAB_MPE || (mm)->mm_type == MM_TYPE_DAB_ETI || \
-   (mm)->mm_type == MM_TYPE_DAB_TSNI)
+   (mm)->mm_type == MM_TYPE_DAB_GSE || (mm)->mm_type == MM_TYPE_DAB_TSNI)
 
 enum mpegts_mux_epg_flag
 {
@@ -561,6 +573,16 @@ struct mpegts_mux
    * DAB probe context (for DAB-MPE/ETI detection)
    */
   void                       *mm_dab_probe_ctx;
+
+  /*
+   * ISI probe context (for Neumo driver ISI scanning on DVB-S2)
+   */
+  void                       *mm_isi_probe_ctx;
+
+  /*
+   * GSE-DAB probe context (for DAB detection in GSE streams)
+   */
+  void                       *mm_gse_dab_probe_ctx;
 
   /*
    * Functions
@@ -1032,6 +1054,9 @@ int mpegts_mux_instance_weight ( mpegts_mux_instance_t *mmi );
 
 int mpegts_mux_set_network_name ( mpegts_mux_t *mm, const char *name );
 int mpegts_mux_set_tsid ( mpegts_mux_t *mm, uint32_t tsid, int force );
+/* the mux has a TS of its own (not: a multistream transponder, whose input
+ * streams are its sub-muxes; a GSE stream, whose DAB ensembles are) */
+int mpegts_mux_has_own_ts ( mpegts_mux_t *mm );
 int mpegts_mux_set_onid ( mpegts_mux_t *mm, uint32_t onid );
 int mpegts_mux_set_crid_authority ( mpegts_mux_t *mm, const char *defauth );
 int mpegts_mux_set_epg_module ( mpegts_mux_t *mm, const char *modid );
@@ -1283,6 +1308,25 @@ int  dvb_mux_set_dab_ensemble(mpegts_mux_t *mm, const char *label);
 #define dvb_mux_set_dab_ensemble(mm, label)     (0)
 #endif
 
+/*
+ * ISI probe (Neumo driver only)
+ */
+void mpegts_isi_probe_start(mpegts_mux_t *mm);
+int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate);
+int  mpegts_isi_probe_is_done(mpegts_mux_t *mm);
+
+/*
+ * GSE-DAB probe (DAB detection in GSE streams, libdvbdab)
+ */
+#if ENABLE_DVBDAB
+void mpegts_gse_dab_probe_start(mpegts_mux_t *mm);
+int  mpegts_gse_dab_probe_complete(mpegts_mux_t *mm, int evaluate);
+int  mpegts_gse_dab_probe_is_done(mpegts_mux_t *mm);
+#else
+static inline void mpegts_gse_dab_probe_start(mpegts_mux_t *mm) { }
+static inline int  mpegts_gse_dab_probe_complete(mpegts_mux_t *mm, int evaluate) { return 0; }
+static inline int  mpegts_gse_dab_probe_is_done(mpegts_mux_t *mm) { return 1; }
+#endif
 
 #endif /* __TVH_MPEGTS_H__ */
 
