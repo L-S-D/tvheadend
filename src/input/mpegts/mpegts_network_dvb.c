@@ -587,11 +587,13 @@ dvb_network_find_mux
 
       /* Same FEC */
       if (lm->lm_tuning.u.dmc_fe_qpsk.fec_inner != dmc->u.dmc_fe_qpsk.fec_inner) continue;
-
-      /* Same orbital position */
-      if (dvb_network_check_orbital_pos(lm->lm_tuning.u.dmc_fe_qpsk.orbital_pos,
-                                        dmc->u.dmc_fe_qpsk.orbital_pos)) continue;
     }
+
+    /* Same orbital position, also when looking for a changed mux: a NIT may
+     * describe the transport stream on another satellite */
+    if (lm->lm_tuning.dmc_fe_type == DVB_TYPE_S &&
+        dvb_network_check_orbital_pos(lm->lm_tuning.u.dmc_fe_qpsk.orbital_pos,
+                                      dmc->u.dmc_fe_qpsk.orbital_pos)) continue;
 
     /* Same PLP/ISI */
     if (lm->lm_tuning.dmc_fe_stream_id != dmc->dmc_fe_stream_id) continue;
@@ -611,6 +613,45 @@ dvb_network_find_mux
     mm = mm_alt;
   }
   return (dvb_mux_t *)mm;
+}
+
+/*
+ * The satellite mux of the transport stream onid/tsid whose carrier lies on
+ * the one described by dmc: the same polarisation, input stream and PLS,
+ * and the frequencies closer than half the sum of both symbol rates, so
+ * that the main lobes of the two carriers overlap. Two carriers cannot
+ * share their frequencies: an entry like this is the same transponder with
+ * other parameters (some satellites carry several NITs that do not agree),
+ * not another transponder. Another transport stream there (a feed in a
+ * slot that changes hands) is left to the scan.
+ */
+static dvb_mux_t *
+dvb_network_find_overlap
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc, uint32_t onid, uint32_t tsid )
+{
+  mpegts_mux_t *mm;
+  const dvb_mux_conf_t *c;
+  uint64_t span;
+
+  if (dmc->dmc_fe_type != DVB_TYPE_S ||
+      onid == MPEGTS_ONID_NONE || tsid == MPEGTS_TSID_NONE)
+    return NULL;
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    if (mm->mm_onid != onid || mm->mm_tsid != tsid) continue;
+    c = &((dvb_mux_t *)mm)->lm_tuning;
+    if (c->dmc_fe_type != DVB_TYPE_S ||
+        c->u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation ||
+        c->dmc_fe_stream_id != dmc->dmc_fe_stream_id ||
+        c->dmc_fe_pls_mode != dmc->dmc_fe_pls_mode ||
+        c->dmc_fe_pls_code != dmc->dmc_fe_pls_code)
+      continue;
+    /* frequencies in kHz, symbol rates in symbols/s */
+    span = ((uint64_t)c->u.dmc_fe_qpsk.symbol_rate +
+            dmc->u.dmc_fe_qpsk.symbol_rate) / 1000;
+    if (2 * (uint64_t)deltaU32(c->dmc_fe_freq, dmc->dmc_fe_freq) < span)
+      return (dvb_mux_t *)mm;
+  }
+  return NULL;
 }
 
 static htsmsg_t *
@@ -713,7 +754,18 @@ dvb_network_create_mux
         save = 0;
     }
     if (save) {
+      dvb_mux_t *same = force ? NULL : dvb_network_find_overlap(ln, dmc, onid, tsid);
       mm = dvb_mux_create0(ln, onid, tsid, dmc, NULL, NULL);
+      if (mm && same) {
+        /* another description of a transponder we have: kept, so that this
+         * NIT entry does not come back as a new mux, but not tuned */
+        char buf1[128], buf2[128];
+        mm->mm_enabled = MM_IGNORE;
+        dvb_mux_conf_str(dmc, buf1, sizeof(buf1));
+        dvb_mux_conf_str(&same->lm_tuning, buf2, sizeof(buf2));
+        tvhinfo(LS_MPEGTS, "the NIT describes %s (%s) as %s, added as ignored",
+                same->mm_nicename, buf2, buf1);
+      }
       mpegts_mux_post_create((mpegts_mux_t *)mm);
       if (tvhtrace_enabled()) {
         char buf[128];
