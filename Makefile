@@ -412,6 +412,7 @@ I18N-C += $(SRCS-MPEGTS)
 SRCS-MPEGTS-DVB = \
 	src/input/mpegts/mpegts_network_dvb.c \
 	src/input/mpegts/mpegts_mux_dvb.c \
+	src/input/mpegts/mpegts_submux.c \
 	src/input/mpegts/scanfile.c
 SRCS-${CONFIG_MPEGTS_DVB} += $(SRCS-MPEGTS-DVB)
 I18N-C += $(SRCS-MPEGTS-DVB)
@@ -470,6 +471,13 @@ SRCS-IPTV = \
 	src/input/mpegts/iptv/iptv_auto.c
 SRCS-${CONFIG_IPTV} += $(SRCS-IPTV)
 I18N-C += $(SRCS-IPTV)
+
+# DAB (Digital Audio Broadcasting) probe and streaming - libdvbdab
+# (configure: dvbdab, flags come from pkg-config)
+SRCS-DAB = \
+	src/input/mpegts/dab/dab_probe.c \
+	src/input/mpegts/dab/dab_stream.c
+SRCS-${CONFIG_DVBDAB} += $(SRCS-DAB)
 
 # TSfile
 SRCS-TSFILE = \
