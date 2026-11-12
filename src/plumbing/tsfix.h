@@ -25,5 +25,10 @@ streaming_target_t *tsfix_create(streaming_target_t *output);
 
 void tsfix_destroy(streaming_target_t *gh);
 
+/* Without audio and video this long after the start (a scrambled service
+ * without a key): take the reference clock from any stream and do not wait
+ * for the video size, so the clear streams start; 0 = wait */
+void tsfix_early_start(streaming_target_t *tsfix, int ms);
+
 
 #endif // TSFIX_H__

@@ -32,6 +32,10 @@ typedef struct globalheaders {
 
   int gh_passthru;
 
+  int64_t gh_early;     /* start without audio/video after this long (0 = never) */
+  int64_t gh_start_time;
+  int gh_av_held;       /* audio/video packets in gh_holdq */
+
 } globalheaders_t;
 
 /* note: there up to 2.5 sec diffs in some sources! */
@@ -273,7 +277,42 @@ static void
 gh_start(globalheaders_t *gh, streaming_message_t *sm)
 {
   gh->gh_ss = streaming_start_copy(sm->sm_data);
+  gh->gh_start_time = mclk();
+  gh->gh_av_held = 0;
   streaming_msg_free(sm);
+}
+
+/**
+ * Early start due: no audio/video came within gh_early after the start
+ */
+static inline int
+gh_early_due(globalheaders_t *gh)
+{
+  return gh->gh_early && gh->gh_ss && !gh->gh_av_held &&
+         mclk() - gh->gh_start_time >= gh->gh_early;
+}
+
+/**
+ * Send the start and the held packets, then pass everything on
+ */
+static void
+gh_release(globalheaders_t *gh)
+{
+  streaming_message_t *sm;
+  th_pkt_t *pkt;
+
+  sm = streaming_msg_create_data(SMT_START,
+				 streaming_start_copy(gh->gh_ss));
+  streaming_target_deliver2(gh->gh_output, sm);
+
+  while((pkt = pktref_get_first(&gh->gh_holdq)) != NULL) {
+    if (pkt->pkt_payload) {
+      sm = streaming_msg_create_pkt(pkt);
+      streaming_target_deliver2(gh->gh_output, sm);
+    }
+    pkt_ref_dec(pkt);
+  }
+  gh->gh_passthru = 1;
 }
 
 
@@ -308,26 +347,22 @@ gh_hold(globalheaders_t *gh, streaming_message_t *sm)
 
     streaming_msg_free(sm);
 
-    if(!gh_is_audiovideo(ssc->es_type))
+    if(!gh_is_audiovideo(ssc->es_type)) {
+      /* no audio/video at all yet (scrambled, no key): the other streams
+       * (AIT, teletext) start anyway when the subscriber asked for it */
+      if(gh_early_due(gh)) {
+        tvhdebug(LS_GLOBALHEADERS, "gh start without audio/video");
+        gh_release(gh);
+      }
       break;
+    }
+    gh->gh_av_held++;
 
     if(!headers_complete(gh))
       break;
 
-    // Send our modified start
-    sm = streaming_msg_create_data(SMT_START,
-				   streaming_start_copy(gh->gh_ss));
-    streaming_target_deliver2(gh->gh_output, sm);
-
-    // Send all pending packets
-    while((pkt = pktref_get_first(&gh->gh_holdq)) != NULL) {
-      if (pkt->pkt_payload) {
-        sm = streaming_msg_create_pkt(pkt);
-        streaming_target_deliver2(gh->gh_output, sm);
-      }
-      pkt_ref_dec(pkt);
-    }
-    gh->gh_passthru = 1;
+    // Send our modified start and all pending packets
+    gh_release(gh);
     break;
 
   case SMT_START:
@@ -341,10 +376,16 @@ gh_hold(globalheaders_t *gh, streaming_message_t *sm)
     streaming_msg_free(sm);
     break;
 
-  case SMT_GRACE:
-  case SMT_EXIT:
   case SMT_SERVICE_STATUS:
   case SMT_SIGNAL_STATUS:
+    /* they come every second: the early start also when no packet does */
+    if(gh_early_due(gh)) {
+      tvhdebug(LS_GLOBALHEADERS, "gh start without audio/video (status)");
+      gh_release(gh);
+    }
+    // FALLTHRU
+  case SMT_GRACE:
+  case SMT_EXIT:
   case SMT_DESCRAMBLE_INFO:
   case SMT_NOSTART:
   case SMT_NOSTART_WARN:
@@ -444,6 +485,17 @@ globalheaders_create(streaming_target_t *output)
   gh->gh_output = output;
   streaming_target_init(&gh->gh_input, &globalheaders_input_ops, gh, 0);
   return &gh->gh_input;
+}
+
+
+/**
+ *
+ */
+void
+globalheaders_early_start(streaming_target_t *pad, int ms)
+{
+  globalheaders_t *gh = (globalheaders_t *)pad;
+  gh->gh_early = ms > 0 ? ms2mono(ms) : 0;
 }
 
 

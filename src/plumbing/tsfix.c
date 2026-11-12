@@ -73,6 +73,10 @@ typedef struct tsfix {
   struct th_pktref_queue tf_ptsq;
   struct th_pktref_queue tf_backlog;
 
+  int64_t tf_early;   /* without audio/video: reference from any stream this
+                         long after the start, no wait for the video size */
+  int64_t tf_started;
+
 } tsfix_t;
 
 
@@ -177,7 +181,8 @@ tsfix_start(tsfix_t *tf, streaming_start_t *ss)
 
   tf->tf_tsref = PTS_UNSET;
   tf->tf_hasvideo = hasvideo;
-  tf->tf_wait_for_video = vwait;
+  tf->tf_wait_for_video = tf->tf_early ? 0 : vwait;
+  tf->tf_started = mclk();
 }
 
 
@@ -588,6 +593,16 @@ tsfix_input_packet(tsfix_t *tf, streaming_message_t *sm)
     } else {
       tvhtrace(LS_TSFIX, "reference clock set to %"PRId64" (dts %"PRId64" pcr %"PRId64" backlog %"PRId64")", tf->tf_tsref, pkt->pkt_dts, pkt->pkt_pcr, diff2);
     }
+  } else if (tf->tf_tsref == PTS_UNSET && tf->tf_early && pkt->pkt_dts != PTS_UNSET &&
+             !pkt->pkt_err && mclk() - tf->tf_started >= tf->tf_early) {
+    /* no audio/video so far (scrambled, no key): the clear streams start
+     * without them, audio/video follow on the same clock */
+    tf->tf_tsref = pkt->pkt_dts & PTS_MASK;
+    if (pts_is_greater_or_equal(pkt->pkt_pcr, pkt->pkt_dts) > 0)
+      tf->tf_tsref = pkt->pkt_pcr & PTS_MASK;
+    tvhdebug(LS_TSFIX, "reference clock set without audio/video to %"PRId64" (%s)",
+             tf->tf_tsref, streaming_component_type2txt(tfs->tfs_type));
+    tsfix_backlog(tf);
   } else if (txfix_need_to_update_ref(tf, tfs, pkt)) {
     r = tsfix_update_ref(tf, tfs, pkt);
     if (r != REF_OK) {
@@ -600,7 +615,8 @@ tsfix_input_packet(tsfix_t *tf, streaming_message_t *sm)
 
   if (pkt->pkt_dts == PTS_UNSET) {
     if (tfs->tfs_last_dts_in == PTS_UNSET) {
-      if (tfs->tfs_type == SCT_TELETEXT) {
+      /* teletext, and the AIT without a PCR (parser_deliver) */
+      if (tfs->tfs_type == SCT_TELETEXT || tfs->tfs_type == SCT_HBBTV) {
         sm = streaming_msg_create_pkt(pkt);
         streaming_target_deliver2(tf->tf_output, sm);
       }
@@ -711,6 +727,18 @@ tsfix_create(streaming_target_t *output)
   streaming_target_init(&tf->tf_input, &tsfix_input_ops, tf, 0);
   return &tf->tf_input;
 }
+
+/**
+ *
+ */
+void
+tsfix_early_start(streaming_target_t *pad, int ms)
+{
+  tsfix_t *tf = (tsfix_t *)pad;
+  if (ms > 0)
+    tf->tf_early = ms2mono(ms); /* shared: once a subscriber wants it, it stays */
+}
+
 
 /**
  *

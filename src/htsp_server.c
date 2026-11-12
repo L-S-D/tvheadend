@@ -34,6 +34,8 @@
 #include "epg.h"
 #include "imagecache.h"
 #include "descrambler/caid.h"
+#include "plumbing/globalheaders.h"
+#include "plumbing/tsfix.h"
 #include "notify.h"
 #include "htsmsg_json.h"
 #include "string_list.h"
@@ -198,6 +200,9 @@ typedef struct htsp_subscription {
   int hs_dropstats[PKT_NTYPES];
 
   int hs_wait_for_video;
+
+  int hs_early_start;     /* client: start without waiting for audio/video */
+  int hs_report_noaccess; /* client: the status "No access" while packets come */
 
   int hs_90khz;
 
@@ -2703,6 +2708,11 @@ htsp_method_subscribe(htsp_connection_t *htsp, htsmsg_t *in)
 
   hs->hs_htsp = htsp;
   hs->hs_90khz = req90khz;
+  /* a scrambled service without a key never gets its video size (nor any
+   * audio/video): this client wants the start anyway (the other streams, the
+   * AIT for HbbTV) and to be told about it */
+  hs->hs_early_start = htsmsg_get_u32_or_default(in, "earlyStart", 0);
+  hs->hs_report_noaccess = htsmsg_get_u32_or_default(in, "reportNoAccess", 0);
   hs->hs_queue_depth = htsmsg_get_u32_or_default(in, "queueDepth",
 						 HTSP_DEFAULT_QUEUE_DEPTH);
   htsp_init_queue(&hs->hs_q, 0);
@@ -2729,6 +2739,12 @@ htsp_method_subscribe(htsp_connection_t *htsp, htsmsg_t *in)
     free(hs);
     return htsp_error(htsp, N_("Stream setup error"));
   }
+  if (hs->hs_early_start) {
+    if (hs->hs_prch.prch_gh)
+      globalheaders_early_start(hs->hs_prch.prch_gh, 1000);
+    if (hs->hs_prch.prch_sharer && hs->hs_prch.prch_sharer->prsh_tsfix)
+      tsfix_early_start(hs->hs_prch.prch_sharer->prsh_tsfix, 1000);
+  }
 
   /*
    * We send the reply now to avoid the user getting the 'subscriptionStart'
@@ -2745,6 +2761,10 @@ htsp_method_subscribe(htsp_connection_t *htsp, htsmsg_t *in)
     htsmsg_add_u32(rep, "normts", 1);
   if(hs->hs_s)
     htsmsg_add_u32(rep, "weight", hs->hs_s->ths_weight >= 0 ? hs->hs_s->ths_weight : 0);
+  if(hs->hs_early_start)
+    htsmsg_add_u32(rep, "earlyStart", 1);
+  if(hs->hs_report_noaccess)
+    htsmsg_add_u32(rep, "reportNoAccess", 1);
 
 #if ENABLE_TIMESHIFT
   if (timeshiftPeriod)
@@ -4398,7 +4418,7 @@ htsp_subscription_start(htsp_subscription_t *hs, const streaming_start_t *ss)
 
   tvhdebug(LS_HTSP, "%s - subscription start", hs->hs_htsp->htsp_logname);
 
-  for(i = 0; i < ss->ss_num_components; i++) {
+  for(i = 0; i < ss->ss_num_components && !hs->hs_early_start; i++) {
     const streaming_start_component_t *ssc = &ss->ss_components[i];
     if (ssc->ssc_disabled) continue;
     if (SCT_ISVIDEO(ssc->es_type)) {
@@ -4451,6 +4471,12 @@ htsp_subscription_start(htsp_subscription_t *hs, const streaming_start_t *ss)
         htsmsg_add_u32(c, "teletext_page", ssc->es_pid - DVB_TELETEXT_BASE);
       if(ssc->es_subtitle_type)
         htsmsg_add_u32(c, "teletext_type", ssc->es_subtitle_type);
+    }
+
+    if(ssc->es_type == SCT_CA && ssc->ssc_caid) {
+      htsmsg_add_u32(c, "caid", ssc->ssc_caid);
+      htsmsg_add_u32(c, "providerid", ssc->ssc_providerid);
+      htsmsg_add_str(c, "caname", caid2name(ssc->ssc_caid));
     }
 
     if(SCT_ISVIDEO(ssc->es_type)) {
@@ -4623,7 +4649,13 @@ _htsp_get_subscription_status(int smcode)
 static void
 htsp_subscription_service_status(htsp_subscription_t *hs, int status)
 {
-  if(status & TSS_PACKETS) {
+  if(hs->hs_report_noaccess && (status & (TSS_NO_ACCESS | TSS_NO_DESCRAMBLER)) &&
+     !(status & (TSS_TUNING | TSS_TIMEOUT))) {
+    /* packets come (the clear streams), but the scrambled ones not: no key,
+     * or no descrambler for its CA systems */
+    htsp_subscription_status(hs, service_tss2text(status),
+                             _htsp_get_subscription_status(SM_CODE_NO_ACCESS));
+  } else if(status & TSS_PACKETS) {
     htsp_subscription_status(hs, NULL, NULL);
   } else if(status & TSS_ERRORS) {
     htsp_subscription_status(hs, service_tss2text(status), NULL);
