@@ -41,6 +41,10 @@ typedef struct linuxdvb_lnb_conf
   int lnb_low;
   int lnb_high;
   int lnb_switch;
+
+  /* Deviation of the local oscillators from lnb_low/lnb_high (kHz) */
+  int lnb_low_corr;
+  int lnb_high_corr;
 } linuxdvb_lnb_conf_t;
 
 static void
@@ -81,6 +85,27 @@ const idclass_t linuxdvb_lnb_class =
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(linuxdvb_lnb_conf_t, lnb_switch),
     },
+    {
+      .type     = PT_INT,
+      .id       = "lfo_corr",
+      .name     = N_("Low frequency correction (kHz)"),
+      .desc     = N_("Deviation of the low band local oscillator of this "
+                     "LNB from the low frequency offset, in kHz. An LNB "
+                     "whose oscillator runs 2 MHz low puts every transponder "
+                     "2 MHz above its published frequency: enter -2000."),
+      .opts     = PO_ADVANCED,
+      .off      = offsetof(linuxdvb_lnb_conf_t, lnb_low_corr),
+    },
+    {
+      .type     = PT_INT,
+      .id       = "hfo_corr",
+      .name     = N_("High frequency correction (kHz)"),
+      .desc     = N_("Deviation of the high band local oscillator of this "
+                     "LNB from the high frequency offset, in kHz (see the "
+                     "low frequency correction)."),
+      .opts     = PO_ADVANCED,
+      .off      = offsetof(linuxdvb_lnb_conf_t, lnb_high_corr),
+    },
     {}
   }
 };
@@ -100,9 +125,9 @@ linuxdvb_lnb_standard_freq
   linuxdvb_lnb_conf_t *lnb = (linuxdvb_lnb_conf_t*)l;
   int32_t                f = (int32_t)lm->lm_tuning.dmc_fe_freq;
   if (lnb->lnb_switch && f > lnb->lnb_switch)
-    f -= lnb->lnb_high;
+    f -= lnb->lnb_high + lnb->lnb_high_corr;
   else
-    f -= lnb->lnb_low;
+    f -= lnb->lnb_low + lnb->lnb_low_corr;
   return (uint32_t)abs(f);
 }
 
@@ -181,9 +206,9 @@ linuxdvb_lnb_bandstack_freq
   int pol = dmc->u.dmc_fe_qpsk.polarisation == DVB_POLARISATION_HORIZONTAL ||
             dmc->u.dmc_fe_qpsk.polarisation == DVB_POLARISATION_CIRCULAR_LEFT;
   if (pol)
-    f -= lnb->lnb_high;
+    f -= lnb->lnb_high + lnb->lnb_high_corr;
   else
-    f -= lnb->lnb_low;
+    f -= lnb->lnb_low + lnb->lnb_low_corr;
   return (uint32_t)abs(f);
 }
 
