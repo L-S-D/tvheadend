@@ -514,7 +514,7 @@ const routes: RouteRecordRaw[] = [
           { path: '', name: 'config-dvb', redirect: { name: 'config-dvb-adapters' } },
           leaf('adapters', 'config-dvb-adapters', () => import('@/views/configuration/TvAdaptersView.vue'), 'TV Adapters', 'admin', dvbAdaptersGuard),
           leaf('networks', 'config-dvb-networks', () => import('@/views/configuration/DvbNetworksView.vue'), 'Networks', 'admin'),
-          leaf('muxes', 'config-dvb-muxes', () => import('@/views/configuration/DvbMuxesView.vue'), 'Muxes', 'admin'),
+          leaf('muxes', 'config-dvb-muxes', () => import('@/views/configuration/DvbMuxTreeView.vue'), 'Muxes', 'admin'),
           leaf('services', 'config-dvb-services', () => import('@/views/configuration/DvbServicesView.vue'), 'Services', 'admin'),
           leaf('mux-sched', 'config-dvb-mux-sched', () => import('@/views/configuration/DvbMuxSchedView.vue'), 'Mux Schedulers', 'admin', dvbMuxSchedGuard),
         ],

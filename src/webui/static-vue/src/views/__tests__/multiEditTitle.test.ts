@@ -125,7 +125,6 @@ const CASES: Array<[string, string, Record<string, unknown>?]> = [
   ['configuration/ConfigUsersIpBlockingView', 'Edit IP Blocking Entry'],
   ['configuration/ConfigUsersPasswordsView', 'Edit Password'],
   ['configuration/DvbMuxSchedView', 'Edit Mux Scheduler'],
-  ['configuration/DvbMuxesView', 'Edit Mux'],
   ['configuration/DvbNetworksView', 'Edit Network'],
   ['configuration/RatingLabelsView', 'Edit Rating Label'],
   ['dvr/AutorecsView', 'Edit Autorec'],
