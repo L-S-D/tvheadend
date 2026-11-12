@@ -587,11 +587,13 @@ dvb_network_find_mux
 
       /* Same FEC */
       if (lm->lm_tuning.u.dmc_fe_qpsk.fec_inner != dmc->u.dmc_fe_qpsk.fec_inner) continue;
-
-      /* Same orbital position */
-      if (dvb_network_check_orbital_pos(lm->lm_tuning.u.dmc_fe_qpsk.orbital_pos,
-                                        dmc->u.dmc_fe_qpsk.orbital_pos)) continue;
     }
+
+    /* Same orbital position, also when looking for a changed mux: a NIT may
+     * describe the transport stream on another satellite */
+    if (lm->lm_tuning.dmc_fe_type == DVB_TYPE_S &&
+        dvb_network_check_orbital_pos(lm->lm_tuning.u.dmc_fe_qpsk.orbital_pos,
+                                      dmc->u.dmc_fe_qpsk.orbital_pos)) continue;
 
     /* Same PLP/ISI */
     if (lm->lm_tuning.dmc_fe_stream_id != dmc->dmc_fe_stream_id) continue;
