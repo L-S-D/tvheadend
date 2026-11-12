@@ -61,7 +61,26 @@ typedef struct dvb_mux
    * whose tuning it follows (dvb_mux_submux_sync())
    */
   char *lm_parent;
+
+  /*
+   * A multistream transponder (DVB-S2): it has the tuning, its input
+   * streams are its sub-muxes (MM_TYPE_ISI, GSE); it has no services
+   */
+  int lm_multistream;
+
+  /*
+   * DVB-S2 stream as the Neumo driver reported it at the last lock: the
+   * MATYPE byte of the BBHEADER (-1 = not known) and the MODCOD of a CCM
+   * stream (0 = not known, variable for ACM/VCM)
+   */
+  int lm_matype;
+  int lm_modcod;
 } dvb_mux_t;
+
+/* the PID the Neumo driver embeds the BBFrames of all input streams in */
+#define DVB_BBFRAMES_PID 0x10e
+
+extern const idclass_t dvb_mux_class;
 
 /*
  * Network
@@ -103,6 +122,9 @@ dvb_mux_t *dvb_network_find_mux_dab_mpe
 dvb_mux_t *dvb_network_find_mux_dab_eti
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc );
 
+dvb_mux_t *dvb_network_find_mux_dab_gse
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc );
+
 dvb_mux_t *dvb_network_find_mux_dab_tsni
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc );
 
@@ -115,6 +137,9 @@ uint16_t   dvb_mux_stream_pid    ( mpegts_mux_t *mm );
 /* sub-muxes follow the tuning of the transponder they are carried in */
 dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
+void       dvb_network_link_multistream ( dvb_network_t *ln );
+dvb_mux_t *dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm );
+void       dvb_mux_transponder_drop_services ( dvb_mux_t *lm );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
 
 /* the input that runs the sub-muxes (mpegts_submux.c) */

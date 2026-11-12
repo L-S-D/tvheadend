@@ -25,6 +25,7 @@ OPTIONS=(
   "capmt:yes"
   "constcw:yes"
   "linuxdvb:yes"
+  "linuxdvb_neumo:auto"
   "satip_server:yes"
   "satip_client:yes"
   "hdhomerun_client:no"
@@ -484,6 +485,27 @@ if enabled linuxdvb; then
   fi
 else
   disable ddci
+fi
+
+#
+# Neumo DVB driver extensions: need the uapi headers of the Neumo driver.
+# Note that these headers are not ABI compatible with mainline - enum fe_code_rate
+# differs from 13 (FEC_1_3) on, enum fe_modulation from 15 - and every
+# linuxdvb file uses them, with this option or without: a tvheadend built
+# against them must run on a kernel with the Neumo driver.
+#
+if enabled linuxdvb && enabled_or_auto linuxdvb_neumo; then
+  if ! check_cc_snippet linuxdvb_neumo '#include <sys/types.h>
+#include <linux/dvb/frontend.h>
+#include <sys/ioctl.h>
+struct dvb_frontend_extended_info info;
+int x = FE_GET_EXTENDED_INFO;'; then
+    enabled linuxdvb_neumo && \
+      die "Neumo DVB driver API not found (use --disable-linuxdvb_neumo)"
+    disable linuxdvb_neumo
+  fi
+else
+  disable linuxdvb_neumo
 fi
 
 #

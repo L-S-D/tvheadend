@@ -399,9 +399,18 @@ linuxdvb_adapter_add ( const char *path )
     }
     if (access(fe_path, R_OK | W_OK)) continue;
 
-    /* Get frontend info */
+    /* Get frontend info. With the Neumo driver read-only: a read-write open
+     * starts the frontend thread, and the driver reserves the default RF input
+     * for it (as its master, without Unicable) until the thread sleeps after
+     * the close. Opened again before that, the reservation stays, and the RF
+     * input refuses the other tuners of a Unicable cable (EPERM). The queries
+     * here need no write access. */
     for (j = 0; j < MAX_DEV_OPEN_ATTEMPTS; j++) {
+#if ENABLE_LINUXDVB_NEUMO
+      if ((fd = tvh_open(fe_path, O_RDONLY, 0)) >= 0) break;
+#else
       if ((fd = tvh_open(fe_path, O_RDWR, 0)) >= 0) break;
+#endif
       tvh_safe_usleep(100000);
     }
     if (fd < 0) {
@@ -412,6 +421,25 @@ linuxdvb_adapter_add ( const char *path )
     linuxdvb_get_systems(fd, &cmd);
 #endif
     r = ioctl(fd, FE_GET_INFO, &dfi);
+
+#if ENABLE_LINUXDVB_NEUMO
+    /* Neumo capability detection - do this before closing fd */
+    int neumo_supported = 0;
+    uint8_t num_rf_inputs = 0;
+    {
+      struct dvb_frontend_extended_info ext_info;
+      memset(&ext_info, 0, sizeof(ext_info));
+      if (ioctl(fd, FE_GET_EXTENDED_INFO, &ext_info) >= 0) {
+        if (ext_info.supports_neumo && ext_info.num_rf_inputs > 1) {
+          neumo_supported = 1;
+          num_rf_inputs = ext_info.num_rf_inputs;
+          tvhinfo(LS_LINUXDVB, "%s Neumo multi-RF adapter: %d RF inputs",
+                  fe_path, num_rf_inputs);
+        }
+      }
+    }
+#endif
+
     close(fd);
     if(r) {
       tvherror(LS_LINUXDVB, "unable to query %s", fe_path);
@@ -469,17 +497,28 @@ linuxdvb_adapter_add ( const char *path )
       if (fetypes[type5])
         continue;
 
-      /* Create */
-      linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
-                               type5, name);
+#if ENABLE_LINUXDVB_NEUMO
+      /* Create - for DVB-S with Neumo multi-RF, create virtual frontends */
+      if (type5 == DVB_TYPE_S && neumo_supported && num_rf_inputs > 1) {
+        int rf;
+        for (rf = 0; rf < num_rf_inputs; rf++) {
+          linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
+                                   type5, name, rf);
+        }
+      } else
+#endif
+      {
+        linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
+                                 type5, name, -1);
+      }
       fetypes[type5] = 1;
       fenum++;
     }
     if (fenum == 0)
       linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
-                               type, name);
+                               type, name, -1);
 #else
-    linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, name);
+    linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, name, -1);
 #endif
     tvh_mutex_unlock(&global_lock);
   }
