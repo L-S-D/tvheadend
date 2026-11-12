@@ -14,6 +14,19 @@
   audio type and receiver mix, the DVB ids (ONID, TSID, SID) of the channel, and a queue that keeps
   at least 1.5 s of the stream, and on request the internal channel tags. [TVF](https://github.com/L-S-D/tvfrontend),
   a client for LG webOS TVs, uses them.
+- **Scrambled channels without a key over HTSP:** the CA streams in `subscriptionStart` name their
+  CA system (`caid`, `providerid`, `caname`). A client that subscribes with `earlyStart` and
+  `reportNoAccess` gets the subscription started anyway, after 1 s without audio or video, with
+  the status "No access" (`subscriptionError` "scrambled") instead of silence, and the streams that
+  are not scrambled, such as the HbbTV AIT. TVF then shows "decryption failed" with the CA systems
+  and the reception values, and still starts the channel's HbbTV app. Without the options nothing
+  changes.
+- **HbbTV stream events over HTSP:** HbbTV apps follow the programme through DSM-CC stream events
+  (ETSI TS 102 809), for example live subtitles, quiz questions or overlays at the right moment.
+  With *Parse HbbTV info* (Configuration → General → Base, Miscellaneous Settings) a PID of
+  stream type 0x0C becomes a stream of type DSMCC with its component tag, next to the AIT stream
+  (HBBTV); its stream descriptor sections go to the client as they are. TVF hands them to the
+  app's `addStreamEventListener`; ARD and ORF, for example, send subtitle events this way.
 - **DAB radio from DVB** with [libdvbdab](https://github.com/L-S-D/libdvbdab): ETI-NA, MPE, TS NI
   and DAB over GSE.
 - **Neumo DVB driver** (for example TBS 6909X): multistream (ISI), GSE, blind tuning, Unicable
@@ -54,11 +67,12 @@ TVF's settings under *Internet access*:
 | Branch | Contents |
 |---|---|
 | `master` | the same as `v3/all` |
-| `v3/base` | upstream `master` + our open upstream pull requests + the fork's own topics |
+| `v3/base` | upstream `master` + our open upstream pull requests + upstream pull request [#2393](https://github.com/tvheadend/tvheadend/pull/2393) + the fork's own topics |
 | `v3/tvf` | `v3/base` + instant zapping, recommended for TVF |
 | `v3/neumo` | `v3/base` + the Neumo driver support |
 | `v3/all` | `v3/tvf` + Neumo + T2-MI + service priority |
 | `pr/*` | one topic each on upstream `master`, as sent upstream |
+| `up/*` | pull requests of others upstream that the fork carries unchanged: `up/pr-2393` forwards every repetition of the AIT, so a client still learns about the HbbTV apps when the first AIT is lost at the start |
 | `fork/*` | topics only for this fork (this note, the mux tree) |
 
 Our pull requests upstream:
