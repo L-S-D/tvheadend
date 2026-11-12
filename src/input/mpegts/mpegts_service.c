@@ -625,6 +625,24 @@ mpegts_service_config_save ( service_t *t, char *filename, size_t fsize )
 }
 
 /*
+ * Highest weight of the subscriptions on a running mux
+ */
+static int
+mpegts_service_mux_weight(mpegts_input_t *mi, mpegts_mux_t *mm)
+{
+  const service_t *s;
+  const th_subscription_t *ths;
+  int w = 0;
+
+  tvh_mutex_lock(&mi->mi_output_lock);
+  LIST_FOREACH(s, &mm->mm_transports, s_active_link)
+    LIST_FOREACH(ths, &s->s_subscriptions, ths_service_link)
+      w = MAX(w, ths->ths_weight);
+  tvh_mutex_unlock(&mi->mi_output_lock);
+  return w;
+}
+
+/*
  * Service instance list
  */
 static int
@@ -632,11 +650,12 @@ mpegts_service_enlist_raw
   ( service_t *t, tvh_input_t *ti, struct service_instance_list *sil,
     int flags, int weight )
 {
-  int p, w, r, added = 0, errcnt = 0;
+  int p, w, r, low, added = 0, errcnt = 0;
   mpegts_service_t      *s = (mpegts_service_t*)t;
   mpegts_input_t        *mi;
   mpegts_mux_t          *m = s->s_dvb_mux;
   mpegts_mux_instance_t *mmi;
+  service_instance_t    *si;
 
   assert(s->s_source_type == S_MPEG_TS);
 
@@ -668,9 +687,11 @@ mpegts_service_enlist_raw
     }
 
     /* Set weight to -1 (forced) for already active mux */
+    low = 0;
     if (mmi->mmi_mux->mm_active == mmi) {
       w = -1;
       p = -1;
+      low = mpegts_service_mux_weight(mi, mmi->mmi_mux) < SUBSCRIPTION_PRIO_MIN;
     } else {
       w = mi->mi_get_weight(mi, mmi->mmi_mux, flags, weight);
       p = mi->mi_get_priority(mi, mmi->mmi_mux, flags);
@@ -679,7 +700,8 @@ mpegts_service_enlist_raw
         w = 0;
     }
 
-    service_instance_add(sil, t, mi->mi_instance, mi->mi_name, p, w);
+    si = service_instance_add(sil, t, mi->mi_instance, mi->mi_name, p, w);
+    si->si_tuned_low = low;
     added++;
   }
 
