@@ -22,6 +22,7 @@
 #include "access.h"
 #include "dvb_charset.h"
 #include "bouquet.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 #include <assert.h>
 
@@ -45,6 +46,9 @@ mpegts_network_class_notify_enabled ( void *obj, const char *lang )
       mm->mm_stop(mm, 1, SM_CODE_ABORTED);
     }
   }
+#if ENABLE_DVBBUFFER
+  dvbbuffer_mux_enabled_notify();
+#endif
 }
 
 static htsmsg_t *

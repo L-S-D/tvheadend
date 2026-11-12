@@ -28,6 +28,7 @@
 #include "config.h"
 #include "epggrab.h"
 #include "descrambler/dvbcam.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 
 /* **************************************************************************
  * Class definition
@@ -737,6 +738,10 @@ mpegts_service_start(service_t *t, int instance, int weight, int flags)
     s->s_dvb_subscription_flags = flags;
     s->s_dvb_subscription_weight = weight;
     mmi->mmi_input->mi_open_service(mmi->mmi_input, s, flags, 1, weight);
+#if ENABLE_DVBBUFFER
+    /* mux use by viewers: the recently used muxes stay warm */
+    dvbbuffer_service_used(s, 1);
+#endif
   }
 
   return r;
@@ -758,6 +763,10 @@ mpegts_service_stop(service_t *t)
   /* Stop */
   if (i)
     i->mi_close_service(i, s);
+
+#if ENABLE_DVBBUFFER
+  dvbbuffer_service_used(s, -1);
+#endif
 
   /* Save some memory */
   sbuf_free(&s->s_tsbuf);
