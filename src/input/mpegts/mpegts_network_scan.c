@@ -215,12 +215,45 @@ mpegts_network_scan_idle_mux_add ( mpegts_network_t *mn, mpegts_mux_t *mm )
                  mn, sec2mono(10));
 }
 
+#if ENABLE_MPEGTS_DVB
+extern const idclass_t dvb_mux_class;
+
+/* A scan of a transponder scans its sub-muxes too (input streams, T2-MI,
+ * DAB ensembles): they come from the same signal, and a result of theirs
+ * may be from an earlier tuning. New ones are queued by their probes.
+ * 'weight' is that of the scan of the transponder: after an idle scan none
+ * is queued (the sub-muxes have idle scans of their own), else they get an
+ * initial scan - after a user scan with its flag, which the scan settings
+ * of the inputs do not keep from a tuner, as for the transponder. */
+static void
+mpegts_network_scan_submuxes ( mpegts_mux_t *mm, int weight )
+{
+  mpegts_mux_t *sm;
+  int flags;
+
+  if (mpegts_mux_is_submux(mm) || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    return;
+  if (weight == SUBSCRIPTION_PRIO_SCAN_IDLE)
+    return;
+  flags = weight >= SUBSCRIPTION_PRIO_SCAN_USER ? SUBSCRIPTION_USERSCAN :
+                                                  SUBSCRIPTION_INITSCAN;
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link)
+    if (sm != mm && mpegts_mux_is_submux(sm) &&
+        sm->mm_scan_state == MM_SCAN_STATE_IDLE && sm->mm_is_enabled(sm) &&
+        dvb_mux_submux_parent((dvb_mux_t *)sm) == (dvb_mux_t *)mm)
+      mpegts_network_scan_queue_add(sm, SUBSCRIPTION_PRIO_SCAN_INIT, flags, 10);
+}
+#endif
+
 /* Finished */
 static inline void
 mpegts_network_scan_mux_done0
   ( mpegts_mux_t *mm, mpegts_mux_scan_result_t result, int weight )
 {
   mpegts_network_t *mn = mm->mm_network;
+#if ENABLE_MPEGTS_DVB
+  int scan_weight = mm->mm_scan_weight;   /* of the scan that ends */
+#endif
   mpegts_mux_scan_state_t state = mm->mm_scan_state;
   int dab_found = 0;
 
@@ -278,6 +311,12 @@ mpegts_network_scan_mux_done0
   /* Re-enable? */
   if (weight > 0)
     mpegts_network_scan_queue_add(mm, weight, mm->mm_scan_flags, 10);
+
+#if ENABLE_MPEGTS_DVB
+  /* the transponder could be read: its sub-muxes get a scan as well */
+  if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL)
+    mpegts_network_scan_submuxes(mm, scan_weight);
+#endif
 }
 
 /* The end of a scan that was put off */
