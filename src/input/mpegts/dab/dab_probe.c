@@ -86,11 +86,13 @@ init_new_dab_mux(dvb_mux_t *dab_mux, const char *label)
 }
 
 /*
- * Update existing mux timestamp and optionally the ensemble label
+ * Update existing mux timestamp and optionally the ensemble label; found
+ * in mm, which carries it now when what carried it is gone
  */
 static void
-update_existing_mux(dvb_mux_t *dab_mux, const char *label)
+update_existing_mux(dvb_mux_t *dab_mux, mpegts_mux_t *mm, const char *label)
 {
+  dvb_mux_submux_found(dab_mux, mm);
   dvb_mux_set_dab_ensemble((mpegts_mux_t *)dab_mux, label);
   dab_mux->mm_scan_last_seen = gclk();
   idnode_changed(&dab_mux->mm_id);
@@ -151,7 +153,7 @@ process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln,
 
   /* Existing mux found - update timestamp and label */
   if (dab_mux) {
-    update_existing_mux(dab_mux, ens->label);
+    update_existing_mux(dab_mux, mm, ens->label);
     return 1;
   }
 
@@ -198,7 +200,7 @@ process_etina_stream(mpegts_mux_t *mm, dvb_network_t *ln,
 
   /* Existing mux found - update timestamp only (keep existing label) */
   if (dab_mux) {
-    update_existing_mux(dab_mux, NULL);
+    update_existing_mux(dab_mux, mm, NULL);
     return 1;
   }
 
@@ -280,10 +282,12 @@ mpegts_dab_probe_start(mpegts_mux_t *mm)
 {
   dab_probe_ctx_t *ctx;
 
-  /* Only a transponder (not a sub-mux) of a DVB network that may get new
-   * muxes, while it is tuned: the probe opens the whole mux while the scan
-   * runs. Its sub-muxes run from it on the sub-mux input. */
-  if (mm->mm_type != MM_TYPE_TS ||
+  /* Only a transponder with a TS of its own or an input stream on one (its
+   * DAB ensembles hang under it) of a DVB network that may get new muxes,
+   * while it is tuned: the probe opens the whole mux while the scan runs.
+   * Its sub-muxes run from it on the sub-mux input. */
+  if ((mm->mm_type != MM_TYPE_TS && mm->mm_type != MM_TYPE_ISI) ||
+      !dvb_mux_pid_carrier_ok(mm) ||
       mm->mm_network->mn_autodiscovery == MN_DISCOVERY_DISABLE ||
       !idnode_is_instance(&mm->mm_network->mn_id, &dvb_network_class) ||
       ((dvb_mux_t *)mm)->lm_multistream ||
