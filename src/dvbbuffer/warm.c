@@ -600,9 +600,10 @@ dvbbuffer_service_used(mpegts_service_t *s, int delta)
       return;
     s->s_dvbbuffer_used = 0;
   }
-  /* a sub-mux: its transponder is kept warm (its ring has the sub-mux) */
+  /* a sub-mux: its transponder is kept warm (its ring has the sub-mux; a
+   * sub-mux in a sub-mux: the transponder at the root) */
   mm = s->s_dvb_mux;
-  if (mpegts_mux_is_submux(mm) && (p = dvb_mux_submux_parent((dvb_mux_t *)mm)) != NULL)
+  while (mpegts_mux_is_submux(mm) && (p = dvb_mux_submux_parent((dvb_mux_t *)mm)) != NULL)
     mm = (mpegts_mux_t *)p;
   dvbbuffer_warm_used(mm, delta);
 }
