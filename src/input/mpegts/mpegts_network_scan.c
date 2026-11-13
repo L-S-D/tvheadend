@@ -212,6 +212,28 @@ mpegts_network_scan_idle_mux_add ( mpegts_network_t *mn, mpegts_mux_t *mm )
                  mn, sec2mono(10));
 }
 
+#if ENABLE_MPEGTS_DVB
+extern const idclass_t dvb_mux_class;
+
+/* A scan of a transponder scans its sub-muxes too (input streams, T2-MI,
+ * DAB ensembles): they come from the same signal, and a result of theirs
+ * may be from an earlier tuning. New ones are queued by their probes. */
+static void
+mpegts_network_scan_submuxes ( mpegts_mux_t *mm )
+{
+  mpegts_mux_t *sm;
+
+  if (mpegts_mux_is_submux(mm) || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    return;
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link)
+    if (sm != mm && mpegts_mux_is_submux(sm) &&
+        sm->mm_scan_state == MM_SCAN_STATE_IDLE && sm->mm_is_enabled(sm) &&
+        dvb_mux_submux_parent((dvb_mux_t *)sm) == (dvb_mux_t *)mm)
+      mpegts_network_scan_queue_add(sm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                    SUBSCRIPTION_INITSCAN, 10);
+}
+#endif
+
 /* Finished */
 static inline void
 mpegts_network_scan_mux_done0
@@ -275,6 +297,12 @@ mpegts_network_scan_mux_done0
   /* Re-enable? */
   if (weight > 0)
     mpegts_network_scan_queue_add(mm, weight, mm->mm_scan_flags, 10);
+
+#if ENABLE_MPEGTS_DVB
+  /* the transponder could be read: its sub-muxes get a scan as well */
+  if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL)
+    mpegts_network_scan_submuxes(mm);
+#endif
 }
 
 /* The end of a scan that was put off */
