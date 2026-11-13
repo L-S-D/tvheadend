@@ -1480,7 +1480,13 @@ linuxdvb_frontend_monitor ( void *aux )
     /* TODO: check error value */
     return;
 
-  } else if (fe_status & FE_HAS_LOCK)
+  } else if ((fe_status & FE_HAS_LOCK) &&
+             /* the Neumo driver reports LOCK when the demodulator locks; the
+              * packets follow once the packet delineator has locked as well
+              * (VITERBI), on a narrow carrier seconds later. BBFrames flow
+              * without it. */
+             (!lfe->lfe_neumo_supported || lfe->lfe_bbframes ||
+              (fe_status & FE_HAS_VITERBI)))
     status = SIGNAL_GOOD;
   else if (fe_status & (FE_HAS_SYNC | FE_HAS_VITERBI | FE_HAS_CARRIER))
     status = SIGNAL_BAD;
