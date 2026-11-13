@@ -234,7 +234,8 @@ mpegts_network_scan_submuxes ( mpegts_mux_t *mm, int weight )
   mpegts_mux_t *sm;
   int flags;
 
-  if (mpegts_mux_is_submux(mm) || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+  /* a sub-mux too: an input stream can carry a T2-MI stream */
+  if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class))
     return;
   if (weight == SUBSCRIPTION_PRIO_SCAN_IDLE)
     return;
