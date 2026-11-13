@@ -2480,6 +2480,13 @@ linuxdvb_frontend_tune0
            ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_IPEND)))) {
       S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
       //S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
+    } else if (lfe->lfe_neumo_supported && p.u.qpsk.symbol_rate < 2500000) {
+      /* a narrow carrier: after a cold start the demodulator locks, but the
+       * packet delineator mostly does not (999 kBd: not within 5 s); a blind
+       * tune with the known symbol rate (driver search range: 10 MHz)
+       * delivers after 2-3.5 s */
+      S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
+      S2CMD(DTV_DELIVERY_SYSTEM, SYS_AUTO);
     } else if (lfe->lfe_neumo_supported) {
       /* not set, the algorithm is 0 = ALGORITHM_WARM: a warm start finds
        * the carrier only when frequency and symbol rate are (nearly)
