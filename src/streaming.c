@@ -612,6 +612,7 @@ static struct strtab streamtypetab[] = {
   { "AC-4",       SCT_AC4 },
   { "DSMCC",      SCT_DSMCC },
   { "T2MI",       SCT_T2MI },
+  { "DAB",        SCT_DAB },
 };
 
 /**

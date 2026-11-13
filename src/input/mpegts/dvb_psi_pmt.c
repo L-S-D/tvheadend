@@ -348,7 +348,7 @@ dvb_pmt_hbbtv_table_remove(mpegts_mux_t *mm, elementary_stream_t *st)
 uint32_t
 dvb_psi_parse_pmt
   (mpegts_table_t *mt, const char *nicename, elementary_set_t *set,
-   const uint8_t *ptr, int len)
+   const uint8_t *ptr, int len, const uint16_t *dab_pids, int dab_n)
 {
   uint16_t pcr_pid, pid;
   uint8_t estype;
@@ -378,6 +378,7 @@ dvb_psi_parse_pmt
   int supp_receiver_mix;
   int codec_receiver_mix;
   int receiver_mix;
+  int i;
   mpegts_mux_t *mux = mt->mt_mux;
   caid_t *c, *cn;
 
@@ -633,6 +634,15 @@ dvb_psi_parse_pmt
     if (t2mi && hts_stream_type == SCT_UNKNOWN)
       hts_stream_type = SCT_T2MI;
 
+    /* a DAB ensemble the DAB probe found in the PID (a sub-mux): no video,
+     * whatever the stream type says (0x80 is user private in DVB) */
+    if (hts_stream_type != SCT_UNKNOWN) {
+      for (i = 0; i < dab_n && dab_pids[i] != pid; i++)
+        ;
+      if (i < dab_n)
+        hts_stream_type = SCT_DAB;
+    }
+
     if (supp_lang)
       lang = supp_lang;
     /* the codec descriptors (AC-3, E-AC-3, AAC) when the ISO 639
@@ -863,6 +873,8 @@ dvb_pmt_callback
   uint16_t sid;
   uint16_t t2mi[4];
   int t2mi_n;
+  uint16_t dab[32];
+  int dab_n = 0;
   mpegts_mux_t *mm = mt->mt_mux;
   mpegts_service_t *s;
   elementary_stream_t *es;
@@ -885,12 +897,16 @@ dvb_pmt_callback
   /* Process */
   tvhdebug(mt->mt_subsys, "%s: sid %04X (%d)", mt->mt_name, sid, sid);
   update = 0;
+#if ENABLE_MPEGTS_DVB
+  /* the PIDs with a DAB ensemble, before the stream lock */
+  dab_n = dvb_mux_dab_pids(mm, dab, ARRAY_SIZE(dab));
+#endif
   tvh_mutex_lock(&s->s_stream_mutex);
   /* Keep buffered TS packets ahead of any stream reconfiguration. */
   if (s->s_status == SERVICE_RUNNING)
     ts_remux_flush(s);
   update = dvb_psi_parse_pmt(mt, service_nicename((service_t *)s),
-                             &s->s_components, ptr, len);
+                             &s->s_components, ptr, len, dab, dab_n);
   if (update) {
     if (s->s_status == SERVICE_RUNNING)
       elementary_set_filter_build(&s->s_components);
