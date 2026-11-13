@@ -1439,11 +1439,48 @@ linuxdvb_frontend_stream_info ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
 
 #if ENABLE_LINUXDVB_NEUMO
 /*
+ * A blind search of a narrow carrier can lock another carrier next to it, a
+ * wider one mostly (16E 12687.1H, 406 kBd: a 7425 kBd carrier 0.3 MHz away).
+ * Its symbol rate tells: the one found if it is not about that of the mux
+ * (+-25%), else 0.
+ */
+static uint32_t
+linuxdvb_frontend_other_carrier ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
+{
+  struct dtv_property prop = { .cmd = DTV_SYMBOL_RATE };
+  struct dtv_properties props = { .num = 1, .props = &prop };
+  uint32_t want, got;
+
+  if (!lfe->lfe_blind_narrow)
+    return 0;
+  want = ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.symbol_rate;
+  if (want == 0 || ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &props))
+    return 0;
+  got = prop.u.data;
+  if (got == 0 || (got >= want - want / 4 && got <= want + want / 4))
+    return 0;
+  return got;
+}
+
+/*
+ * The search range of a blind tune of a narrow carrier: a few symbol rates
+ * around it (the LNB can be some 100 kHz off), not the 10 MHz of the driver,
+ * in which a wider neighbour is found instead
+ */
+static uint32_t
+linuxdvb_frontend_narrow_range ( uint32_t symbol_rate )
+{
+  uint64_t r = (uint64_t)symbol_rate * 4;
+
+  return r < 2000000 ? 2000000 : r > 10000000 ? 10000000 : (uint32_t)r;
+}
+
+/*
  * The Neumo driver searches once per tune. On a narrow carrier the search
  * often fails: it ends without the carrier (TIMEDOUT), or the demodulator
  * locks and the packet delineator does not (LOCK without VITERBI; the
  * driver waits up to 3 s for it). A new search mostly succeeds, so search
- * again while the subscription waits, as lsdvb does.
+ * again while the subscription waits.
  */
 static int
 linuxdvb_frontend_search_again ( linuxdvb_frontend_t *lfe, fe_status_t fe_status )
@@ -1585,6 +1622,22 @@ linuxdvb_frontend_monitor ( void *aux )
 
     /* Locked */
     if (status == SIGNAL_GOOD) {
+#if ENABLE_LINUXDVB_NEUMO
+      uint32_t other = linuxdvb_frontend_other_carrier(lfe, mm);
+      if (other) {
+        /* not the carrier of the mux: no input from it; search again, once
+         * the last search had time to end */
+        mtimer_arm_rel(&lfe->lfe_monitor_timer, linuxdvb_frontend_monitor,
+                       lfe, ms2mono(50));
+        if (mclk() >= lfe->lfe_other_retry) {
+          tvhdebug(LS_LINUXDVB, "%s - found a carrier of %u Bd, not of %u Bd, searching again",
+                   buf, other, ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.symbol_rate);
+          lfe->lfe_other_retry = mclk() + sec2mono(2);
+          linuxdvb_frontend_tune0(lfe, mmi, lfe->lfe_freq);
+        }
+        return;
+      }
+#endif
       tvhdebug(LS_LINUXDVB, "%s - locked", buf);
       lfe->lfe_locked = 1;
 
@@ -2188,6 +2241,7 @@ linuxdvb_frontend_clear
   lfe->lfe_status  = 0;
   lfe->lfe_status2 = 0;
   lfe->lfe_search_failed = 0;
+  lfe->lfe_other_retry = 0;
 
 #if DVB_API_VERSION >= 5
   static struct dtv_property clear_p[] = {
@@ -2528,6 +2582,7 @@ linuxdvb_frontend_tune0
       S2CMD(DTV_OUTPUT_BBFRAMES, lfe->lfe_bbframes);
     /* Neumo driver: use blind tuning for auto-detection
      * blindscan_mode: 0=never, 1=scanning only, 2=always */
+    lfe->lfe_blind_narrow = 0;
     if (lfe->lfe_neumo_supported &&
         (config.blindscan_mode == 2 ||
          (config.blindscan_mode == 1 &&
@@ -2538,13 +2593,20 @@ linuxdvb_frontend_tune0
            ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_IPEND)))) {
       S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
       //S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
+      if (p.u.qpsk.symbol_rate > 0 && p.u.qpsk.symbol_rate < 2500000) {
+        S2CMD(DTV_SEARCH_RANGE,  linuxdvb_frontend_narrow_range(p.u.qpsk.symbol_rate));
+        lfe->lfe_blind_narrow = 1;
+      }
     } else if (lfe->lfe_neumo_supported && p.u.qpsk.symbol_rate < 2500000) {
       /* a narrow carrier: after a cold start the demodulator locks, but the
        * packet delineator mostly does not (999 kBd: not within 5 s); a blind
-       * tune with the known symbol rate (driver search range: 10 MHz)
-       * delivers after 2-3.5 s */
+       * tune with the known symbol rate delivers after 2-3.5 s */
       S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
       S2CMD(DTV_DELIVERY_SYSTEM, SYS_AUTO);
+      if (p.u.qpsk.symbol_rate > 0) {
+        S2CMD(DTV_SEARCH_RANGE,  linuxdvb_frontend_narrow_range(p.u.qpsk.symbol_rate));
+        lfe->lfe_blind_narrow = 1;
+      }
     } else if (lfe->lfe_neumo_supported) {
       /* not set, the algorithm is 0 = ALGORITHM_WARM: a warm start finds
        * the carrier only when frequency and symbol rate are (nearly)
