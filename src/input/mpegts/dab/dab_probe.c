@@ -97,6 +97,37 @@ update_existing_mux(dvb_mux_t *dab_mux, const char *label)
 }
 
 /*
+ * The PID carries a DAB ensemble (ETI): its stream in the services of the
+ * mux is no video, whatever the PMT said (stream type 0x80, user private).
+ * A running service keeps its streams until its next PMT.
+ */
+static void
+dab_probe_mark_pid(mpegts_mux_t *mm, uint16_t pid)
+{
+  mpegts_service_t *s;
+  elementary_stream_t *es;
+  int changed;
+
+  LIST_FOREACH(s, &mm->mm_services, s_dvb_mux_link) {
+    if (s->s_status == SERVICE_RUNNING)
+      continue;
+    changed = 0;
+    tvh_mutex_lock(&s->s_stream_mutex);
+    TAILQ_FOREACH(es, &s->s_components.set_all, es_link)
+      if (es->es_pid == pid && es->es_type != SCT_DAB) {
+        es->es_type = SCT_DAB;
+        changed = 1;
+      }
+    tvh_mutex_unlock(&s->s_stream_mutex);
+    if (changed) {
+      tvhinfo(LS_MPEGTS, "mux %s: PID %d carries DAB, not video (%s)",
+              mm->mm_nicename, pid, s->s_dvb_svcname ?: "?");
+      service_request_save((service_t *)s);
+    }
+  }
+}
+
+/*
  * Process a single DAB ensemble from scanner results
  */
 static int
@@ -149,6 +180,9 @@ process_ensemble(mpegts_mux_t *mm, dvb_network_t *ln,
     dab_mux = dvb_network_find_mux_dab_mpe(ln, &dmc);
   }
 
+  if (is_etina || is_tsni)
+    dab_probe_mark_pid(mm, ens->source_pid);
+
   /* Existing mux found - update timestamp and label */
   if (dab_mux) {
     update_existing_mux(dab_mux, ens->label);
@@ -195,6 +229,7 @@ process_etina_stream(mpegts_mux_t *mm, dvb_network_t *ln,
   dmc.dmc_dab_port = 0;
 
   dab_mux = dvb_network_find_mux_dab_eti(ln, &dmc);
+  dab_probe_mark_pid(mm, etina->pid);
 
   /* Existing mux found - update timestamp only (keep existing label) */
   if (dab_mux) {
