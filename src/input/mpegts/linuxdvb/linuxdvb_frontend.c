@@ -1463,16 +1463,18 @@ linuxdvb_frontend_other_carrier ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
 }
 
 /*
- * The search range of a blind tune of a narrow carrier: a few symbol rates
- * around it (the LNB can be some 100 kHz off), not the 10 MHz of the driver,
- * in which a wider neighbour is found instead
+ * The search range of a blind tune of a narrow carrier (the full width, the
+ * driver searches half of it either side): two symbol rates either side, at
+ * least 2 MHz, as the frequency of a mux can be 1 MHz off (19.2E 11693V),
+ * not the 10 MHz of the driver. A wider neighbour can still be locked (its
+ * spectrum reaches into the range): linuxdvb_frontend_other_carrier()
  */
 static uint32_t
 linuxdvb_frontend_narrow_range ( uint32_t symbol_rate )
 {
   uint64_t r = (uint64_t)symbol_rate * 4;
 
-  return r < 2000000 ? 2000000 : r > 10000000 ? 10000000 : (uint32_t)r;
+  return r < 4000000 ? 4000000 : r > 10000000 ? 10000000 : (uint32_t)r;
 }
 
 /*
@@ -2241,7 +2243,6 @@ linuxdvb_frontend_clear
   lfe->lfe_status  = 0;
   lfe->lfe_status2 = 0;
   lfe->lfe_search_failed = 0;
-  lfe->lfe_other_retry = 0;
 
 #if DVB_API_VERSION >= 5
   static struct dtv_property clear_p[] = {
