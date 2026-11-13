@@ -626,7 +626,13 @@ linuxdvb_frontend_get_priority ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags
 static int
 linuxdvb_frontend_get_grace ( mpegts_input_t *mi, mpegts_mux_t *mm )
 {
-  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi;
+  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2 = NULL;
+  /* a slave tunes with the satconf of its master (the RF input): its
+   * switch and rotor times count for the slave as well */
+  if (lfe->lfe_master)
+    lfe2 = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL);
+  if (lfe2 && lfe2->lfe_satconf)
+    return linuxdvb_satconf_get_grace(lfe2->lfe_satconf, mm);
   return lfe->lfe_satconf ? linuxdvb_satconf_get_grace(lfe->lfe_satconf, mm) : lfe->lfe_grace_period;
 }
 
