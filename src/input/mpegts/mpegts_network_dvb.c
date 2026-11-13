@@ -673,9 +673,10 @@ dvb_network_find_mux
 
 /*
  * The satellite mux of the transport stream onid/tsid whose carrier lies on
- * the one described by dmc: the same polarisation, input stream and PLS,
- * and the frequencies closer than half the sum of both symbol rates, so
- * that the main lobes of the two carriers overlap. Two carriers cannot
+ * the one described by dmc: the same polarisation, input stream and PLS
+ * (compared as gold code: root 1 and gold 0 are the same sequence), and
+ * the frequencies closer than half the sum of both symbol rates, so that
+ * the main lobes of the two carriers overlap. Two carriers cannot
  * share their frequencies: an entry like this is the same transponder with
  * other parameters (some satellites carry several NITs that do not agree),
  * not another transponder. Another transport stream there (a feed in a
@@ -688,10 +689,12 @@ dvb_network_find_overlap
   mpegts_mux_t *mm;
   const dvb_mux_conf_t *c;
   uint64_t span;
+  uint32_t pls;
 
   if (dmc->dmc_fe_type != DVB_TYPE_S ||
       onid == MPEGTS_ONID_NONE || tsid == MPEGTS_TSID_NONE)
     return NULL;
+  pls = dvb_sat_pls(dmc);
   LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
     /* a sub-mux (DAB) shares the tuning of its transponder */
     if (mpegts_mux_is_submux(mm)) continue;
@@ -700,8 +703,7 @@ dvb_network_find_overlap
     if (c->dmc_fe_type != DVB_TYPE_S ||
         c->u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation ||
         c->dmc_fe_stream_id != dmc->dmc_fe_stream_id ||
-        c->dmc_fe_pls_mode != dmc->dmc_fe_pls_mode ||
-        c->dmc_fe_pls_code != dmc->dmc_fe_pls_code)
+        dvb_sat_pls(c) != pls)
       continue;
     /* frequencies in kHz, symbol rates in symbols/s */
     span = ((uint64_t)c->u.dmc_fe_qpsk.symbol_rate +

@@ -724,7 +724,7 @@ static inline int dvb_modulation_is_none_or_auto ( int modulation )
          modulation == DVB_MOD_QAM_AUTO;
 }
 
-uint32_t dvb_sat_pls( dvb_mux_conf_t *dmc );
+uint32_t dvb_sat_pls( const dvb_mux_conf_t *dmc );
 
 #endif /* ENABLE_MPEGTS_DVB */
 
