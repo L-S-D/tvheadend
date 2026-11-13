@@ -68,7 +68,9 @@ enum streaming_component_type {
   SCT_AC4,
   SCT_DSMCC,   /* DSM-CC stream descriptors: stream events (ISO/IEC 13818-6) */
   SCT_T2MI,    /* a T2-MI stream (TS 102 773): a DVB-T2 multiplex inside */
-  SCT_LAST = SCT_T2MI
+  SCT_DAB,     /* a DAB ensemble in a PID (ETI-NA, ETI in TS), found by its
+                * content: the PMT may call it anything (0x80, user private) */
+  SCT_LAST = SCT_DAB
 };
 
 #define SCT_MASK(t) (1 << (t))
