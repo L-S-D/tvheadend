@@ -633,6 +633,13 @@ dvb_psi_parse_pmt
     if (t2mi && hts_stream_type == SCT_UNKNOWN)
       hts_stream_type = SCT_T2MI;
 
+#if ENABLE_MPEGTS_DVB
+    /* a DAB ensemble the DAB probe found in the PID (a sub-mux): no video,
+     * whatever the stream type says (0x80 is user private in DVB) */
+    if (hts_stream_type != SCT_UNKNOWN && mt->mt_mux && dvb_mux_dab_on_pid(mt->mt_mux, pid))
+      hts_stream_type = SCT_DAB;
+#endif
+
     if (supp_lang)
       lang = supp_lang;
     /* the codec descriptors (AC-3, E-AC-3, AAC) when the ISO 639

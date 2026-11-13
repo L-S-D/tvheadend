@@ -1653,6 +1653,23 @@ dvb_mux_pid_carrier_ok ( mpegts_mux_t *mm )
   return p != NULL && !mpegts_mux_is_submux((mpegts_mux_t *)p);
 }
 
+/* a DAB ensemble (ETI) the DAB probe found in the PID of the mux: the PID
+ * carries no video, whatever its stream type says */
+int
+dvb_mux_dab_on_pid ( mpegts_mux_t *mm, uint16_t pid )
+{
+  mpegts_mux_t *sm;
+
+  if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    return 0;
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link)
+    if ((sm->mm_type == MM_TYPE_DAB_ETI || sm->mm_type == MM_TYPE_DAB_TSNI) &&
+        ((dvb_mux_t *)sm)->lm_tuning.dmc_fe_pid == pid &&
+        dvb_mux_submux_parent((dvb_mux_t *)sm) == (dvb_mux_t *)mm)
+      return 1;
+  return 0;
+}
+
 /* the mux a sub-mux is carried in: its transponder, or for a T2-MI stream
  * or a DAB ensemble in an input stream that sub-mux; a configuration from
  * before the link (or with the transponder gone) takes the transponder it
