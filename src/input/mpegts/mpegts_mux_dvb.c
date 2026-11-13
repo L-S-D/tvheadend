@@ -1882,6 +1882,16 @@ dvb_mux_display_name ( mpegts_mux_t *mm, char *buf, size_t len )
   dvb_network_t *ln = (dvb_network_t*)mm->mm_network;
   uint32_t freq = lm->lm_tuning.dmc_fe_freq, freq2;
   char extra[8], buf2[5], *p;
+  dvb_mux_t *parent;
+
+  /* a sub-mux in a sub-mux (a T2-MI stream or a DAB ensemble in an input
+   * stream): the name of the sub-mux it is in, then what tells it apart */
+  if (mpegts_mux_in_pid(mm) && (parent = dvb_mux_submux_parent(lm)) != NULL &&
+      mpegts_mux_is_submux((mpegts_mux_t *)parent)) {
+    dvb_mux_display_name((mpegts_mux_t *)parent, buf, len);
+    dvb_mux_submux_name(mm, buf, len);
+    return;
+  }
 
   if (lm->lm_tuning.dmc_fe_type == DVB_TYPE_CABLECARD)
     snprintf(buf, len, "%u", lm->lm_tuning.u.dmc_fe_cablecard.vchannel);
