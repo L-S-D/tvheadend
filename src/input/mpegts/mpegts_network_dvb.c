@@ -844,7 +844,7 @@ dvb_mux_t2mi_found ( mpegts_mux_t *mm, uint16_t pid, uint16_t sid )
   /* in a transponder or in an input stream on one; not in a multistream
    * transponder: its tables are those of the input stream the demodulator
    * chose, whose sub-mux finds the T2-MI stream itself */
-  if (!dvb_mux_t2mi_carrier_ok(mm))
+  if (!dvb_mux_pid_carrier_ok(mm))
     return;
   dmc = ((dvb_mux_t *)mm)->lm_tuning;
   dmc.dmc_fe_pid = pid;
