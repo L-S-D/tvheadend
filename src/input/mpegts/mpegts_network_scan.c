@@ -223,7 +223,8 @@ mpegts_network_scan_submuxes ( mpegts_mux_t *mm )
 {
   mpegts_mux_t *sm;
 
-  if (mpegts_mux_is_submux(mm) || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+  /* a sub-mux too: an input stream can carry a T2-MI stream */
+  if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class))
     return;
   LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link)
     if (sm != mm && mpegts_mux_is_submux(sm) &&

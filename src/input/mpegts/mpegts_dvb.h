@@ -166,6 +166,7 @@ uint16_t   dvb_mux_stream_pid    ( mpegts_mux_t *mm );
 
 /* sub-muxes follow the tuning of the transponder they are carried in */
 dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
+int dvb_mux_t2mi_carrier_ok ( mpegts_mux_t *mm );
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 void       dvb_network_link_multistream ( dvb_network_t *ln );
 dvb_mux_t *dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm );
