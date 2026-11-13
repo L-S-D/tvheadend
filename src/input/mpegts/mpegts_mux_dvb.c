@@ -1635,11 +1635,11 @@ dvb_mux_submux_link ( dvb_mux_t *sm, const dvb_mux_t *parent )
   idnode_changed(&sm->mm_id);
 }
 
-/* a mux whose TS can carry a T2-MI sub-mux: a transponder with a TS of its
- * own, or a sub-mux with one (an input stream) on a transponder - one level
- * of sub-muxes in sub-muxes */
+/* a mux whose TS can carry a sub-mux in a PID (a T2-MI stream, a DAB
+ * ensemble): a transponder with a TS of its own, or a sub-mux with one (an
+ * input stream) on a transponder - one level of sub-muxes in sub-muxes */
 int
-dvb_mux_t2mi_carrier_ok ( mpegts_mux_t *mm )
+dvb_mux_pid_carrier_ok ( mpegts_mux_t *mm )
 {
   dvb_mux_t *p;
 
@@ -1647,15 +1647,16 @@ dvb_mux_t2mi_carrier_ok ( mpegts_mux_t *mm )
     return 0;
   if (!mpegts_mux_is_submux(mm))
     return 1;
-  if (mm->mm_type == MM_TYPE_T2MI)
+  if (mpegts_mux_in_pid(mm))
     return 0;
   p = dvb_mux_submux_parent((dvb_mux_t *)mm);
   return p != NULL && !mpegts_mux_is_submux((mpegts_mux_t *)p);
 }
 
 /* the mux a sub-mux is carried in: its transponder, or for a T2-MI stream
- * in an input stream that sub-mux; a configuration from before the link (or
- * with the transponder gone) takes the transponder it was created from */
+ * or a DAB ensemble in an input stream that sub-mux; a configuration from
+ * before the link (or with the transponder gone) takes the transponder it
+ * was created from */
 dvb_mux_t *
 dvb_mux_submux_parent ( dvb_mux_t *sm )
 {
@@ -1667,7 +1668,7 @@ dvb_mux_submux_parent ( dvb_mux_t *sm )
     if (p != NULL && p != mm && p->mm_network == mm->mm_network &&
         idnode_is_instance(&p->mm_id, &dvb_mux_class) &&
         (mpegts_mux_is_submux(p) ?
-           mm->mm_type == MM_TYPE_T2MI && dvb_mux_t2mi_carrier_ok(p) :
+           mpegts_mux_in_pid(mm) && dvb_mux_pid_carrier_ok(p) :
            !mpegts_mux_in_bbframes(mm) || ((dvb_mux_t *)p)->lm_multistream))
       return (dvb_mux_t *)p;
   }
