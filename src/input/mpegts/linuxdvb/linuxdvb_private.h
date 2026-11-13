@@ -135,6 +135,8 @@ struct linuxdvb_frontend
   int                       lfe_nodata;
   int64_t                   lfe_search_failed;  /* Neumo: mclk() since the search has not locked */
   int                       lfe_search_status;  /* the status seen then */
+  int                       lfe_blind_narrow;   /* Neumo: a blind tune of a narrow carrier */
+  int64_t                   lfe_other_retry;    /* Neumo: mclk() of the next search after another carrier */
   int                       lfe_freq;
   int64_t                   lfe_monitor;
   mtimer_t                  lfe_monitor_timer;
