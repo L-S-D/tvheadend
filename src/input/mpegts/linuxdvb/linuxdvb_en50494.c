@@ -412,6 +412,8 @@ linuxdvb_en50494_tune
     }
     if (ret != 0) {
       tvherror(LS_EN50494, "error send tune command");
+      /* not left at 18V: no tuner on the cable could send its command */
+      linuxdvb_diseqc_set_volt(lsp, 0);
       break;
     }
 
