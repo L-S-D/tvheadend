@@ -214,6 +214,10 @@ void eit_load    ( void );
 htsmsg_t *eit_module_id_list( const char *lang );
 const char *eit_check_module_id ( const char *id );
 
+/* EIT sections from other carriers, e.g. object carousel files (eitoc.c) */
+void eit_carousel_section
+  ( epggrab_ota_map_t *map, struct mpegts_mux *mm, const uint8_t *sec, int len );
+
 /* OpenTV module */
 void opentv_init ( void );
 void opentv_done ( void );
