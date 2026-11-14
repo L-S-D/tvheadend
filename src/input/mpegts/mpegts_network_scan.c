@@ -97,6 +97,20 @@ mpegts_network_scan_do_mux ( mpegts_mux_queue_t *q, mpegts_mux_t *mm )
     return 0;
   }
 
+#if ENABLE_MPEGTS_DVB
+  /* A multistream transponder no tuner takes as a whole: its input streams
+   * are scanned instead. Tuned, it would fail with "no adapters" for good,
+   * stay queued and hold up the muxes queued after it. */
+  if (dvb_mux_transponder_by_streams(mm)) {
+    TAILQ_REMOVE(q, mm, mm_scan_link);
+    mm->mm_scan_state = MM_SCAN_STATE_IDLE;
+    dvb_mux_transponder_scan_streams(mm, mm->mm_scan_weight, mm->mm_scan_flags);
+    mm->mm_scan_weight = 0;
+    mpegts_network_scan_notify(mm);
+    return 0;
+  }
+#endif
+
   /* Attempt to tune */
   r = mpegts_mux_subscribe(mm, NULL, "scan", mm->mm_scan_weight,
                            mm->mm_scan_flags |
@@ -293,6 +307,16 @@ mpegts_network_scan_mux_done0
     mm->mm_scan_result = result;
     idnode_changed(&mm->mm_id);
   }
+
+#if ENABLE_MPEGTS_DVB
+  /* an input stream of a transponder no tuner takes as a whole: the
+   * transponder's result follows from those of its streams */
+  if (result != MM_SCAN_NONE && mpegts_mux_in_bbframes(mm)) {
+    dvb_mux_t *p = dvb_mux_submux_parent((dvb_mux_t *)mm);
+    if (p && dvb_mux_transponder_by_streams((mpegts_mux_t *)p))
+      dvb_mux_transponder_result((mpegts_mux_t *)p);
+  }
+#endif
 
   /* Re-enable? */
   if (weight > 0)
