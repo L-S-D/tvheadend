@@ -298,6 +298,16 @@ const idclass_t dvb_mux_class =
       .get_opts = dvb_mux_class_dab_opts,
     },
     {
+      .type     = PT_U32,
+      .id       = "dab_pmt_sid",
+      .name     = N_("Announced by"),
+      .desc     = N_("The service whose PMT lists the PID of the DAB "
+                     "ensemble (its SID; of several the lowest)."),
+      .off      = offsetof(dvb_mux_t, lm_dab_pmt_sid),
+      .opts     = PO_RDONLY,
+      .get_opts = dvb_mux_class_dab_opts,
+    },
+    {
       .type     = PT_STR,
       .id       = "dab_ip",
       .name     = N_("DAB IP"),
@@ -1767,4 +1777,40 @@ dvb_mux_create0
   }
 
   return lm;
+}
+
+/*
+ * The PMT of a service lists the PIDs: a DAB ensemble in one of them of the
+ * mux is announced by the service. Of several services the one with the
+ * lowest SID (the same whatever the order of the PMTs, no save at every
+ * one), and one whose PMT lists the PID no more gives it up. Only shown
+ * with the ensemble - it is still carried in the PID, whatever the service
+ * (global_lock).
+ */
+void
+dvb_mux_dab_pmt_pids ( mpegts_mux_t *mm, const uint16_t *pids, int n, uint16_t sid )
+{
+  mpegts_mux_t *sm;
+  dvb_mux_t *lm;
+  uint32_t asid;
+  int i;
+
+  if (mm == NULL || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    return;
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link) {
+    if (!mpegts_mux_is_dab(sm))
+      continue;
+    lm = (dvb_mux_t *)sm;
+    for (i = 0; i < n && pids[i] != lm->lm_tuning.dmc_fe_pid; i++)
+      ;
+    asid = lm->lm_dab_pmt_sid;
+    if (i < n && (asid == 0 || sid < asid))
+      asid = sid;
+    else if (i == n && asid == sid)
+      asid = 0;
+    if (asid == lm->lm_dab_pmt_sid || dvb_mux_submux_parent(lm) != (dvb_mux_t *)mm)
+      continue;
+    lm->lm_dab_pmt_sid = asid;
+    idnode_changed(&sm->mm_id);
+  }
 }

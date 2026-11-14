@@ -635,6 +635,40 @@ dvb_psi_parse_pmt
   return update;
 }
 
+#if ENABLE_MPEGTS_DVB
+/* the DAB ensembles in the PIDs of the streams of a PMT (as for
+ * dvb_psi_parse_pmt: from the service id on) are announced by its service:
+ * all PIDs, also those of a stream type tvh does not keep (MPE). Not with
+ * the stream lock of the service: this goes through the muxes. */
+static void
+dvb_pmt_dab_announce ( mpegts_mux_t *mm, const uint8_t *ptr, int len, uint16_t sid )
+{
+  uint16_t pids[256];
+  int dllen, n = 0;
+
+  if (len < 9)
+    return;
+  dllen = (ptr[7] & 0xf) << 8 | ptr[8];
+  ptr += 9;
+  len -= 9;
+  if (dllen > len)
+    return;
+  ptr += dllen;
+  len -= dllen;
+  while (len >= 5 && n < (int)ARRAY_SIZE(pids)) {
+    pids[n++] = extract_pid(ptr + 1);
+    dllen = (ptr[3] & 0xf) << 8 | ptr[4];
+    ptr += 5;
+    len -= 5;
+    if (dllen > len)
+      break;
+    ptr += dllen;
+    len -= dllen;
+  }
+  dvb_mux_dab_pmt_pids(mm, pids, n, sid);
+}
+#endif
+
 int
 dvb_pmt_callback
   (mpegts_table_t *mt, const uint8_t *ptr, int len, int tableid)
@@ -697,6 +731,11 @@ dvb_pmt_callback
   if (update & (PMT_UPDATE_NEW_CA_STREAM|PMT_UPDATE_NEW_CAID|
                 PMT_UPDATE_CAID_DELETED|PMT_UPDATE_CAID_PID))
     descrambler_caid_changed((service_t *)s);
+
+#if ENABLE_MPEGTS_DVB
+  /* the DAB ensembles in its PIDs: this service announces them */
+  dvb_pmt_dab_announce(mm, ptr, len, sid);
+#endif
 
   TAILQ_FOREACH(es, &s->s_components.set_filter, es_filter_link) {
     if (es->es_type != SCT_HBBTV) continue;
