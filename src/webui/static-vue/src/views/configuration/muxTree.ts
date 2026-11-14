@@ -192,6 +192,14 @@ export function scanBusy(node: MuxTreeNode): boolean {
   return node.children.some(scanBusy)
 }
 
+/* the muxes of the trees queued for a scan or being scanned (not the
+ * ones in the idle queue) */
+export function scanPending(nodes: MuxTreeNode[]): number {
+  let n = 0
+  for (const x of nodes) n += (x.row && scanQueued(x.row) ? 1 : 0) + scanPending(x.children)
+  return n
+}
+
 /* "PSK/8" → "8PSK", "QAM/256" → "256QAM", others as they are */
 function modulationName(m: string | undefined): string {
   if (!m || m === 'AUTO' || m === 'NONE') return ''

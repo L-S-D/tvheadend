@@ -701,3 +701,46 @@ describe('DvbMuxTreeView selection and keyboard', () => {
     expect(table.attributes('aria-activedescendant')).toBe('mux-tree-row-n1')
   })
 })
+
+describe('DvbMuxTreeView scan of a whole network', () => {
+  const netScan = (w: Wrapper) => rowOf(w, 'Astra (').find('button.mux-tree__scan')
+
+  it('is off for a disabled network, and says why', async () => {
+    const s = server()
+    s.networks[0].enabled = false
+    const w = await mountTree(s)
+    expect(netScan(w).attributes('disabled')).toBeDefined()
+    expect(netScan(w).attributes('title')).toContain('network is disabled')
+  })
+
+  it('counts the muxes queued or scanning, not those in the idle queue, and ends with them', async () => {
+    const s = server()
+    s.muxes.push({
+      uuid: 'm2', name: '11523H', network: 'Astra', network_uuid: 'n1', tstype: 0,
+      num_svc: 0, num_chn: 0, scan_state: 0, scan_result: 1, enabled: 1,
+    })
+    s.networks[0].num_mux = 2
+    const w = await mountTree(s)
+    await expand(w, 'Astra (2)')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    try {
+      /* the network scan queues one, the other rotates in the idle queue */
+      s.muxes[0].scan_state = 1
+      s.muxes[2].scan_state = 2
+      await netScan(w).trigger('click')
+      await flushPromises()
+      expect(calls('mpegts/network/scan')).toHaveLength(1)
+      expect(rowOf(w, 'Astra (2)').text()).toContain('scanning… · 1')
+      /* scanned: both in the idle queue now */
+      s.muxes[0].scan_state = 2
+      await vi.advanceTimersByTimeAsync(2000)
+      await flushPromises()
+      expect(rowOf(w, 'Astra (2)').text()).not.toContain('scanning')
+      const n = calls('mpegts/mux/grid').length
+      await vi.advanceTimersByTimeAsync(20000)
+      expect(calls('mpegts/mux/grid')).toHaveLength(n)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
