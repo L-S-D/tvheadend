@@ -30,6 +30,8 @@ export interface MuxRow {
   dab_ip?: string
   dab_port?: number
   carrier_sid?: number
+  /* DAB in a PID: the service whose PMT lists the PID */
+  dab_pmt_sid?: number
   pnetwork_name?: string | null
   delsys?: string
   modulation?: string

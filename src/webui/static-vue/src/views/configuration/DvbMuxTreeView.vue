@@ -174,7 +174,7 @@ async function loadMuxes(net: NetworkEntry, expandNew: boolean) {
       filter: [{ type: 'string', field: 'network', value: net.name }],
     })
     const rows = (grid.entries ?? []).filter((r) => r.network_uuid === net.uuid)
-    if (rows.some((r) => (r.carrier_sid ?? 0) > 0) && !services.value[net.uuid]) await loadServices(net)
+    if (rows.some((r) => serviceSidOf(r) > 0) && !services.value[net.uuid]) await loadServices(net)
     const tree = buildMuxTree(rows)
     trees.value = { ...trees.value, [net.uuid]: tree }
     if (expandNew) {
@@ -219,9 +219,16 @@ function refreshServices(net: NetworkEntry) {
 }
 
 /* the service a sub-mux comes from (T2MI ...): name, encrypted */
+/* the service of a sub-mux in its parent: the one it is carried in (a T2MI
+ * stream), or the one that announces it in its PMT (DAB in a PID) */
+function serviceSidOf(row: MuxRow): number {
+  return row.carrier_sid || row.dab_pmt_sid || 0
+}
+
 function carrierOf(row: MuxRow): CarrierInfo | null {
-  if (!row.carrier_sid || !row.parent_mux || !row.network_uuid) return null
-  const s = services.value[row.network_uuid]?.get(row.parent_mux)?.find((x) => x.sid === row.carrier_sid)
+  const sid = serviceSidOf(row)
+  if (!sid || !row.parent_mux || !row.network_uuid) return null
+  const s = services.value[row.network_uuid]?.get(row.parent_mux)?.find((x) => x.sid === sid)
   return s ? { name: s.svcname ?? '', encrypted: s.encrypted === true, caid: caidList(s.caid) } : null
 }
 
@@ -231,21 +238,27 @@ function serviceTitle(s: ServiceRow): string {
   return parts.join(' — ')
 }
 
-/* the Address column: ip:port, or the carrier service */
+/* the Address column: ip:port, and the service (carrier or announcing) */
 function sourceLabel(row: MuxRow): string {
   const addr = addressLabel(row)
-  if (addr) return addr
-  if (!row.carrier_sid) return ''
-  const c = carrierOf(row)
-  return c?.name ? `SID ${row.carrier_sid} · ${c.name}` : `SID ${row.carrier_sid}`
+  const sid = serviceSidOf(row)
+  if (!sid) return addr
+  const name = carrierOf(row)?.name
+  if (addr) return `${addr} · ${name || `SID ${sid}`}`
+  return name ? `SID ${sid} · ${name}` : `SID ${sid}`
 }
 
 function carrierTitle(row: MuxRow): string {
   const c = carrierOf(row)
   if (!c) return sourceLabel(row)
+  if (row.carrier_sid)
+    return c.encrypted
+      ? t('Carrier service {0} (SID {1}), encrypted: {2}', c.name, row.carrier_sid, c.caid)
+      : t('Carrier service {0} (SID {1})', c.name, row.carrier_sid)
+  const where = addressLabel(row) || t('PID {0}', row.pid ?? '')
   return c.encrypted
-    ? t('Carrier service {0} (SID {1}), encrypted: {2}', c.name, row.carrier_sid, c.caid)
-    : t('Carrier service {0} (SID {1})', c.name, row.carrier_sid)
+    ? t('{0}, announced by the service {1} (SID {2}), encrypted: {3}', where, c.name, row.dab_pmt_sid, c.caid)
+    : t('{0}, announced by the service {1} (SID {2})', where, c.name, row.dab_pmt_sid)
 }
 
 function setOpen(key: string, open: boolean) {
