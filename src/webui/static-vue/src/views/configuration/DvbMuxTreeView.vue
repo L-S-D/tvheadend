@@ -33,8 +33,9 @@
  *
  * Scan: the button of a row queues a scan of its mux (`scan_state` =
  * pending, as the mux editor does), of a made-up input stream those of
- * the muxes below it. The network is then reloaded every 2 s until these
- * scans are over.
+ * the muxes below it; the button of a network row scans all its muxes
+ * (`mpegts/network/scan`, as the networks grid does). The network is then
+ * reloaded every 2 s until these scans are over.
  *
  * Services: expanding a mux shows its services (type, SID, CA systems,
  * channels) - right below it when it has no sub-muxes (a DAB ensemble, a
@@ -67,6 +68,7 @@ import {
   muxSearchText,
   muxTypeName,
   scanBusy,
+  scanPending,
   scanResultName,
   scanTargets,
   SCAN_STATE_ACTIVE,
@@ -172,7 +174,7 @@ async function loadMuxes(net: NetworkEntry, expandNew: boolean) {
       filter: [{ type: 'string', field: 'network', value: net.name }],
     })
     const rows = (grid.entries ?? []).filter((r) => r.network_uuid === net.uuid)
-    if (rows.some((r) => (r.carrier_sid ?? 0) > 0) && !services.value[net.uuid]) await loadServices(net)
+    if (rows.some((r) => serviceSidOf(r) > 0) && !services.value[net.uuid]) await loadServices(net)
     const tree = buildMuxTree(rows)
     trees.value = { ...trees.value, [net.uuid]: tree }
     if (expandNew) {
@@ -217,9 +219,16 @@ function refreshServices(net: NetworkEntry) {
 }
 
 /* the service a sub-mux comes from (T2MI ...): name, encrypted */
+/* the service of a sub-mux in its parent: the one it is carried in (a T2MI
+ * stream), or the one that announces it in its PMT (DAB in a PID) */
+function serviceSidOf(row: MuxRow): number {
+  return row.carrier_sid || row.dab_pmt_sid || 0
+}
+
 function carrierOf(row: MuxRow): CarrierInfo | null {
-  if (!row.carrier_sid || !row.parent_mux || !row.network_uuid) return null
-  const s = services.value[row.network_uuid]?.get(row.parent_mux)?.find((x) => x.sid === row.carrier_sid)
+  const sid = serviceSidOf(row)
+  if (!sid || !row.parent_mux || !row.network_uuid) return null
+  const s = services.value[row.network_uuid]?.get(row.parent_mux)?.find((x) => x.sid === sid)
   return s ? { name: s.svcname ?? '', encrypted: s.encrypted === true, caid: caidList(s.caid) } : null
 }
 
@@ -229,21 +238,27 @@ function serviceTitle(s: ServiceRow): string {
   return parts.join(' — ')
 }
 
-/* the Address column: ip:port, or the carrier service */
+/* the Address column: ip:port, and the service (carrier or announcing) */
 function sourceLabel(row: MuxRow): string {
   const addr = addressLabel(row)
-  if (addr) return addr
-  if (!row.carrier_sid) return ''
-  const c = carrierOf(row)
-  return c?.name ? `SID ${row.carrier_sid} · ${c.name}` : `SID ${row.carrier_sid}`
+  const sid = serviceSidOf(row)
+  if (!sid) return addr
+  const name = carrierOf(row)?.name
+  if (addr) return `${addr} · ${name || `SID ${sid}`}`
+  return name ? `SID ${sid} · ${name}` : `SID ${sid}`
 }
 
 function carrierTitle(row: MuxRow): string {
   const c = carrierOf(row)
   if (!c) return sourceLabel(row)
+  if (row.carrier_sid)
+    return c.encrypted
+      ? t('Carrier service {0} (SID {1}), encrypted: {2}', c.name, row.carrier_sid, c.caid)
+      : t('Carrier service {0} (SID {1})', c.name, row.carrier_sid)
+  const where = addressLabel(row) || t('PID {0}', row.pid ?? '')
   return c.encrypted
-    ? t('Carrier service {0} (SID {1}), encrypted: {2}', c.name, row.carrier_sid, c.caid)
-    : t('Carrier service {0} (SID {1})', c.name, row.carrier_sid)
+    ? t('{0}, announced by the service {1} (SID {2}), encrypted: {3}', where, c.name, row.dab_pmt_sid, c.caid)
+    : t('{0}, announced by the service {1} (SID {2})', where, c.name, row.dab_pmt_sid)
 }
 
 function setOpen(key: string, open: boolean) {
@@ -624,6 +639,20 @@ const SCAN_POLL_MS = 2000
 const SCAN_POLL_MAX = 300 /* 10 min */
 const scanning = new Map<string, Set<string>>()
 const scanPolls = new Map<string, number>()
+/* the networks scanned as a whole: all their muxes count */
+const scanningNets = ref(new Set<string>())
+
+function setNetScanning(net: NetworkEntry, on: boolean) {
+  const s = new Set(scanningNets.value)
+  if (on) s.add(net.uuid)
+  else s.delete(net.uuid)
+  scanningNets.value = s
+}
+
+/* the muxes of a network scanned as a whole still queued or scanning */
+function networkScanLeft(net: NetworkEntry): number {
+  return scanPending(trees.value[net.uuid] ?? [])
+}
 
 function pollScans(net: NetworkEntry) {
   if (scanPolls.has(net.uuid)) return
@@ -631,16 +660,20 @@ function pollScans(net: NetworkEntry) {
   const id = window.setInterval(async () => {
     await loadMuxes(net, false)
     const uuids = scanning.get(net.uuid) ?? new Set<string>()
+    const all = scanningNets.value.has(net.uuid)
     const busy = (nodes: MuxTreeNode[]): boolean =>
       nodes.some(
         (n) =>
-          (n.row !== null && uuids.has(n.row.uuid) && (n.row.scan_state ?? SCAN_STATE_IDLE) !== SCAN_STATE_IDLE) ||
+          (n.row !== null &&
+            (all || uuids.has(n.row.uuid)) &&
+            (n.row.scan_state ?? SCAN_STATE_IDLE) !== SCAN_STATE_IDLE) ||
           busy(n.children),
       )
     if (++rounds >= SCAN_POLL_MAX || !busy(trees.value[net.uuid] ?? [])) {
       window.clearInterval(id)
       scanPolls.delete(net.uuid)
       scanning.delete(net.uuid)
+      setNetScanning(net, false)
       refreshServices(net)
     }
   }, SCAN_POLL_MS)
@@ -667,6 +700,19 @@ async function scanUuids(net: NetworkEntry, uuids: string[]) {
   const set = scanning.get(net.uuid) ?? new Set<string>()
   for (const u of uuids) set.add(u)
   scanning.set(net.uuid, set)
+  await loadMuxes(net, false)
+  pollScans(net)
+}
+
+/* the network row: all muxes of the network */
+async function scanNetwork(net: NetworkEntry) {
+  try {
+    await apiCall('mpegts/network/scan', { uuid: net.uuid })
+  } catch (e) {
+    error.value = String(e)
+    return
+  }
+  setNetScanning(net, true)
   await loadMuxes(net, false)
   pollScans(net)
 }
@@ -946,7 +992,6 @@ onMounted(loadNetworks)
           <col class="mux-tree__col-type" />
           <col class="mux-tree__col-pid" />
           <col class="mux-tree__col-address" />
-          <col class="mux-tree__col-modcod" />
           <col class="mux-tree__col-scan" />
           <col class="mux-tree__col-count" />
           <col class="mux-tree__col-count" />
@@ -967,7 +1012,6 @@ onMounted(loadNetworks)
             <th>{{ t('Type') }}</th>
             <th class="mux-tree__num">{{ t('PID') }}</th>
             <th>{{ t('Address') }}</th>
-            <th>{{ t('MODCOD') }}</th>
             <th>{{ t('Scan result') }}</th>
             <th class="mux-tree__num">{{ t('Services') }}</th>
             <th class="mux-tree__num">{{ t('Channels') }}</th>
@@ -1048,7 +1092,7 @@ onMounted(loadNetworks)
                 <span v-if="r.node.row && enabledLabel(r.node.row)" class="mux-tree__badge">{{ enabledLabel(r.node.row) }}</span>
                 <span v-if="r.wide && r.node.row" class="mux-tree__tuning">{{ tuningLabel(r.node.row) }}</span>
                 <!-- after the tuning of a transponder, after the name of a sub-mux -->
-                <span v-if="r.node.row?.pnetwork_name && !r.node.providerLabel" class="mux-tree__provider">
+                <span v-if="r.node.row?.pnetwork_name" class="mux-tree__provider">
                   {{ r.node.row.pnetwork_name }}
                 </span>
               </template>
@@ -1105,7 +1149,6 @@ onMounted(loadNetworks)
                   </template>
                 </td>
               </template>
-              <td>{{ r.node.row.modcod ?? '' }}</td>
               <td>
                 <span v-if="scanStateLabel(r.node.row)" class="mux-tree__busy">
                   {{ scanStateLabel(r.node.row) }}
@@ -1120,7 +1163,7 @@ onMounted(loadNetworks)
             </template>
             <template v-else-if="r.node?.virtual">
               <td class="mux-tree__muted">{{ t('input stream') }}</td>
-              <td colspan="3" />
+              <td colspan="2" />
               <td class="mux-tree__muted" :title="t('Sub-muxes scanned with success')">
                 {{ scanSummary(r.node) }}
               </td>
@@ -1134,15 +1177,19 @@ onMounted(loadNetworks)
                 <Lock v-if="r.service.encrypted" class="mux-tree__lock" :size="12" :stroke-width="2" />
                 SID {{ r.service.sid }}<template v-if="r.service.encrypted"> · {{ caidList(r.service.caid) }}</template>
               </td>
-              <td colspan="3" class="mux-tree__streams" :title="r.service.streams">{{ r.service.streams }}</td>
+              <td colspan="2" class="mux-tree__streams" :title="r.service.streams">{{ r.service.streams }}</td>
               <td class="mux-tree__num">{{ r.service.channel?.length || '' }}</td>
             </template>
             <template v-else-if="r.network">
-              <td colspan="2" />
+              <td>
+                <span v-if="scanningNets.has(r.network.uuid)" class="mux-tree__busy">
+                  {{ t('scanning…') }}<template v-if="networkScanLeft(r.network)"> · {{ networkScanLeft(r.network) }}</template>
+                </span>
+              </td>
               <td class="mux-tree__num">{{ r.network.numSvc }}</td>
               <td class="mux-tree__num">{{ r.network.numChn }}</td>
             </template>
-            <td v-else colspan="7" />
+            <td v-else colspan="6" />
             <td class="mux-tree__select-cell">
               <input
                 v-if="enabledState(r)"
@@ -1164,6 +1211,18 @@ onMounted(loadNetworks)
                 :title="r.node.row ? t('Scan this mux') : t('Scan the muxes of this input stream')"
                 :aria-label="t('Scan')"
                 @click.stop="scanRow(r)"
+                @dblclick.stop
+              >
+                <ScanSearch :size="15" :stroke-width="2" />
+              </button>
+              <button
+                v-else-if="r.network"
+                type="button"
+                class="mux-tree__scan"
+                :disabled="scanningNets.has(r.network.uuid)"
+                :title="t('Scan all muxes of this network')"
+                :aria-label="t('Scan the network')"
+                @click.stop="scanNetwork(r.network)"
                 @dblclick.stop
               >
                 <ScanSearch :size="15" :stroke-width="2" />
@@ -1261,9 +1320,6 @@ onMounted(loadNetworks)
   width: 148px;
 }
 
-.mux-tree__col-modcod {
-  width: 88px;
-}
 
 .mux-tree__col-scan {
   width: 128px;
