@@ -160,6 +160,18 @@ dvb_mux_class_dab_opts(void *o, uint32_t opts)
   return opts | PO_NOUI | PO_NOSAVE;
 }
 
+/* DAB in a PID (MPE, ETI-NA, TS NI) */
+static uint32_t
+dvb_mux_class_dab_pid_opts(void *o, uint32_t opts)
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mpegts_mux_is_dab(mm) && mpegts_mux_in_pid(mm))
+    return opts;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
 static uint32_t
 dvb_mux_class_dab_eti_opts(void *o, uint32_t opts)
 {
@@ -312,6 +324,16 @@ const idclass_t dvb_mux_class =
       .off      = offsetof(dvb_mux_t, lm_dab_ensemble),
       .opts     = PO_RDONLY,
       .get_opts = dvb_mux_class_dab_opts,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "dab_pmt_sid",
+      .name     = N_("Announced by"),
+      .desc     = N_("The service whose PMT lists the PID of the DAB "
+                     "ensemble (its SID), from the last PMT seen."),
+      .off      = offsetof(dvb_mux_t, lm_dab_pmt_sid),
+      .opts     = PO_RDONLY,
+      .get_opts = dvb_mux_class_dab_pid_opts,
     },
     {
       .type     = PT_STR,
@@ -2235,6 +2257,31 @@ dvb_mux_transponder_scan_streams ( mpegts_mux_t *mm, int weight, int flags )
   tvhdebug(LS_MPEGTS, "%s - no tuner takes the multistream transponder as a whole: "
            "%d input stream(s) queued for a scan instead", mm->mm_nicename, n);
   dvb_mux_transponder_result(mm);
+}
+
+/*
+ * The PMT of a service lists the PID: a DAB ensemble in that PID of the mux
+ * is announced by the service. Only shown with the ensemble - it is still
+ * carried in the PID, whatever the service (global_lock).
+ */
+void
+dvb_mux_dab_pmt_pid ( mpegts_mux_t *mm, uint16_t pid, uint16_t sid )
+{
+  mpegts_mux_t *sm;
+  dvb_mux_t *lm;
+
+  if (mm == NULL || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    return;
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link) {
+    if (!mpegts_mux_is_dab(sm) || !mpegts_mux_in_pid(sm))
+      continue;
+    lm = (dvb_mux_t *)sm;
+    if (lm->lm_tuning.dmc_fe_pid != pid || lm->lm_dab_pmt_sid == sid ||
+        dvb_mux_submux_parent(lm) != (dvb_mux_t *)mm)
+      continue;
+    lm->lm_dab_pmt_sid = sid;
+    idnode_changed(&sm->mm_id);
+  }
 }
 
 /* a multistream transponder has no EPG of its own */

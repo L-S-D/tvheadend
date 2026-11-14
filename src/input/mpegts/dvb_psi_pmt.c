@@ -379,6 +379,9 @@ dvb_psi_parse_pmt
   int receiver_mix;
   mpegts_mux_t *mux = mt->mt_mux;
   caid_t *c, *cn;
+#if ENABLE_MPEGTS_DVB
+  uint16_t sid = extract_svcid(ptr);
+#endif
 
   version = (ptr[2] >> 1) & 0x1f;
   pcr_pid = extract_pid(ptr + 5);
@@ -429,6 +432,12 @@ dvb_psi_parse_pmt
     dllen   = (ptr[3] & 0xf) << 8 | ptr[4];
     tvhdebug(mt->mt_subsys, "%s:  pid %04X estype %d", mt->mt_name, pid, estype);
     tvhlog_hexdump(mt->mt_subsys, ptr, 5);
+
+#if ENABLE_MPEGTS_DVB
+    /* a DAB ensemble in the PID: this service announces it (only shown,
+     * the PID may have a stream type tvh does not keep, MPE) */
+    dvb_mux_dab_pmt_pid(mux, pid, sid);
+#endif
 
     ptr += 5;
     len -= 5;

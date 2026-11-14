@@ -50,6 +50,12 @@ typedef struct dvb_mux
   char *lm_dab_ensemble;
 
   /*
+   * DAB in a PID: the service whose PMT lists the PID (its SID, from the
+   * last PMT seen; only shown)
+   */
+  uint32_t lm_dab_pmt_sid;
+
+  /*
    * Frequencies for Mapping
    */
   uint32_t mm_dvb_satip_dvbt_freq;
@@ -144,6 +150,7 @@ void       dvb_mux_transponder_drop_services ( dvb_mux_t *lm );
 int        dvb_mux_transponder_by_streams ( mpegts_mux_t *mm );
 void       dvb_mux_transponder_result ( mpegts_mux_t *mm );
 void       dvb_mux_transponder_scan_streams ( mpegts_mux_t *mm, int weight, int flags );
+void       dvb_mux_dab_pmt_pid   ( mpegts_mux_t *mm, uint16_t pid, uint16_t sid );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
 
 /* the input that runs the sub-muxes (mpegts_submux.c) */
