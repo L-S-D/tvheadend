@@ -2225,6 +2225,99 @@ dvb_mux_transponder_drop_services ( dvb_mux_t *lm )
   }
 }
 
+/*
+ * A multistream transponder no tuner takes as a whole: none delivers its
+ * input streams in BBFrames (without the Neumo driver). Its input streams
+ * tune themselves, so a scan of the transponder is a scan of theirs, and
+ * its scan result follows from them.
+ */
+int
+dvb_mux_transponder_by_streams ( mpegts_mux_t *mm )
+{
+  if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class) ||
+      !((dvb_mux_t *)mm)->lm_multistream)
+    return 0;
+  mm->mm_create_instances(mm);
+  return LIST_EMPTY(&mm->mm_instances);
+}
+
+/* an input stream of the transponder, or what one carries (DAB in GSE) */
+static int
+dvb_mux_transponder_stream ( mpegts_mux_t *mm, mpegts_mux_t *sm )
+{
+  return sm != mm && mpegts_mux_in_bbframes(sm) && sm->mm_is_enabled(sm) &&
+         dvb_mux_submux_parent((dvb_mux_t *)sm) == (dvb_mux_t *)mm;
+}
+
+/* OK when one of them scanned OK, failed when all failed; unchanged as
+ * long as one has no result yet (it waits for its scan) */
+void
+dvb_mux_transponder_result ( mpegts_mux_t *mm )
+{
+  mpegts_mux_t *sm;
+  mpegts_mux_scan_result_t r;
+  time_t seen = 0;
+  int ok = 0, fail = 0, open = 0;
+
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link) {
+    if (!dvb_mux_transponder_stream(mm, sm))
+      continue;
+    switch (sm->mm_scan_result) {
+    case MM_SCAN_OK:
+    case MM_SCAN_PARTIAL:
+      ok++;
+      if (sm->mm_scan_last_seen > seen)
+        seen = sm->mm_scan_last_seen;
+      break;
+    case MM_SCAN_FAIL:
+      fail++;
+      break;
+    case MM_SCAN_IGNORE:
+      break;
+    default:
+      open++;
+      break;
+    }
+  }
+  if (ok)
+    r = MM_SCAN_OK;
+  else if (fail && !open)
+    r = MM_SCAN_FAIL;
+  else
+    return;
+  if (seen > mm->mm_scan_last_seen) {
+    mm->mm_scan_last_seen = seen;
+    if (mm->mm_scan_first == 0)
+      mm->mm_scan_first = seen;
+    idnode_changed(&mm->mm_id);
+  }
+  if (mm->mm_scan_result != r) {
+    tvhinfo(LS_MPEGTS, "%s - scan result %s, from its input streams (%d OK, %d failed)",
+            mm->mm_nicename, r == MM_SCAN_OK ? "OK" : "failed", ok, fail);
+    mm->mm_scan_result = r;
+    idnode_changed(&mm->mm_id);
+  }
+  idnode_notify_changed(&mm->mm_id);
+}
+
+/* its input streams get the scan (those not queued yet), with the weight
+ * and the flags of the transponder's */
+void
+dvb_mux_transponder_scan_streams ( mpegts_mux_t *mm, int weight, int flags )
+{
+  mpegts_mux_t *sm;
+  int n = 0;
+
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link)
+    if (dvb_mux_transponder_stream(mm, sm) && sm->mm_scan_state == MM_SCAN_STATE_IDLE) {
+      mpegts_network_scan_queue_add(sm, weight, flags, 0);
+      n++;
+    }
+  tvhdebug(LS_MPEGTS, "%s - no tuner takes the multistream transponder as a whole: "
+           "%d input stream(s) queued for a scan instead", mm->mm_nicename, n);
+  dvb_mux_transponder_result(mm);
+}
+
 /* a multistream transponder has no EPG of its own */
 static int
 dvb_mux_is_epg ( mpegts_mux_t *mm )
