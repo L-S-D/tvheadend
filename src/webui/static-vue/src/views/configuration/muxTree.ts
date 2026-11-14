@@ -32,6 +32,8 @@ export interface MuxRow {
   dab_ip?: string
   dab_port?: number
   carrier_sid?: number
+  /* DAB in a PID: the service whose PMT lists the PID */
+  dab_pmt_sid?: number
   pnetwork_name?: string | null
   delsys?: string
   modulation?: string
@@ -59,8 +61,8 @@ export interface MuxRow {
  * the server sends only these (and the uuid) */
 export const MUX_FIELDS = [
   'name', 'network_uuid', 'parent_mux', 'multistream', 'tstype', 'stream_id', 'pid', 'dab_ip', 'dab_port',
-  'carrier_sid', 'pnetwork_name', 'delsys', 'modulation', 'constellation', 'fec', 'symbolrate', 'rolloff',
-  'pilot', 'pls_mode', 'pls_code', 'bandwidth', 'scan_result', 'scan_state', 'num_svc', 'num_chn',
+  'carrier_sid', 'dab_pmt_sid', 'pnetwork_name', 'delsys', 'modulation', 'constellation', 'fec', 'symbolrate',
+  'rolloff', 'pilot', 'pls_mode', 'pls_code', 'bandwidth', 'scan_result', 'scan_state', 'num_svc', 'num_chn',
   'enabled', 'frequency', 'polarisation',
 ].join(',')
 
