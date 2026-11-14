@@ -72,9 +72,6 @@ export interface MuxTreeNode {
   virtual: boolean
   /* has a parent_mux that is not among the rows */
   orphan: boolean
-  /* the label is the provider network name of the mux (its own name was
-   * only type and PID) */
-  providerLabel: boolean
   isi: number | null
   children: MuxTreeNode[]
 }
@@ -88,17 +85,6 @@ export const MUX_TYPE_DAB_GSE = 4
 export const MUX_TYPE_GSE = 5
 export const MUX_TYPE_DAB_TSNI = 6
 export const MUX_TYPE_ISI = 7
-
-const TYPE_NAMES: Record<number, string> = {
-  [MUX_TYPE_TS]: 'TS',
-  [MUX_TYPE_ISI]: 'TS (ISI)',
-  [MUX_TYPE_T2MI]: 'T2MI',
-  [MUX_TYPE_DAB_MPE]: 'DAB-MPE',
-  [MUX_TYPE_DAB_ETI]: 'DAB-ETI',
-  [MUX_TYPE_DAB_TSNI]: 'DAB-TSNI',
-  [MUX_TYPE_DAB_GSE]: 'DAB-GSE',
-  [MUX_TYPE_GSE]: 'GSE',
-}
 
 /* the type as the tree shows it */
 const TYPE_LABELS: Record<number, () => string> = {
@@ -349,47 +335,12 @@ function hasIsi(row: MuxRow): boolean {
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
-/* the name without the transponder's: "12226V ISI 14" → "ISI 14" */
+/* a sub-mux is named by what carries it, then its own part: the label is
+ * that part, "12226V ISI 14" below "12226V" → "ISI 14" */
 export function shortName(name: string, parentName: string | undefined): string {
   if (parentName && name.startsWith(parentName + ' ') && name.length > parentName.length + 1)
     return name.slice(parentName.length + 1)
   return name
-}
-
-/* the PID has a column: "DAB Italia / PID 7031" → "DAB Italia" */
-export function withoutPid(label: string, pid: number | undefined): string {
-  if (typeof pid !== 'number' || pid <= 0) return label
-  const suffix = ` / PID ${pid}`
-  return label.endsWith(suffix) && label.length > suffix.length ? label.slice(0, -suffix.length) : label
-}
-
-/* the address has a column: "DAB-GSE 239.199.2.12:5555" → "DAB-GSE" */
-export function withoutAddress(label: string, row: MuxRow): string {
-  const addr = addressLabel(row)
-  if (!addr) return label
-  const suffix = ` ${addr}`
-  return label.endsWith(suffix) && label.length > suffix.length ? label.slice(0, -suffix.length) : label
-}
-
-/* type and PID have columns: a sub-mux named by them ("T2MI 4096",
- * "GSE ISI 171", "DAB-GSE") keeps only the rest ("", "ISI 171", "");
- * the PLP of a T2MI stream stays ("T2MI 4096 / PLP 1" → "PLP 1") */
-export function withoutType(label: string, row: MuxRow): string {
-  const type = row.tstype ?? MUX_TYPE_TS
-  if (type === MUX_TYPE_TS || type === MUX_TYPE_ISI) return label
-  const name = TYPE_NAMES[type]
-  if (!name) return label
-  let l = label
-  if (l === name) return ''
-  if (l.startsWith(name + ' ')) l = l.slice(name.length + 1)
-  else return label
-  const pid = typeof row.pid === 'number' && row.pid > 0 ? String(row.pid) : ''
-  if (pid && (l === pid || l.startsWith(pid + ' ')))
-    l = l
-      .slice(pid.length)
-      .replace(/^ \/ /, '')
-      .trim()
-  return l
 }
 
 /* input streams by ISI, then the others by type and name */
@@ -439,14 +390,10 @@ export function buildMuxTree(rows: MuxRow[]): MuxTreeNode[] {
   }
 
   function make(row: MuxRow, parentName: string | undefined): MuxTreeNode {
-    const name = row.name ?? row.uuid
-    const own = withoutType(withoutAddress(withoutPid(shortName(name, parentName), row.pid), row), row)
-    const provider = !own && !!row.pnetwork_name
     return {
       key: row.uuid,
       row,
-      label: own || (row.pnetwork_name ?? ''),
-      providerLabel: provider,
+      label: shortName(row.name ?? row.uuid, parentName),
       virtual: false,
       orphan: !!row.parent_mux && !byUuid.has(row.parent_mux),
       isi: hasIsi(row) ? (row.stream_id as number) : null,
@@ -478,7 +425,6 @@ export function buildMuxTree(rows: MuxRow[]): MuxTreeNode[] {
           key: `${row.uuid}:isi:${k.isi}`,
           row: null,
           label: `ISI ${k.isi}`,
-          providerLabel: false,
           virtual: true,
           orphan: false,
           isi: k.isi,
@@ -487,6 +433,8 @@ export function buildMuxTree(rows: MuxRow[]): MuxTreeNode[] {
         streams.set(k.isi, s)
         node.children.push(s)
       }
+      /* named by the transponder and the ISI: "10717V ISI 171 Riks" → "Riks" */
+      k.label = shortName(k.row.name ?? k.row.uuid, `${name} ISI ${k.isi}`)
       s.children.push(k)
     }
     return node

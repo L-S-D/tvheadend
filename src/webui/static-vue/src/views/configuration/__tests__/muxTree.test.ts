@@ -33,9 +33,6 @@ import {
   subMuxScan,
   subtreeCounts,
   tuningLabel,
-  withoutAddress,
-  withoutType,
-  withoutPid,
   type MuxRow,
   type MuxTreeNode,
 } from '../muxTree'
@@ -80,8 +77,8 @@ describe('buildMuxTree', () => {
     /* 1°W 10717V: the DAB-GSE ensembles name the transponder, ISI 171 */
     const tree = buildMuxTree([
       { uuid: 't', name: '10717V', multistream: true },
-      { uuid: 'r', name: '10717V Riks', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
-      { uuid: 'n', name: '10717V NRK Reg1', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
+      { uuid: 'r', name: '10717V ISI 171 Riks', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
+      { uuid: 'n', name: '10717V ISI 171 NRK Reg1', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
     ])
     const isi = tree[0].children
     expect(isi).toHaveLength(1)
@@ -96,7 +93,7 @@ describe('buildMuxTree', () => {
     const tree = buildMuxTree([
       { uuid: 't', name: '10717V', multistream: true },
       { uuid: 'g', name: '10717V ISI 171', parent_mux: 't', tstype: MUX_TYPE_GSE, stream_id: 171 },
-      { uuid: 'r', name: '10717V Riks', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
+      { uuid: 'r', name: '10717V ISI 171 Riks', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
     ])
     expect(labels(tree[0].children)).toEqual(['ISI 171'])
     expect(tree[0].children[0].virtual).toBe(false)
@@ -107,9 +104,9 @@ describe('buildMuxTree', () => {
     const tree = buildMuxTree([
       { uuid: 't', name: '12226V', multistream: true },
       { uuid: 'i', name: '12226V ISI 14', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 14 },
-      { uuid: 'd', name: '12226V ISI 14 DAB', parent_mux: 'i', tstype: MUX_TYPE_DAB_MPE, pid: 1001 },
+      { uuid: 'd', name: '12226V ISI 14 DAB 239.1.2.3:5000', parent_mux: 'i', tstype: MUX_TYPE_DAB_MPE, pid: 1001 },
     ])
-    expect(tree[0].children[0].children[0].label).toBe('DAB')
+    expect(tree[0].children[0].children[0].label).toBe('DAB 239.1.2.3:5000')
     expect(expandableKeys(tree)).toEqual(['t', 'i'])
   })
 
@@ -136,14 +133,6 @@ describe('shortName', () => {
   })
 })
 
-describe('withoutPid', () => {
-  it('drops the PID the PID column shows', () => {
-    expect(withoutPid('DAB Italia / PID 7031', 7031)).toBe('DAB Italia')
-    expect(withoutPid('DAB Italia / PID 7031', 7131)).toBe('DAB Italia / PID 7031')
-    expect(withoutPid('Salisbury', 701)).toBe('Salisbury')
-  })
-})
-
 describe('subMuxScan', () => {
   it('counts the sub-muxes of all levels scanned with success', () => {
     const tree = buildMuxTree([
@@ -163,14 +152,6 @@ describe('addressLabel', () => {
     expect(addressLabel({ uuid: 'a', dab_ip: '239.199.2.1', dab_port: 1234 })).toBe('239.199.2.1:1234')
     expect(addressLabel({ uuid: 'b', dab_ip: '239.199.2.1', dab_port: 0 })).toBe('239.199.2.1')
     expect(addressLabel({ uuid: 'c', dab_ip: '', pid: 1062 })).toBe('')
-  })
-})
-
-describe('withoutAddress', () => {
-  it('drops the address the address column shows', () => {
-    const row = { uuid: 'a', dab_ip: '239.199.2.12', dab_port: 5555 }
-    expect(withoutAddress('DAB-GSE 239.199.2.12:5555', row)).toBe('DAB-GSE')
-    expect(withoutAddress('NRK Reg1', row)).toBe('NRK Reg1')
   })
 })
 
@@ -219,23 +200,28 @@ describe('tuningLabel', () => {
   })
 })
 
-describe('withoutType', () => {
-  it('keeps no type and PID in the name, they have columns', () => {
-    expect(withoutType('T2MI 4096', { uuid: 'a', tstype: MUX_TYPE_T2MI, pid: 4096 })).toBe('')
-    expect(withoutType('T2MI 4096 / PLP 1', { uuid: 'a', tstype: MUX_TYPE_T2MI, pid: 4096 })).toBe('PLP 1')
-    expect(withoutType('GSE ISI 171', { uuid: 'b', tstype: MUX_TYPE_GSE })).toBe('ISI 171')
-    expect(withoutType('DAB-GSE', { uuid: 'c', tstype: MUX_TYPE_DAB_GSE })).toBe('')
-    expect(withoutType('ISI 14', { uuid: 'd', tstype: MUX_TYPE_ISI })).toBe('ISI 14')
-    expect(withoutType('Salisbury', { uuid: 'e', tstype: MUX_TYPE_DAB_MPE, pid: 701 })).toBe('Salisbury')
-  })
-
-  it('names a T2MI stream by the provider network of its TS', () => {
+describe('labels', () => {
+  it('names a sub-mux by its own part, the type and PID stay in their columns', () => {
     const tree = buildMuxTree([
       { uuid: 't', name: '12285V' },
       { uuid: 'x', name: '12285V T2MI 4096', parent_mux: 't', tstype: MUX_TYPE_T2MI, pid: 4096, pnetwork_name: 'MX-7' },
+      { uuid: 'y', name: '12285V T2MI 4097 PLP 1', parent_mux: 't', tstype: MUX_TYPE_T2MI, pid: 4097 },
+      { uuid: 'd', name: '12285V D1 National (PID 1062)', parent_mux: 't', tstype: MUX_TYPE_DAB_ETI, pid: 1062 },
     ])
-    expect(tree[0].children[0].label).toBe('MX-7')
-    expect(tree[0].children[0].providerLabel).toBe(true)
+    expect(labels(tree[0].children).sort()).toEqual(['D1 National (PID 1062)', 'T2MI 4096', 'T2MI 4097 PLP 1'])
+  })
+
+  it('names the DAB in a GSE stream without transponder and ISI, below a made-up stream too', () => {
+    const tree = buildMuxTree([
+      { uuid: 't', name: '10717V', multistream: true },
+      { uuid: 'g', name: '10717V ISI 171', parent_mux: 't', tstype: MUX_TYPE_GSE, stream_id: 171 },
+      { uuid: 'r', name: '10717V ISI 171 Riks', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
+      { uuid: 'p', name: '10717V ISI 172 DAB 239.199.2.9:1234', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 172 },
+    ])
+    const [s171, s172] = tree[0].children
+    expect(labels(s171.children)).toEqual(['Riks'])
+    expect(s172.virtual).toBe(true)
+    expect(labels(s172.children)).toEqual(['DAB 239.199.2.9:1234'])
   })
 })
 
