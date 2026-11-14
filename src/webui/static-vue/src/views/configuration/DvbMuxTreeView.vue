@@ -946,7 +946,6 @@ onMounted(loadNetworks)
           <col class="mux-tree__col-type" />
           <col class="mux-tree__col-pid" />
           <col class="mux-tree__col-address" />
-          <col class="mux-tree__col-modcod" />
           <col class="mux-tree__col-scan" />
           <col class="mux-tree__col-count" />
           <col class="mux-tree__col-count" />
@@ -967,7 +966,6 @@ onMounted(loadNetworks)
             <th>{{ t('Type') }}</th>
             <th class="mux-tree__num">{{ t('PID') }}</th>
             <th>{{ t('Address') }}</th>
-            <th>{{ t('MODCOD') }}</th>
             <th>{{ t('Scan result') }}</th>
             <th class="mux-tree__num">{{ t('Services') }}</th>
             <th class="mux-tree__num">{{ t('Channels') }}</th>
@@ -1105,7 +1103,6 @@ onMounted(loadNetworks)
                   </template>
                 </td>
               </template>
-              <td>{{ r.node.row.modcod ?? '' }}</td>
               <td>
                 <span v-if="scanStateLabel(r.node.row)" class="mux-tree__busy">
                   {{ scanStateLabel(r.node.row) }}
@@ -1120,7 +1117,7 @@ onMounted(loadNetworks)
             </template>
             <template v-else-if="r.node?.virtual">
               <td class="mux-tree__muted">{{ t('input stream') }}</td>
-              <td colspan="3" />
+              <td colspan="2" />
               <td class="mux-tree__muted" :title="t('Sub-muxes scanned with success')">
                 {{ scanSummary(r.node) }}
               </td>
@@ -1134,15 +1131,15 @@ onMounted(loadNetworks)
                 <Lock v-if="r.service.encrypted" class="mux-tree__lock" :size="12" :stroke-width="2" />
                 SID {{ r.service.sid }}<template v-if="r.service.encrypted"> · {{ caidList(r.service.caid) }}</template>
               </td>
-              <td colspan="3" class="mux-tree__streams" :title="r.service.streams">{{ r.service.streams }}</td>
+              <td colspan="2" class="mux-tree__streams" :title="r.service.streams">{{ r.service.streams }}</td>
               <td class="mux-tree__num">{{ r.service.channel?.length || '' }}</td>
             </template>
             <template v-else-if="r.network">
-              <td colspan="2" />
+              <td />
               <td class="mux-tree__num">{{ r.network.numSvc }}</td>
               <td class="mux-tree__num">{{ r.network.numChn }}</td>
             </template>
-            <td v-else colspan="7" />
+            <td v-else colspan="6" />
             <td class="mux-tree__select-cell">
               <input
                 v-if="enabledState(r)"
@@ -1261,9 +1258,6 @@ onMounted(loadNetworks)
   width: 148px;
 }
 
-.mux-tree__col-modcod {
-  width: 88px;
-}
 
 .mux-tree__col-scan {
   width: 128px;

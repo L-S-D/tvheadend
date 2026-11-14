@@ -42,7 +42,6 @@ export interface MuxRow {
   pls_code?: number
   bandwidth?: string
   coding?: string
-  modcod?: string
   scan_result?: number
   scan_state?: number
   num_svc?: number
