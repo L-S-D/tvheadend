@@ -1048,7 +1048,7 @@ onMounted(loadNetworks)
                 <span v-if="r.node.row && enabledLabel(r.node.row)" class="mux-tree__badge">{{ enabledLabel(r.node.row) }}</span>
                 <span v-if="r.wide && r.node.row" class="mux-tree__tuning">{{ tuningLabel(r.node.row) }}</span>
                 <!-- after the tuning of a transponder, after the name of a sub-mux -->
-                <span v-if="r.node.row?.pnetwork_name && !r.node.providerLabel" class="mux-tree__provider">
+                <span v-if="r.node.row?.pnetwork_name" class="mux-tree__provider">
                   {{ r.node.row.pnetwork_name }}
                 </span>
               </template>
