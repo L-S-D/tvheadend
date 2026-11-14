@@ -2232,6 +2232,11 @@ capmt_caid_change(th_descrambler_t *td)
         t->s_dvb_prefcapid != st->es_pid)
       continue;
     LIST_FOREACH(c, &st->es_caids, link) {
+      /* a CA id a CA filter excludes: not used, as at the service start -
+       * otherwise it is added here and removed again below, and the CA
+       * client sets the service up anew on every call */
+      if (!c->use)
+        continue;
       /* a forced CA id: only that one, as at the service start - otherwise
        * a PMT update adds the others and the CA client sets the service up
        * anew (stop, new CA PMT) */
