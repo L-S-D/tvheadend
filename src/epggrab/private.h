@@ -217,6 +217,15 @@ const char *eit_check_module_id ( const char *id );
 /* EIT sections from other carriers, e.g. object carousel files (eitoc.c) */
 void eit_carousel_section
   ( epggrab_ota_map_t *map, struct mpegts_mux *mm, const uint8_t *sec, int len );
+void *eit_module_carousel ( epggrab_module_ota_t *m );
+
+/* EIT in the files of a DSM-CC object carousel (eitoc.c) */
+void *eitoc_config_load ( htsmsg_t *conf );
+void eitoc_config_free  ( void *conf );
+int   eitoc_start    ( epggrab_ota_map_t *map, struct mpegts_mux *mm );
+void  eitoc_handlers ( epggrab_ota_map_t *map, struct mpegts_mux *mm );
+int   eitoc_tune     ( epggrab_ota_map_t *map, epggrab_ota_mux_t *om,
+                       struct mpegts_mux *mm );
 
 /* OpenTV module */
 void opentv_init ( void );

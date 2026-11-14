@@ -68,6 +68,7 @@ typedef struct eit_private
   LIST_HEAD(, eit_nit) nit;
   LIST_HEAD(, eit_sdt) sdt;
   epggrab_ota_module_ops_t *ops;
+  void *carousel;     /* EIT in the files of an object carousel (eitoc.c) */
 } eit_private_t;
 
 #define EIT_CONV_HUFFMAN            1
@@ -1347,6 +1348,14 @@ eit_carousel_section
                ptr[0] << 8 | ptr[1]);
 }
 
+/* the carousel configuration of an EIT module (eitoc.c), NULL without one */
+void *
+eit_module_carousel ( epggrab_module_ota_t *m )
+{
+  eit_private_t *priv = m ? m->opaque : NULL;
+  return priv ? priv->carousel : NULL;
+}
+
 static int
 _eit_callback
   (mpegts_table_t *mt, const uint8_t *ptr, int len, int tableid)
@@ -1644,6 +1653,8 @@ void eit_nit_callback
            dm->mm_tsid, dm->mm_tsid, dm->mm_onid, dm->mm_onid, nbid, nbid, name, nitpriv);
 
   TAILQ_FOREACH(priv, &eit_private_list, link) {
+    if (priv->carousel)
+      continue;
     if (priv->priv && priv->priv != nitpriv)
       continue;
     if (LIST_FIRST(&priv->nit)) {
@@ -1681,7 +1692,7 @@ void eit_sdt_callback(mpegts_table_t *mt, uint32_t sdtpriv)
            dm->mm_tsid, dm->mm_tsid, dm->mm_onid, dm->mm_onid, sdtpriv);
 
   TAILQ_FOREACH(priv, &eit_private_list, link) {
-    if (!priv->sdt_enable)
+    if (!priv->sdt_enable || priv->carousel)
       continue;
     if (priv->priv && priv->priv != sdtpriv)
       continue;
@@ -1801,6 +1812,9 @@ static void _eit_done0( eit_private_t *priv )
     free(nit->name);
     free(nit);
   }
+#if ENABLE_ZLIB
+  eitoc_config_free(priv->carousel);
+#endif
   free(priv->ops);
   lang_str_destroy(priv->name);
   free(priv);
@@ -1936,6 +1950,15 @@ static void eit_init_one ( const char *id, htsmsg_t *conf )
     }
   }
   priv->sdt_enable = htsmsg_get_u32_or_default(conf, "sdt_enable", 0);
+#if ENABLE_ZLIB
+  /* EIT in the files of an object carousel: found on any transponder */
+  if ((map = htsmsg_get_map(conf, "carousel")) != NULL &&
+      (priv->carousel = eitoc_config_load(map)) != NULL) {
+    ops->start = eitoc_start;
+    ops->handlers = eitoc_handlers;
+    ops->tune = eitoc_tune;
+  }
+#endif
   map = htsmsg_get_map(conf, "sdt");
   if (map) {
     HTSMSG_FOREACH(f, map) {

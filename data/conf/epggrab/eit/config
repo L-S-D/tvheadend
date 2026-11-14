@@ -123,6 +123,16 @@
     }
   },
 
+  "mh_epg": {
+    "name": {
+      "eng": "MH EPG"
+    },
+    "prio": 0,
+    "carousel": {
+      "dirs": [ "mh_epg", "mh_epgex" ]
+    }
+  },
+
   "eit": {
     "name": {
       "eng": "EIT: EPG Grabber"
