@@ -13,6 +13,7 @@ import {
   filterTree,
   muxSearchText,
   scanBusy,
+  scanPending,
   scanTargets,
   MUX_TYPE_DAB_ETI,
   MUX_TYPE_DAB_GSE,
@@ -213,6 +214,19 @@ describe('labels', () => {
     expect(labels(s171.children)).toEqual(['Riks'])
     expect(s172.virtual).toBe(true)
     expect(labels(s172.children)).toEqual(['DAB 239.199.2.9:1234'])
+  })
+})
+
+describe('scanPending', () => {
+  it('counts the muxes of all levels queued or being scanned', () => {
+    const tree = buildMuxTree([
+      { uuid: 't', name: '12111V', multistream: true, scan_state: 0 },
+      { uuid: 'i1', name: '12111V ISI 1', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 1, scan_state: 1 },
+      { uuid: 'i3', name: '12111V ISI 3', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 3, scan_state: 2 },
+      { uuid: 'u', name: '11727V', scan_state: 1 },
+    ])
+    expect(scanPending(tree)).toBe(3)
+    expect(scanPending([])).toBe(0)
   })
 })
 

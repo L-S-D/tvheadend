@@ -33,8 +33,9 @@
  *
  * Scan: the button of a row queues a scan of its mux (`scan_state` =
  * pending, as the mux editor does), of a made-up input stream those of
- * the muxes below it. The network is then reloaded every 2 s until these
- * scans are over.
+ * the muxes below it; the button of a network row scans all its muxes
+ * (`mpegts/network/scan`, as the networks grid does). The network is then
+ * reloaded every 2 s until these scans are over.
  *
  * Services: expanding a mux shows its services (type, SID, CA systems,
  * channels) - right below it when it has no sub-muxes (a DAB ensemble, a
@@ -67,6 +68,7 @@ import {
   muxSearchText,
   muxTypeName,
   scanBusy,
+  scanPending,
   scanResultName,
   scanTargets,
   SCAN_STATE_ACTIVE,
@@ -624,6 +626,20 @@ const SCAN_POLL_MS = 2000
 const SCAN_POLL_MAX = 300 /* 10 min */
 const scanning = new Map<string, Set<string>>()
 const scanPolls = new Map<string, number>()
+/* the networks scanned as a whole: all their muxes count */
+const scanningNets = ref(new Set<string>())
+
+function setNetScanning(net: NetworkEntry, on: boolean) {
+  const s = new Set(scanningNets.value)
+  if (on) s.add(net.uuid)
+  else s.delete(net.uuid)
+  scanningNets.value = s
+}
+
+/* the muxes of a network scanned as a whole still queued or scanning */
+function networkScanLeft(net: NetworkEntry): number {
+  return scanPending(trees.value[net.uuid] ?? [])
+}
 
 function pollScans(net: NetworkEntry) {
   if (scanPolls.has(net.uuid)) return
@@ -631,16 +647,20 @@ function pollScans(net: NetworkEntry) {
   const id = window.setInterval(async () => {
     await loadMuxes(net, false)
     const uuids = scanning.get(net.uuid) ?? new Set<string>()
+    const all = scanningNets.value.has(net.uuid)
     const busy = (nodes: MuxTreeNode[]): boolean =>
       nodes.some(
         (n) =>
-          (n.row !== null && uuids.has(n.row.uuid) && (n.row.scan_state ?? SCAN_STATE_IDLE) !== SCAN_STATE_IDLE) ||
+          (n.row !== null &&
+            (all || uuids.has(n.row.uuid)) &&
+            (n.row.scan_state ?? SCAN_STATE_IDLE) !== SCAN_STATE_IDLE) ||
           busy(n.children),
       )
     if (++rounds >= SCAN_POLL_MAX || !busy(trees.value[net.uuid] ?? [])) {
       window.clearInterval(id)
       scanPolls.delete(net.uuid)
       scanning.delete(net.uuid)
+      setNetScanning(net, false)
       refreshServices(net)
     }
   }, SCAN_POLL_MS)
@@ -667,6 +687,19 @@ async function scanUuids(net: NetworkEntry, uuids: string[]) {
   const set = scanning.get(net.uuid) ?? new Set<string>()
   for (const u of uuids) set.add(u)
   scanning.set(net.uuid, set)
+  await loadMuxes(net, false)
+  pollScans(net)
+}
+
+/* the network row: all muxes of the network */
+async function scanNetwork(net: NetworkEntry) {
+  try {
+    await apiCall('mpegts/network/scan', { uuid: net.uuid })
+  } catch (e) {
+    error.value = String(e)
+    return
+  }
+  setNetScanning(net, true)
   await loadMuxes(net, false)
   pollScans(net)
 }
@@ -1135,7 +1168,11 @@ onMounted(loadNetworks)
               <td class="mux-tree__num">{{ r.service.channel?.length || '' }}</td>
             </template>
             <template v-else-if="r.network">
-              <td />
+              <td>
+                <span v-if="scanningNets.has(r.network.uuid)" class="mux-tree__busy">
+                  {{ t('scanning…') }}<template v-if="networkScanLeft(r.network)"> · {{ networkScanLeft(r.network) }}</template>
+                </span>
+              </td>
               <td class="mux-tree__num">{{ r.network.numSvc }}</td>
               <td class="mux-tree__num">{{ r.network.numChn }}</td>
             </template>
@@ -1161,6 +1198,18 @@ onMounted(loadNetworks)
                 :title="r.node.row ? t('Scan this mux') : t('Scan the muxes of this input stream')"
                 :aria-label="t('Scan')"
                 @click.stop="scanRow(r)"
+                @dblclick.stop
+              >
+                <ScanSearch :size="15" :stroke-width="2" />
+              </button>
+              <button
+                v-else-if="r.network"
+                type="button"
+                class="mux-tree__scan"
+                :disabled="scanningNets.has(r.network.uuid)"
+                :title="t('Scan all muxes of this network')"
+                :aria-label="t('Scan the network')"
+                @click.stop="scanNetwork(r.network)"
                 @dblclick.stop
               >
                 <ScanSearch :size="15" :stroke-width="2" />
