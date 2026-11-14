@@ -573,10 +573,10 @@ fi
 # libdvbdab - DAB/DAB+ in DVB streams (ETI-NA, MPE, GSE, TSNI)
 #
 if enabled_or_auto dvbdab; then
-  if check_pkg dvbdab ">=1.0.1"; then
+  if check_pkg dvbdab ">=1.0.3"; then
     enable dvbdab
   elif enabled dvbdab; then
-    die "libdvbdab >= 1.0.1 not found (use --disable-dvbdab)"
+    die "libdvbdab >= 1.0.3 not found (use --disable-dvbdab)"
   fi
 fi
 
