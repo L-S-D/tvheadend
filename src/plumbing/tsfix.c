@@ -137,8 +137,9 @@ tsfix_add_stream(tsfix_t *tf, int index, streaming_component_type_t type)
     tfs->tfs_video = 1;
   else if (SCT_ISAUDIO(type))
     tfs->tfs_audio = 1;
-  else if (SCT_ISSUBTITLE(type) || type == SCT_DSMCC)
-    tfs->tfs_subtitle = 1; /* stream events come with large time gaps too */
+  else if (SCT_ISSUBTITLE(type) || type == SCT_DSMCC || type == SCT_HBBTV)
+    tfs->tfs_subtitle = 1; /* stream events and the AIT come with large time
+                              gaps too */
 
   tfs->tfs_index = index;
   tfs->tfs_local_ref = PTS_UNSET;
