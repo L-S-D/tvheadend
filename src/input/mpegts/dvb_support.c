@@ -256,14 +256,32 @@ static inline size_t dvb_convert(int conv,
  * Not all character sets are supported, but it should cover most of them
  */
 
+/* conversion of a charset name, -1 if unknown */
+static int
+dvb_charset_conv ( const char *name )
+{
+  int i;
+  if (sscanf(name, "ISO-8859-%d", &i) > 0 && i > 0 && i < 16)
+    return convert_iso_8859[i];
+  if (!strcmp(name, "ISO-6937"))
+    return convert_iso6937;
+  if (!strcmp(name, "UTF-8"))
+    return convert_utf8;
+  if (!strcmp(name, "GB2312"))
+    return convert_gb;
+  if (!strcmp(name, "UCS2"))
+    return convert_ucs2;
+  return -1;
+}
+
 int
 dvb_get_string
   (char *dst, size_t dstlen, const uint8_t *src, size_t srclen, 
    const char *dvb_charset, dvb_string_conv_t *conv)
 {
-  int ic = -1;
+  int ic = -1, default_ic = -1;
   size_t len, outlen;
-  int i, auto_pl_charset = 0;
+  int auto_pl_charset = 0;
 
   if(srclen < 1) {
     *dst = 0;
@@ -280,6 +298,12 @@ dvb_get_string
   // check for automatic polish charset detection
   if (dvb_charset && strcmp("AUTO_POLISH", dvb_charset) == 0) {
     auto_pl_charset = 1;
+    dvb_charset = NULL;
+  }
+
+  // "default:<charset>": only for strings that name no character table
+  if (dvb_charset && strncmp(dvb_charset, "default:", 8) == 0) {
+    default_ic = dvb_charset_conv(dvb_charset + 8);
     dvb_charset = NULL;
   }
 
@@ -343,26 +367,18 @@ dvb_get_string
   default:
     if (auto_pl_charset)
       ic = convert_iso_8859[2];
+    else if (default_ic >= 0)
+      ic = default_ic;
     else
       ic = convert_iso6937;
     break;
   }
 
   // manual charset override
-  if (dvb_charset != NULL && dvb_charset[0] != 0) {
-    if (!strcmp(dvb_charset, "AUTO")) {
-      // ignore
-    } else if (sscanf(dvb_charset, "ISO-8859-%d", &i) > 0 && i > 0 && i < 16) {
-      ic = convert_iso_8859[i];
-    } else if (!strcmp(dvb_charset, "ISO-6937")) {
-      ic = convert_iso6937;
-    } else if (!strcmp(dvb_charset, "UTF-8")) {
-      ic = convert_utf8;
-    } else if (!strcmp(dvb_charset, "GB2312")) {
-      ic = convert_gb;
-    } else if (!strcmp(dvb_charset, "UCS2")) {
-      ic = convert_ucs2;
-    }
+  if (dvb_charset != NULL && dvb_charset[0] != 0 && strcmp(dvb_charset, "AUTO")) {
+    int c = dvb_charset_conv(dvb_charset);
+    if (c >= 0)
+      ic = c;
   }
 
   if(srclen < 1) {
