@@ -216,7 +216,8 @@ const char *eit_check_module_id ( const char *id );
 
 /* EIT sections from other carriers, e.g. object carousel files (eitoc.c) */
 void eit_carousel_section
-  ( epggrab_ota_map_t *map, struct mpegts_mux *mm, const uint8_t *sec, int len );
+  ( epggrab_ota_map_t *map, struct mpegts_mux *mm, const uint8_t *sec, int len,
+    const char *charset );
 void *eit_module_carousel ( epggrab_module_ota_t *m );
 
 /* EIT in the files of a DSM-CC object carousel (eitoc.c) */

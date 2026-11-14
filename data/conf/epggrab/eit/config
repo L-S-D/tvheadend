@@ -129,7 +129,8 @@
     },
     "prio": 0,
     "carousel": {
-      "dirs": [ "mh_epg", "mh_epgex" ]
+      "dirs": [ "mh_epg", "mh_epgex" ],
+      "charset": "ISO-8859-9"
     }
   },
 

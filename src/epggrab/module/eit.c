@@ -1165,7 +1165,7 @@ _eit_section
   ( epggrab_module_t *mod, epggrab_ota_map_t *map, epggrab_ota_mux_t *ota,
     mpegts_mux_t *mm, const char *name, uint32_t hacks,
     const uint8_t *ptr, int len, int tableid, int sect,
-    uint16_t onid, uint16_t tsid, uint16_t sid )
+    uint16_t onid, uint16_t tsid, uint16_t sid, const char *charset_src )
 {
   mpegts_service_t     *svc;
   eit_data_t           *data;
@@ -1284,7 +1284,7 @@ svc_ok:
     if (!cridauth)
       cridauth = svc->s_dvb_mux->mm_crid_authority;
     cridauth_len = cridauth ? strlen(cridauth) + 1 : 0;
-    charset = dvb_charset_find(NULL, NULL, svc);
+    charset = charset_src ?: dvb_charset_find(NULL, NULL, svc);
     charset_len = charset ? strlen(charset) + 1 : 0;
     data_len = sizeof(*data) + cridauth_len + charset_len;
     data = alloca(data_len);
@@ -1319,11 +1319,13 @@ svc_ok:
 /*
  * EIT sections that come inside other data, e.g. the files of a DSM-CC object
  * carousel (eitoc.c): a whole section with header and CRC, processed for the
- * module of map like a received one
+ * module of map like a received one; charset: for its strings instead of the
+ * one of the service (NULL: that one)
  */
 void
 eit_carousel_section
-  ( epggrab_ota_map_t *map, mpegts_mux_t *mm, const uint8_t *sec, int len )
+  ( epggrab_ota_map_t *map, mpegts_mux_t *mm, const uint8_t *sec, int len,
+    const char *charset )
 {
   epggrab_module_t *mod;
   eit_private_t *priv;
@@ -1345,7 +1347,7 @@ eit_carousel_section
   ptr = sec + 3;
   _eit_section(mod, map, NULL, mm, mod->id, priv->hacks, ptr, slen - 4,
                tableid, ptr[3], ptr[7] << 8 | ptr[8], ptr[5] << 8 | ptr[6],
-               ptr[0] << 8 | ptr[1]);
+               ptr[0] << 8 | ptr[1], charset);
 }
 
 /* the carousel configuration of an EIT module (eitoc.c), NULL without one */
@@ -1441,7 +1443,7 @@ _eit_callback
   }
 
   _eit_section(mod, map, ota, mm, mt->mt_name, hacks, ptr, len, tableid, sect,
-               onid, tsid, sid);
+               onid, tsid, sid, NULL);
 
   r = dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 complete:

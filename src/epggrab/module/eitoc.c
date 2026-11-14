@@ -50,6 +50,7 @@
 typedef struct eitoc_config {
   char *dirs[EITOC_MAX_DIRS];
   int   ndirs;
+  char *charset;     /* "default:<charset>": strings without a character table */
 } eitoc_config_t;
 
 typedef struct eitoc_mux eitoc_mux_t;
@@ -104,6 +105,13 @@ eitoc_config_load ( htsmsg_t *conf )
     free(c);
     return NULL;
   }
+  /* the character table of strings that name none (Sky DE leaves it out in
+   * the carousel, its broadcast EIT names ISO 8859-9) */
+  if ((s = htsmsg_get_str(conf, "charset")) != NULL && *s) {
+    size_t n = strlen(s) + 9;
+    if ((c->charset = malloc(n)) != NULL)
+      snprintf(c->charset, n, "default:%s", s);
+  }
   return c;
 }
 
@@ -115,6 +123,7 @@ eitoc_config_free ( void *p )
   if (!c) return;
   for (i = 0; i < c->ndirs; i++)
     free(c->dirs[i]);
+  free(c->charset);
   free(c);
 }
 
@@ -201,7 +210,7 @@ eitoc_sections ( eitoc_mux_t *em, const uint8_t *d, size_t len )
     /* the broadcast EIT path checks the section CRC (MT_CRC); the carousel
      * path must too, there is no transport CRC on a "stored" ZIP entry */
     if (!tvh_crc32(d + o, l, 0xffffffff)) {
-      eit_carousel_section(em->map, em->mm, d + o, l);
+      eit_carousel_section(em->map, em->mm, d + o, l, em->conf->charset);
       n++;
     }
     o += l;
