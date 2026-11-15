@@ -176,6 +176,26 @@ streaming_target_connect(streaming_pad_t *sp, streaming_target_t *st)
 
 
 /**
+ * Change what a target rejects; the filter of its pad follows (the lock
+ * of the pad's owner held)
+ */
+void
+streaming_target_set_reject_filter(streaming_target_t *st, int reject_filter)
+{
+  streaming_pad_t *sp = st->st_pad;
+  streaming_target_t *t;
+  int filter = ~0;
+
+  st->st_reject_filter = reject_filter;
+  if (sp == NULL)
+    return;
+  LIST_FOREACH(t, &sp->sp_targets, st_link)
+    filter &= t->st_reject_filter;
+  sp->sp_reject_filter = filter;
+}
+
+
+/**
  *
  */
 void

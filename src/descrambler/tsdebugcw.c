@@ -113,7 +113,7 @@ tsdebugcw_service_start(service_t *t)
  *
  */
 void
-tsdebugcw_new_keys(service_t *t, int type, uint16_t pid, uint8_t *odd, uint8_t *even)
+tsdebugcw_new_keys(service_t *t, int type, uint16_t pid, const uint8_t *odd, const uint8_t *even)
 {
   static char empty[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
   th_descrambler_t *td;

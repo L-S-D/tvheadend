@@ -1091,6 +1091,11 @@ service_build_streaming_start(service_t *t)
   streaming_start_t *ss;
   ss = elementary_stream_build_start(&t->s_components);
   t->s_setsourceinfo(t, &ss->ss_si);
+#if ENABLE_DVBBUFFER
+  /* the backlog is still to come while the service has delivered nothing
+   * (s_running is cleared by any subscription that leaves) */
+  ss->ss_dvbbuffer = t->s_dvbbuffer_start && !(t->s_streaming_status & TSS_PACKETS);
+#endif
   return ss;
 }
 
