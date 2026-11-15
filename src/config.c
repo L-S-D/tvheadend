@@ -2857,7 +2857,9 @@ const idclass_t config_class = {
       .type   = PT_BOOL,
       .id     = "hbbtv",
       .name   = N_("Parse HbbTV info"),
-      .desc   = N_("Parse HbbTV information from services."),
+      .desc   = N_("Parse HbbTV information from services: the application "
+                   "signalling (AIT) and the stream events (DSM-CC stream "
+                   "descriptors) are passed to the clients."),
       .off    = offsetof(config_t, hbbtv),
       .group  = 8,
       .def.i  = 1,

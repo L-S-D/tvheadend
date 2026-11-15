@@ -167,6 +167,23 @@ ts_recv_hbbtv1_cb(mpegts_psi_table_t *mt, const uint8_t *buf, int len)
 }
 
 /**
+ * DSM-CC stream descriptor section (table 0x3D): passed on as it is,
+ * with its CRC or checksum - only one with a wrong CRC32 is dropped
+ * (the section syntax indicator set; without it a checksum, not checked)
+ */
+static void
+ts_recv_dsmcc_cb(mpegts_psi_table_t *mt, const uint8_t *buf, int len)
+{
+  parser_es_t *pes = (parser_es_t *)mt->mt_opaque;
+
+  if (len < 12)
+    return;
+  if ((buf[1] & 0x80) && tvh_crc32(buf, len, 0xffffffff))
+    return;
+  parse_mpeg_ts(pes->es_parser, pes, buf, len, 1, 0);
+}
+
+/**
  *
  */
 static void parser_input_mpegts(parser_t *prs, pktbuf_t *pb)
@@ -212,6 +229,9 @@ static void parser_input_mpegts(parser_t *prs, pktbuf_t *pb)
     } else if (pes->es_type == SCT_HBBTV) {
       dvb_table_parse(&pes->es_psi, "parser", tsb, 188, 1, 0, ts_recv_hbbtv1_cb);
       continue;
+    } else if (pes->es_type == SCT_DSMCC) {
+      dvb_table_parse(&pes->es_psi, "parser", tsb, 188, 0, 0, ts_recv_dsmcc_cb);
+      continue;
     }
 
     if (off <= 188)
@@ -240,6 +260,9 @@ static void parser_init_es(parser_es_t *pes, parser_t *prs)
   if (pes->es_type == SCT_HBBTV && pes->es_psi.mt_name == NULL)
     dvb_table_parse_init(&pes->es_psi, "hbbtv", LS_TS, pes->es_pid,
                          DVB_HBBTV_BASE, DVB_HBBTV_MASK, pes);
+  if (pes->es_type == SCT_DSMCC && pes->es_psi.mt_name == NULL)
+    dvb_table_parse_init(&pes->es_psi, "dsmcc", LS_TS, pes->es_pid,
+                         0x3d, 0xff, pes);
 }
 
 /**
