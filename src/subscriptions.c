@@ -1195,6 +1195,12 @@ subscription_change_weight(th_subscription_t *s, int weight)
 
   LIST_INSERT_SORTED(&subscriptions, s, ths_global_link, subscription_sort);
 
+#if ENABLE_MPEGTS_DVB
+  /* a client of a sub-mux: the subscription on its transponder follows */
+  if (s->ths_service)
+    mpegts_submux_client_weight(s->ths_service);
+#endif
+
   subscription_delayed_reschedule(0);
 }
 
