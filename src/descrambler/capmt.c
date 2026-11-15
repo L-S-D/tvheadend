@@ -2200,6 +2200,11 @@ capmt_caid_change(th_descrambler_t *td)
         t->s_dvb_prefcapid != st->es_pid)
       continue;
     LIST_FOREACH(c, &st->es_caids, link) {
+      /* a CA id a CA filter excludes: not used, as at the service start -
+       * otherwise it is added here and removed again below, and the CA
+       * client sets the service up anew on every call */
+      if (!c->use)
+        continue;
       /* search ecmpid in list */
       LIST_FOREACH(cce, &ct->ct_caid_ecm, cce_link)
         if (c->use && cce->cce_caid == c->caid &&
