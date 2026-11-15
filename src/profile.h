@@ -94,6 +94,9 @@ typedef struct profile_chain {
   struct muxer             *prch_muxer;
   struct streaming_target  *prch_gh;
   struct streaming_target  *prch_tsfix;
+  struct streaming_target  *prch_start;    /* dvbbuffer live start, before tsfix */
+  struct streaming_target  *prch_tsstart;  /* ... for raw TS, before the queue */
+  int                       prch_dvbbuffer_full; /* recording: the whole backlog */
 #if ENABLE_TIMESHIFT
   struct streaming_target  *prch_timeshift;
 #endif
@@ -127,6 +130,7 @@ typedef struct profile {
   int pro_ca_timeout;
   int pro_swservice;
   int pro_svfilter;
+  int pro_dvbbuffer_live;
 
   void (*pro_free)(struct profile *pro);
   void (*pro_conf_changed)(struct profile *pro);
@@ -157,6 +161,7 @@ typedef struct profile_sharer {
   struct profile_chain     *prsh_master;
   struct streaming_start   *prsh_start_msg;
   struct streaming_target  *prsh_tsfix;
+  struct streaming_target  *prsh_start;    /* dvbbuffer live start, before tsfix */
 #if ENABLE_LIBAV
   struct streaming_target  *prsh_transcoder;
 #endif

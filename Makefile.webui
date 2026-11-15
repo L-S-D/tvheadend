@@ -149,6 +149,9 @@ endif
 ifeq ($(CONFIG_TIMESHIFT), yes)
 JAVASCRIPT += $(ROOTPATH)/app/timeshift.js
 endif
+ifeq ($(CONFIG_DVBBUFFER), yes)
+JAVASCRIPT += $(ROOTPATH)/app/dvbbuffer.js
+endif
 JAVASCRIPT += $(ROOTPATH)/app/chconf.js
 JAVASCRIPT += $(ROOTPATH)/app/epg.js
 JAVASCRIPT += $(ROOTPATH)/app/epgevent.js
