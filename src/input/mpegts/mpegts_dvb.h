@@ -184,6 +184,10 @@ void       dvb_mux_submux_found  ( dvb_mux_t *sm, mpegts_mux_t *mm );
 void       dvb_network_link_multistream ( dvb_network_t *ln );
 dvb_mux_t *dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm );
 void       dvb_mux_transponder_drop_services ( dvb_mux_t *lm );
+/* a multistream transponder no tuner takes as a whole: scanned by its streams */
+int        dvb_mux_transponder_by_streams ( mpegts_mux_t *mm );
+void       dvb_mux_transponder_result ( mpegts_mux_t *mm );
+void       dvb_mux_transponder_scan_streams ( mpegts_mux_t *mm, int weight, int flags );
 void       dvb_mux_dab_pmt_pids  ( mpegts_mux_t *mm, const uint16_t *pids, int n,
                                    uint16_t sid );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
