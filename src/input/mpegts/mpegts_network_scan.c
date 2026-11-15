@@ -128,6 +128,9 @@ mpegts_network_scan_do_mux ( mpegts_mux_queue_t *q, mpegts_mux_t *mm )
     mm->mm_scan_result = MM_SCAN_FAIL;
     idnode_changed(&mm->mm_id);
   }
+#if ENABLE_MPEGTS_DVB
+  dvb_network_scan_failed(mm);
+#endif
   mm->mm_scan_state  = MM_SCAN_STATE_IDLE;
   mm->mm_scan_weight = 0;
   mpegts_network_scan_notify(mm);
@@ -249,6 +252,12 @@ mpegts_network_scan_mux_done0
       weight = SUBSCRIPTION_PRIO_SCAN_IDLE;
     mpegts_network_scan_queue_del(mm);
   }
+
+#if ENABLE_MPEGTS_DVB
+  /* the NIT may describe it with other parameters too */
+  if (result == MM_SCAN_FAIL)
+    dvb_network_scan_failed(mm);
+#endif
 
   if (result != MM_SCAN_NONE && mm->mm_scan_result != result) {
     mm->mm_scan_result = result;

@@ -88,6 +88,9 @@ void dvb_network_scanfile_set ( dvb_network_t *ln, const char *id );
 
 htsmsg_t * dvb_network_class_scanfile_list ( void *o, const char *lang );
 
+/* a mux failed its scan: a notice when the NIT describes it otherwise too */
+void dvb_network_scan_failed ( mpegts_mux_t *mm );
+
 /*
  *
  */
