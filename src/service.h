@@ -72,6 +72,9 @@ typedef struct service_instance {
                          */
   time_t si_error_time;
   int si_weight;        /* Highest weight that holds this cand */
+  int si_tuned_low;     /* Its mux runs already, but only for subscriptions
+                         * below SUBSCRIPTION_PRIO_MIN (EPG, scans, muxes
+                         * kept tuned) */
   int si_mark;          /* For mark & sweep */
 
   char si_source[128];

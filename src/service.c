@@ -359,6 +359,20 @@ service_start(service_t *t, int instance, int weight, int flags,
 
 
 /**
+ * Video type of a service in the order of the preferred service video
+ * type of the profiles: PROFILE_SVF_SD < _HD < _FHD < _UHD, _NONE unknown
+ */
+static int
+service_video_type(const service_t *s)
+{
+  if (service_is_uhdtv(s)) return PROFILE_SVF_UHD;
+  if (service_is_fhdtv(s)) return PROFILE_SVF_FHD;
+  if (service_is_hdtv(s))  return PROFILE_SVF_HD;
+  if (service_is_sdtv(s))  return PROFILE_SVF_SD;
+  return PROFILE_SVF_NONE;
+}
+
+/**
  * Main entry point for starting a service based on a channel
  */
 service_instance_t *
@@ -370,7 +384,7 @@ service_find_instance
   idnode_list_mapping_t *ilm;
   service_instance_t *si, *next;
   profile_t *pro = prch ? prch->prch_pro : NULL;
-  int r, r1;
+  int r, r1, vt;
 
   lock_assert(&global_lock);
 
@@ -546,6 +560,39 @@ service_find_instance
     if (next->si_weight < 0 && next->si_error == 0)
       if (si == NULL || next->si_prio > si->si_prio)
         si = next;
+
+  /* A mux running only for low weights (EPG, scans, muxes kept tuned) is
+     cheaper, not better: when the profile prefers a higher video type than
+     the service on it has, a service of a higher video type wins if it is
+     free or held by low weights only and closer to the preferred type than
+     the running one - the closest, on a tie one not above the preferred
+     type, then by priority. Without a preferred type, or when a viewer or a
+     recording uses the mux, the running mux is shared as before. */
+  if (si && si->si_tuned_low && pro && pro->pro_svfilter != PROFILE_SVF_NONE &&
+      (vt = service_video_type(si->si_s)) != PROFILE_SVF_NONE &&
+      vt < pro->pro_svfilter) {
+    service_instance_t *best = NULL;
+    int pref = pro->pro_svfilter, d = abs(vt - pref), bvt = 0, bd = 0, nvt, nd;
+    TAILQ_FOREACH(next, sil, si_link) {
+      if (next->si_error || next->si_weight >= SUBSCRIPTION_PRIO_MIN ||
+          next->si_weight >= weight)
+        continue;
+      if ((nvt = service_video_type(next->si_s)) <= vt || (nd = abs(nvt - pref)) >= d)
+        continue;
+      if (best == NULL || nd < bd ||
+          (nd == bd && (nvt <= pref) != (bvt <= pref) && nvt <= pref) ||
+          (nd == bd && (nvt <= pref) == (bvt <= pref) && next->si_prio > best->si_prio)) {
+        best = next;
+        bvt = nvt;
+        bd = nd;
+      }
+    }
+    if (best) {
+      tvhdebug(LS_SERVICE, "si %p of a higher video type preferred to si %p on a mux "
+               "running for low weights only", best, si);
+      si = best;
+    }
+  }
 
   /* Idle */
   if (!si) {
