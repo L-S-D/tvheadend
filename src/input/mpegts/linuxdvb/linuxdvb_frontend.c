@@ -827,6 +827,9 @@ linuxdvb_frontend_update_pids
         mpegts_pid_add(&lfe->lfe_pids, mp->mp_pid, mps->mps_weight);
     }
   }
+  /* The DAB probe looks for DAB content in all PIDs */
+  if (mm->mm_dab_probe_ctx)
+    lfe->lfe_pids.all = 1;
   tvh_mutex_unlock(&lfe->lfe_dvr_lock);
 
   if (lfe->lfe_dvr_pipe.wr > 0)

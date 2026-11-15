@@ -51,6 +51,7 @@ mpegts_init ( int linuxdvb_mask, int nosatip, str_list_t *satip_client,
   /* Setup DVB networks */
 #if ENABLE_MPEGTS_DVB
   dvb_network_init();
+  mpegts_submux_init();
 #endif
 
   /* TS files */
@@ -97,6 +98,7 @@ mpegts_done ( void )
   tvhftrace(LS_MAIN, mpegts_mux_sched_done);
 #if ENABLE_MPEGTS_DVB
   tvhftrace(LS_MAIN, dvb_network_done);
+  tvhftrace(LS_MAIN, mpegts_submux_done);
 #endif
 #if ENABLE_IPTV
   tvhftrace(LS_MAIN, iptv_done);

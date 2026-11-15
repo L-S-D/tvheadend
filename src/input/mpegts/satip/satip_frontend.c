@@ -923,6 +923,9 @@ satip_frontend_update_pids
           mpegts_pid_add(&tr->sf_pids, mp->mp_pid, mps->mps_weight);
       }
     }
+    /* The DAB probe looks for DAB content in all PIDs */
+    if (mm->mm_dab_probe_ctx && lfe->sf_device->sd_fullmux_ok)
+      tr->sf_pids.all = 1;
     mpegts_pid_add(&tr->sf_pids, 0, MPS_WEIGHT_PMT_SCAN);
     if (lfe->sf_device->sd_pids21)
       mpegts_pid_add(&tr->sf_pids, 21, MPS_WEIGHT_PMT_SCAN);
