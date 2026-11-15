@@ -1493,21 +1493,34 @@ linuxdvb_frontend_stream_info ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
  * wider one mostly (16E 12687.1H, 406 kBd: a 7425 kBd carrier 0.3 MHz away).
  * Its symbol rate tells: the one found if it is not about that of the mux
  * (+-25%), else 0.
+ * A blind tune of a wider carrier (blind scan "Scanning"/"Always") searches
+ * the 10 MHz of the driver: without its carrier it can lock a neighbour. As
+ * blind tuning is there for an outdated symbol rate too, that one counts as
+ * another carrier only when it is also off the frequency of the mux, so that
+ * the two do not overlap (a neighbour of about the same symbol rate is not
+ * told apart). A frequency read outside the search range is not judged.
  */
 static uint32_t
 linuxdvb_frontend_other_carrier ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
 {
-  struct dtv_property prop = { .cmd = DTV_SYMBOL_RATE };
-  struct dtv_properties props = { .num = 1, .props = &prop };
-  uint32_t want, got;
+  struct dtv_property prop[2] = { { .cmd = DTV_SYMBOL_RATE }, { .cmd = DTV_FREQUENCY } };
+  struct dtv_properties props = { .num = 2, .props = prop };
+  uint32_t want, got, df;
 
-  if (!lfe->lfe_blind_narrow)
+  if (!lfe->lfe_blind)
     return 0;
   want = ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.symbol_rate;
   if (want == 0 || ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &props))
     return 0;
-  got = prop.u.data;
+  got = prop[0].u.data;
   if (got == 0 || (got >= want - want / 4 && got <= want + want / 4))
+    return 0;
+  if (lfe->lfe_blind_narrow)
+    return got;
+  /* frequencies in kHz (as tuned: lfe_freq), symbol rates in symbols/s */
+  df = deltaU32(prop[1].u.data, (uint32_t)lfe->lfe_freq);
+  if (prop[1].u.data == 0 || lfe->lfe_freq <= 0 || df > 20000 ||
+      2 * (uint64_t)df < ((uint64_t)want + got) / 1000)
     return 0;
   return got;
 }
@@ -2636,6 +2649,7 @@ linuxdvb_frontend_tune0
     /* Neumo driver: use blind tuning for auto-detection
      * blindscan_mode: 0=never, 1=scanning only, 2=always */
     lfe->lfe_blind_narrow = 0;
+    lfe->lfe_blind = 0;
     if (lfe->lfe_neumo_supported &&
         (config.blindscan_mode == 2 ||
          (config.blindscan_mode == 1 &&
@@ -2645,6 +2659,7 @@ linuxdvb_frontend_tune0
            ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_PEND ||
            ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_IPEND)))) {
       S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
+      lfe->lfe_blind = 1;
       //S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
       if (p.u.qpsk.symbol_rate > 0 && p.u.qpsk.symbol_rate < 2500000) {
         S2CMD(DTV_SEARCH_RANGE,  linuxdvb_frontend_narrow_range(p.u.qpsk.symbol_rate));
@@ -2656,6 +2671,7 @@ linuxdvb_frontend_tune0
        * tune with the known symbol rate delivers after 2-3.5 s */
       S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
       S2CMD(DTV_DELIVERY_SYSTEM, SYS_AUTO);
+      lfe->lfe_blind = 1;
       if (p.u.qpsk.symbol_rate > 0) {
         S2CMD(DTV_SEARCH_RANGE,  linuxdvb_frontend_narrow_range(p.u.qpsk.symbol_rate));
         lfe->lfe_blind_narrow = 1;
