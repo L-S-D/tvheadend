@@ -383,6 +383,8 @@ struct linuxdvb_unicable_group
   TAILQ_ENTRY(linuxdvb_unicable_group) lug_link;
   uint16_t                             lug_group_id;
   tvh_mutex_t                          lug_lock;       /* per-group lock for command serialization */
+  tvhlog_limit_t                       lug_nomaster_log; /* the warnings about its master */
+  tvhlog_limit_t                       lug_masters_log;
 };
 
 typedef TAILQ_HEAD(,linuxdvb_unicable_group) linuxdvb_unicable_group_list_t;

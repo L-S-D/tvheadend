@@ -69,16 +69,19 @@ static linuxdvb_unicable_group_list_t linuxdvb_unicable_groups;
 static tvh_mutex_t linuxdvb_unicable_groups_lock;
 
 /*
- * Find master satconf element for a unicable group
+ * Find master satconf element for a unicable group (with several masters
+ * set, the first one; a warning says so)
  * Must be called WITHOUT groups_lock held
  */
 static linuxdvb_satconf_ele_t *
-linuxdvb_unicable_find_master ( uint16_t group_id )
+linuxdvb_unicable_find_master ( linuxdvb_unicable_group_t *group )
 {
   tvh_hardware_t *th;
   linuxdvb_adapter_t *la;
   linuxdvb_frontend_t *lfe;
   linuxdvb_satconf_ele_t *lse;
+  linuxdvb_satconf_ele_t *master = NULL;
+  int n = 0;
 
   LIST_FOREACH(th, &tvh_hardware, th_link) {
     if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class))
@@ -91,12 +94,18 @@ linuxdvb_unicable_find_master ( uint16_t group_id )
         if (!lse->lse_en50494)
           continue;
         linuxdvb_en50494_t *le = (linuxdvb_en50494_t *)lse->lse_en50494;
-        if (le->le_group_id == group_id && le->le_is_master)
-          return lse;
+        if (le->le_group_id == group->lug_group_id && le->le_is_master) {
+          master = master ?: lse;     /* the first one */
+          n++;
+        }
       }
     }
   }
-  return NULL;
+  if (n > 1)
+    tvhlog(tvhlog_limit(&group->lug_masters_log, 3600) ? LOG_WARNING : LOG_DEBUG,
+           LS_EN50494, "group %d has %d masters, the one of %s sends the commands",
+           group->lug_group_id, n, master->lse_parent->ls_frontend->mi_name ?: "");
+  return master;
 }
 
 /*
@@ -147,7 +156,7 @@ linuxdvb_unicable_get_master_fd ( linuxdvb_unicable_group_t *group,
   linuxdvb_frontend_t *lfe;
 
   lock_assert(&global_lock);
-  lse = linuxdvb_unicable_find_master(group->lug_group_id);
+  lse = linuxdvb_unicable_find_master(group);
   if (!lse) {
     tvhdebug(LS_EN50494, "no master found for unicable group %d", group->lug_group_id);
     return -1;
@@ -647,8 +656,10 @@ linuxdvb_en50494_tune
       tvhtrace(LS_EN50494, "slave routing through master: group=%d fd=%d",
                le->le_group_id, fd);
     } else {
-      tvhwarn(LS_EN50494, "group %d: master not available, the slave sends itself",
-              le->le_group_id);
+      /* each tune while the master is in power save: once an hour */
+      tvhlog(tvhlog_limit(&group->lug_nomaster_log, 3600) ? LOG_WARNING : LOG_DEBUG,
+             LS_EN50494, "group %d: master not available, the slave sends itself",
+             le->le_group_id);
     }
   }
 
