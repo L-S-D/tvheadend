@@ -198,7 +198,7 @@ descrambler_data_key_check(th_descrambler_runtime_t *dr, uint8_t key, int len)
       dd = TAILQ_NEXT(dd, dd_link);
     if (dd == NULL) break;
     l = dd->dd_sbuf.sb_ptr;
-    for (off = 0; off < l && len > 0; off += 188, l -= 188) {
+    for (off = 0; off < l && len > 0; off += 188) {
       ki = dd->dd_sbuf.sb_data[off + 3];
       /* a clear packet (other PIDs of the service in the queue) says nothing
        * about the parity - only the scrambling control bits count */
