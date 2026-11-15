@@ -162,6 +162,18 @@ dvb_mux_class_dab_opts(void *o, uint32_t opts)
   return opts | PO_NOUI | PO_NOSAVE;
 }
 
+/* DAB in a PID (MPE, ETI-NA, TS NI) */
+static uint32_t
+dvb_mux_class_dab_pid_opts(void *o, uint32_t opts)
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mpegts_mux_is_dab(mm) && mpegts_mux_in_pid(mm))
+    return opts;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
 static uint32_t
 dvb_mux_class_dab_eti_opts(void *o, uint32_t opts)
 {
@@ -453,7 +465,7 @@ const idclass_t dvb_mux_class =
                      "ensemble (its SID; of several the lowest)."),
       .off      = offsetof(dvb_mux_t, lm_dab_pmt_sid),
       .opts     = PO_RDONLY,
-      .get_opts = dvb_mux_class_dab_opts,
+      .get_opts = dvb_mux_class_dab_pid_opts,
     },
     {
       .type     = PT_STR,
@@ -2360,7 +2372,7 @@ dvb_mux_dab_pmt_pids ( mpegts_mux_t *mm, const uint16_t *pids, int n, uint16_t s
   if (mm == NULL || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
     return;
   LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link) {
-    if (!mpegts_mux_is_dab(sm))
+    if (!mpegts_mux_is_dab(sm) || !mpegts_mux_in_pid(sm))
       continue;
     lm = (dvb_mux_t *)sm;
     for (i = 0; i < n && pids[i] != lm->lm_tuning.dmc_fe_pid; i++)
