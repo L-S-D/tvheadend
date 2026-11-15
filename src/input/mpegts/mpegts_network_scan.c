@@ -322,6 +322,11 @@ mpegts_network_scan_mux_done0
     mpegts_network_scan_queue_add(mm, weight, mm->mm_scan_flags, 10);
 
 #if ENABLE_MPEGTS_DVB
+  /* a T2-MI stream with several PLPs: a sub-mux for each (of a scan that
+   * ended, not a cancelled one: the mux may be going away) */
+  if (result != MM_SCAN_NONE)
+    dvb_mux_t2mi_scan_done(mm);
+
   /* the transponder could be read: its sub-muxes get a scan as well */
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL)
     mpegts_network_scan_submuxes(mm, scan_weight);
