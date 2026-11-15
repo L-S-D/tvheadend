@@ -687,6 +687,11 @@ next_one:
         net->failed = 1;
       if (r == SM_CODE_TUNING_FAILED)
         net->failed = 1;
+    } else if (mpegts_mux_is_submux(mm)) {
+      /* a sub-mux without an input (its transponder is not found, or no
+       * input runs its type): that is the sub-mux alone, the other muxes
+       * of its network go on */
+      tvhtrace(LS_EPGGRAB, "no input for sub-mux %s (subscribe), skipped", mm->mm_nicename);
     } else {
       tvhtrace(LS_EPGGRAB, "no free adapter for %s (subscribe)", mm->mm_nicename);
       net->fatal = 1;
