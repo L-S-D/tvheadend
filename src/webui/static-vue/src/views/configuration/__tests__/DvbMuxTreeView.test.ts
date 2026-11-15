@@ -16,7 +16,7 @@ const stubs = await vi.hoisted(() => import('@/test/__helpers__/gridViewTestUtil
 const spies = vi.hoisted(() => ({ helpToggle: vi.fn(() => Promise.resolve()), openPlay: vi.fn() }))
 vi.mock('@/api/client', () => stubs.apiClient)
 vi.mock('@/api/comet', () => import('@/test/__helpers__/cometClientMock'))
-vi.mock('@/components/IdnodeEditor.vue', () => stubs.emptyComponent)
+vi.mock('@/components/IdnodeEditor.vue', () => stubs.idnodeEditor)
 vi.mock('@/components/IdnodePickEntityDialog.vue', () => stubs.emptyComponent)
 vi.mock('vue-router', () => stubs.vueRouter)
 vi.mock('@/composables/useConfirmDialog', () => stubs.confirmDialog)
@@ -636,7 +636,7 @@ describe('DvbMuxTreeView what the grid had', () => {
   })
 })
 
-describe('DvbMuxTreeView selection', () => {
+describe('DvbMuxTreeView selection and keyboard', () => {
   const pick = (w: Wrapper, text: string, opts: Record<string, boolean> = {}) =>
     rowOf(w, text).trigger('click', opts)
   const selectedTexts = (w: Wrapper) =>
@@ -664,5 +664,40 @@ describe('DvbMuxTreeView selection', () => {
     expect(rowTexts(w).some((r) => r.includes('11494H'))).toBe(false)
     await expand(w, 'Astra (1)')
     expect(rowTexts(w).some((r) => r.includes('11494H'))).toBe(true)
+  })
+
+  it('is a treegrid: rows with level, open state and selection', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    expect(w.find('table').attributes('role')).toBe('treegrid')
+    const net = rowOf(w, 'Astra (1)')
+    expect(net.attributes('aria-level')).toBe('1')
+    expect(net.attributes('aria-expanded')).toBe('true')
+    const mux = rowOf(w, '11494H')
+    expect(mux.attributes('aria-level')).toBe('2')
+    expect(mux.attributes('aria-expanded')).toBe('false')
+    expect(mux.attributes('aria-selected')).toBe('false')
+    await pick(w, '11494H')
+    expect(rowOf(w, '11494H').attributes('aria-selected')).toBe('true')
+  })
+
+  it('works with the keys: move, open, select, edit', async () => {
+    const w = await mountTree()
+    const table = w.find('table')
+    await table.trigger('focus')
+    expect(table.attributes('aria-activedescendant')).toBe('mux-tree-row-n1')
+    /* Right opens the network, Down goes to its mux */
+    await table.trigger('keydown', { key: 'ArrowRight' })
+    await flushPromises()
+    expect(rowTexts(w).some((r) => r.includes('11494H'))).toBe(true)
+    await table.trigger('keydown', { key: 'ArrowDown' })
+    expect(table.attributes('aria-activedescendant')).toBe('mux-tree-row-m1')
+    await table.trigger('keydown', { key: ' ' })
+    expect(rowOf(w, '11494H').attributes('aria-selected')).toBe('true')
+    await table.trigger('keydown', { key: 'Enter' })
+    expect(stubs.captured.editor.uuid).toBe('m1')
+    /* Left: back to the network row */
+    await table.trigger('keydown', { key: 'ArrowLeft' })
+    expect(table.attributes('aria-activedescendant')).toBe('mux-tree-row-n1')
   })
 })

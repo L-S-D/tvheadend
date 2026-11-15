@@ -54,6 +54,8 @@
  * (`list`); the search in service names is one request to the server
  * for the first SERVICE_HITS_MAX matches. Loads run one at a time per
  * network (`serialized`).
+ *
+ * Keyboard: the table is a treegrid with an active row (see onKeydown).
  */
 import { computed, onBeforeUnmount, onMounted, onUpdated, ref, shallowRef, triggerRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -685,6 +687,98 @@ onMounted(() => {
 onUpdated(measureRows)
 onBeforeUnmount(() => resizeObserver?.disconnect())
 
+/* Keyboard (a treegrid): the table takes the focus and keeps the active
+ * row; the arrows move it, Right and Left open and close it (or go to
+ * the first row below, the row above), Space selects it, Enter opens its
+ * editor, Home, End, Page Up and Down jump. */
+const activeKey = ref<string | null>(null)
+const activeIndex = computed(() =>
+  activeKey.value === null ? -1 : visible.value.findIndex((r) => r.key === activeKey.value),
+)
+const activeId = computed(() => (activeIndex.value >= 0 ? rowId(visible.value[activeIndex.value]) : undefined))
+
+function rowId(r: FlatRow): string {
+  return `mux-tree-row-${r.key}`
+}
+
+/* row i in view, below the header row */
+function scrollToRow(i: number) {
+  const el = scrollEl.value
+  if (!el || viewHeight.value <= 0) return
+  const h = rowHeight.value
+  if (i * h < el.scrollTop) el.scrollTop = i * h
+  else if ((i + 2) * h > el.scrollTop + viewHeight.value) el.scrollTop = (i + 2) * h - viewHeight.value
+  scrollTop.value = el.scrollTop
+}
+
+function setActive(i: number) {
+  const n = visible.value.length
+  if (!n) return
+  const j = Math.max(0, Math.min(n - 1, i))
+  activeKey.value = visible.value[j].key
+  scrollToRow(j)
+}
+
+function onTableFocus() {
+  if (activeIndex.value < 0) setActive(windowRange.value.start)
+}
+
+function onKeydown(ev: KeyboardEvent) {
+  /* the inputs and buttons in the rows keep their keys */
+  if (ev.target !== ev.currentTarget) return
+  const i = activeIndex.value
+  const r = i >= 0 ? visible.value[i] : undefined
+  const page = Math.max(1, Math.floor(viewHeight.value / rowHeight.value) - 1)
+  switch (ev.key) {
+    case 'ArrowDown':
+      setActive(i + 1)
+      break
+    case 'ArrowUp':
+      setActive(i - 1)
+      break
+    case 'PageDown':
+      setActive(i + page)
+      break
+    case 'PageUp':
+      setActive(i - page)
+      break
+    case 'Home':
+      setActive(0)
+      break
+    case 'End':
+      setActive(visible.value.length - 1)
+      break
+    case 'ArrowRight':
+      if (r?.hasChildren && !r.open) toggle(r)
+      else if (r?.open) setActive(i + 1)
+      break
+    case 'ArrowLeft':
+      if (r?.hasChildren && r.open) toggle(r)
+      else if (r)
+        for (let j = i - 1; j >= 0; j--)
+          if (visible.value[j].depth < r.depth) {
+            setActive(j)
+            break
+          }
+      break
+    case ' ': {
+      const u = r ? selectableUuid(r) : null
+      if (u) {
+        toggleSelected(u)
+        anchor = u
+      }
+      if (r) focusNet.value = r.network ?? r.net ?? null
+      break
+    }
+    case 'Enter':
+      if (r) onRowDblclick(r)
+      break
+    default:
+      return
+  }
+  ev.preventDefault()
+}
+
 /* Selection: muxes and services, by uuid */
 type SelKind = 'mux' | 'service'
 interface SelEntry {
@@ -736,6 +830,7 @@ function setSelected(next: Set<string>) {
 }
 
 function onRowClick(r: FlatRow, ev: MouseEvent, i: number) {
+  activeKey.value = r.key
   if (r.network) {
     focusNet.value = r.network
     return
@@ -1319,7 +1414,17 @@ onMounted(loadNetworks)
     </div>
     <p v-if="loadError" class="mux-tree__error" role="alert">{{ t('Failed to load:') }} {{ loadError }}</p>
     <div ref="scrollEl" class="mux-tree__scroll" @scroll.passive="onScroll">
-      <table class="mux-tree__table">
+      <table
+        class="mux-tree__table"
+        role="treegrid"
+        tabindex="0"
+        aria-multiselectable="true"
+        :aria-label="t('Muxes')"
+        :aria-rowcount="visible.length + 1"
+        :aria-activedescendant="activeId"
+        @keydown="onKeydown"
+        @focus="onTableFocus"
+      >
         <colgroup>
           <col class="mux-tree__col-select" />
           <col />
@@ -1333,7 +1438,7 @@ onMounted(loadNetworks)
           <col class="mux-tree__col-action" />
         </colgroup>
         <thead>
-          <tr>
+          <tr aria-rowindex="1">
             <th class="mux-tree__select-cell">
               <input
                 type="checkbox"
@@ -1359,9 +1464,15 @@ onMounted(loadNetworks)
           </tr>
           <tr
             v-for="(r, i) in windowRows"
+            :id="rowId(r)"
             :key="r.key"
             class="mux-tree__row"
+            :aria-rowindex="windowRange.start + i + 2"
+            :aria-level="r.depth + 1"
+            :aria-expanded="r.hasChildren ? r.open : undefined"
+            :aria-selected="selectableUuid(r) ? selected.has(selectableUuid(r) as string) : undefined"
             :class="{
+              'mux-tree__row--active': r.key === activeKey,
               'mux-tree__row--selected': !!selectableUuid(r) && selected.has(selectableUuid(r) as string),
               'mux-tree__row--network': !!r.network,
               'mux-tree__row--virtual': !!r.node?.virtual,
@@ -1752,6 +1863,17 @@ onMounted(loadNetworks)
 .mux-tree__select-cell {
   text-align: center;
   padding: 0 !important;
+}
+
+/* the active row of the keyboard, while the table has the focus */
+.mux-tree__table:focus {
+  outline: none;
+}
+
+.mux-tree__table:focus .mux-tree__row--active td {
+  box-shadow:
+    inset 0 2px 0 var(--tvh-focus),
+    inset 0 -2px 0 var(--tvh-focus);
 }
 
 .mux-tree__row--selected td {
