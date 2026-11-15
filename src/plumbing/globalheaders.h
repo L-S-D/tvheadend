@@ -25,5 +25,9 @@ streaming_target_t *globalheaders_create(streaming_target_t *output);
 
 void globalheaders_destroy(streaming_target_t *gh);
 
+/* Start this long after the start without audio and video when none came
+ * (a scrambled service without a key: the other streams start); 0 = wait */
+void globalheaders_early_start(streaming_target_t *gh, int ms);
+
 
 #endif // GLOBALHEADERS_H__
