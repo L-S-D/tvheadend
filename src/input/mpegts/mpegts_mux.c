@@ -786,6 +786,9 @@ mpegts_mux_delete ( mpegts_mux_t *mm, int delconf )
 
   tvhinfo(LS_MPEGTS, "%s (%p) - deleting", mm->mm_nicename, mm);
 
+  /* Tell the listeners while the mux is still complete */
+  mpegts_fire_event(mm, ml_mux_delete);
+
   /* Stop */
   mm->mm_stop(mm, 1, SM_CODE_ABORTED);
 
