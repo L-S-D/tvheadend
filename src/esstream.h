@@ -121,6 +121,9 @@ struct elementary_info {
   uint16_t es_teletext_initial_page; /* TELETEXT: initial page of the
                                         teletext descriptor (e.g. 100) */
 
+  uint8_t es_component_tag;      /* DVB stream identifier descriptor */
+  uint8_t es_component_tag_set;  /* es_component_tag is known */
+
   uint16_t es_parent_pid;    /* For subtitle streams originating from
 				a teletext stream. this is the pid
 				of the teletext stream */
