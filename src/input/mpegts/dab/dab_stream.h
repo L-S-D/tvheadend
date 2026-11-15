@@ -28,7 +28,7 @@ typedef void (*dab_stream_output_cb)(void *opaque, const uint8_t *pkt, size_t le
 
 /* DAB stream configuration */
 typedef struct dab_stream_config {
-  int         format;       /* 0=ETI-NA, 1=MPE, 2=GSE, 4=TSNI */
+  int         format;       /* 0=ETI-NA, 1=MPE, 2=GSE, 3=GSE in BBFrames, 4=TSNI */
   uint16_t    pid;          /* PID containing DAB data */
 
   /* ETI-NA specific */
@@ -39,6 +39,7 @@ typedef struct dab_stream_config {
   /* MPE/GSE specific */
   uint32_t    filter_ip;    /* Multicast IP (host byte order) */
   uint16_t    filter_port;  /* UDP port */
+  uint16_t    eid;          /* the ensemble, 0: any (GSE in BBFrames) */
 } dab_stream_config_t;
 
 #if ENABLE_DVBDAB
