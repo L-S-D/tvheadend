@@ -48,6 +48,9 @@ typedef struct th_descrambler_data {
   sbuf_t dd_sbuf;
   th_descrambler_key_t *dd_key;
   uint8_t dd_key_changed;
+  uint8_t dd_key_data[2][16];   /* the keys at the time they came: a later
+                                   answer may overwrite tk->key_data before
+                                   the queue reaches this marker */
 } th_descrambler_data_t;
 
 typedef struct th_descrambler_hint {
@@ -151,6 +154,7 @@ descrambler_data_add_key(th_descrambler_runtime_t *dr, th_descrambler_key_t *tk,
   dd->dd_timestamp = mclk();
   dd->dd_key = tk;
   dd->dd_key_changed = change;
+  memcpy(dd->dd_key_data, tk->key_data, sizeof(dd->dd_key_data));
   debug2("%p: data %s key %d, timestamp %ld", dr, head ? "insert" : "append", tk->key_pid, dd->dd_timestamp);
   if (head)
     TAILQ_INSERT_HEAD(&dr->dr_queue, dd, dd_link);
@@ -196,7 +200,9 @@ descrambler_data_key_check(th_descrambler_runtime_t *dr, uint8_t key, int len)
     l = dd->dd_sbuf.sb_ptr;
     for (off = 0; off < l && len > 0; off += 188, l -= 188) {
       ki = dd->dd_sbuf.sb_data[off + 3];
-      if (ki == 0) continue;
+      /* a clear packet (other PIDs of the service in the queue) says nothing
+       * about the parity - only the scrambling control bits count */
+      if ((ki & 0x80) == 0) continue;
       if ((ki & 0xc0) != key) return -1;
       len -= 188;
     }
@@ -966,7 +972,8 @@ old_key_flush ( th_descrambler_runtime_t *dr, service_t *t )
 }
 
 static void
-key_flush( th_descrambler_runtime_t *dr, th_descrambler_key_t *tk, uint8_t changed, service_t *t )
+key_flush( th_descrambler_runtime_t *dr, th_descrambler_key_t *tk, uint8_t changed,
+           const uint8_t *even, const uint8_t *odd, service_t *t )
 {
   if (!changed)
     return;
@@ -975,12 +982,12 @@ key_flush( th_descrambler_runtime_t *dr, th_descrambler_key_t *tk, uint8_t chang
   /* update the keys */
   if (changed & 1) {
     debug2("%p: even key[%d] set for decoder", dr, tk->key_pid);
-    tvhcsa_set_key_even(&tk->key_csa, tk->key_data[0]);
+    tvhcsa_set_key_even(&tk->key_csa, even);
     tk->key_valid |= 0x40;
   }
   if (changed & 2) {
     debug2("%p: odd key[%d] set for decoder", dr, tk->key_pid);
-    tvhcsa_set_key_odd(&tk->key_csa, tk->key_data[1]);
+    tvhcsa_set_key_odd(&tk->key_csa, odd);
     tk->key_valid |= 0x80;
   }
 }
@@ -1098,7 +1105,8 @@ descrambler_descramble ( service_t *t,
       tsb2 = sb->sb_data;
       len2 = sb->sb_ptr;
       if (dd->dd_key) {
-        key_flush(dr, dd->dd_key, dd->dd_key_changed, t);
+        key_flush(dr, dd->dd_key, dd->dd_key_changed,
+                  dd->dd_key_data[0], dd->dd_key_data[1], t);
         dd->dd_key = NULL;
       }
       if (len2 == 0)
