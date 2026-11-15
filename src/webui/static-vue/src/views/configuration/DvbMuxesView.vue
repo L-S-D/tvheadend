@@ -4,7 +4,14 @@
 -->
 <script setup lang="ts">
 /*
- * Configuration → DVB Inputs → Muxes.
+ * Configuration → DVB Inputs → Muxes → List.
+ *
+ * The Muxes tab shows the muxes as a tree (DvbMuxTreeView.vue); this
+ * is the flat grid of all muxes next to it (route
+ * `config-dvb-mux-list`), with what the tree has not: sortable and
+ * filterable tuning columns, the Hide mode, the column picker, the
+ * phone layout and the `?editUuid=` deep link. The toolbar switches
+ * back to the tree.
  *
  * Mirrors the legacy ExtJS Muxes grid (`static/app/mpegts.js:93-138`,
  * `tvheadend.muxes`). Backed by the `mpegts_mux` parent class
@@ -32,6 +39,8 @@
  * already (see `DvbNetworksView.vue`).
  */
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ListTree } from 'lucide-vue-next'
 import IdnodeGrid from '@/components/IdnodeGrid.vue'
 import IdnodeEditor from '@/components/IdnodeEditor.vue'
 import IdnodePickEntityDialog from '@/components/IdnodePickEntityDialog.vue'
@@ -49,6 +58,7 @@ import { buildAddEditDeleteActions } from '../dvr/dvrToolbarHelpers'
 import { formatMuxFrequency } from './muxFrequency'
 
 const { t } = useI18n()
+const router = useRouter()
 
 /* "Hide" filter — three-option dropdown surfaced in the
  * GridSettingsMenu (above View level). Mirrors the legacy ExtJS
@@ -197,6 +207,37 @@ const cols: ColumnDef[] = [
     phoneRole: 'primary',
     editable: true,
   },
+  /* `tstype` = mm_type (`MM_TYPE_*` in src/input/mpegts.h): every
+   * mux class has it (read only on the `mpegts_mux` class, editable
+   * on the DVB muxes), IPTV muxes are TS. */
+  {
+    field: 'tstype',
+    label: t('Type'),
+    sortable: true,
+    filterType: 'enum',
+    width: 130,
+    cellComponent: EnumNameCell,
+    enumSource: [
+      { key: 0, val: t('TS') },
+      { key: 7, val: t('TS (input stream)') },
+      { key: 1, val: t('T2MI') },
+      { key: 2, val: t('DAB-MPE') },
+      { key: 3, val: t('DAB-ETI') },
+      { key: 6, val: t('DAB-TSNI') },
+      { key: 4, val: t('DAB-GSE') },
+      { key: 5, val: t('GSE') },
+    ],
+  },
+  /* The input stream of a DVB-S2 multistream transponder (PLP of
+   * DVB-T2); -1 = none. */
+  {
+    field: 'stream_id',
+    label: t('ISI'),
+    sortable: true,
+    filterType: 'numeric',
+    width: 80,
+    format: (v: unknown) => (typeof v === 'number' && v >= 0 ? String(v) : ''),
+  },
   /* Hz or kHz depending on the subclass, see muxFrequency.ts. */
   {
     field: 'frequency',
@@ -303,14 +344,26 @@ function onNetworkPicked(networkUuid: string) {
 }
 
 function buildActions(selection: BaseRow[], clearSelection: () => void): ActionDef[] {
-  return buildAddEditDeleteActions({
-    selection,
-    clearSelection,
-    remove,
-    onAdd: onAddClick,
-    onEdit: openEditor,
-    addTooltip: t('Add a new mux'),
-  })
+  return [
+    ...buildAddEditDeleteActions({
+      selection,
+      clearSelection,
+      remove,
+      onAdd: onAddClick,
+      onEdit: openEditor,
+      addTooltip: t('Add a new mux'),
+    }),
+    /* back to the tree of the Muxes tab */
+    {
+      id: 'tree-view',
+      label: t('Tree view'),
+      tooltip: t('Show the muxes as a tree: networks, transponders, sub-muxes and services'),
+      icon: ListTree,
+      onClick: () => {
+        router.push({ name: 'config-dvb-muxes' }).catch(() => {})
+      },
+    },
+  ]
 }
 </script>
 
