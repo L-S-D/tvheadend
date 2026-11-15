@@ -53,7 +53,9 @@ linuxdvb_satconf_class_active_get ( void *obj )
   linuxdvb_satconf_t *ls = obj;
   linuxdvb_satconf_ele_t *lse;
   active = 0;
-  if (*(int *)linuxdvb_frontend_class_active_get(ls->ls_frontend)) {
+  /* Use mpegts_input_class_active_get to check only THIS frontend's enabled status,
+   * not linuxdvb_frontend_class_active_get which also considers grouped frontends */
+  if (*(int *)mpegts_input_class_active_get(ls->ls_frontend)) {
     TAILQ_FOREACH(lse, &ls->ls_elements, lse_link) {
       if (lse->lse_enabled) {
         active = 1;
@@ -513,6 +515,47 @@ linuxdvb_satconf_class_en50494_freq_set
   return 1;
 }
 
+static const void *
+linuxdvb_satconf_class_en50494_group_get ( void *p )
+{
+  linuxdvb_satconf_t *ls = p;
+  linuxdvb_satconf_ele_t *lse = TAILQ_FIRST(&ls->ls_elements);
+  return &(((linuxdvb_en50494_t*)lse->lse_en50494)->le_group_id);
+}
+
+static int
+linuxdvb_satconf_class_en50494_group_set
+  ( void *p, const void *v )
+{
+  linuxdvb_satconf_t *ls = p;
+  linuxdvb_satconf_ele_t *lse;
+  uint16_t new_group = *(uint16_t*)v;
+
+  TAILQ_FOREACH(lse, &ls->ls_elements, lse_link)
+    (((linuxdvb_en50494_t*)lse->lse_en50494)->le_group_id) = new_group;
+  return 1;
+}
+
+static const void *
+linuxdvb_satconf_class_en50494_master_get ( void *p )
+{
+  linuxdvb_satconf_t *ls = p;
+  linuxdvb_satconf_ele_t *lse = TAILQ_FIRST(&ls->ls_elements);
+  return &(((linuxdvb_en50494_t*)lse->lse_en50494)->le_is_master);
+}
+
+static int
+linuxdvb_satconf_class_en50494_master_set
+  ( void *p, const void *v )
+{
+  linuxdvb_satconf_t *ls = p;
+  linuxdvb_satconf_ele_t *lse;
+
+  TAILQ_FOREACH(lse, &ls->ls_elements, lse_link)
+    (((linuxdvb_en50494_t*)lse->lse_en50494)->le_is_master) = *(int*)v;
+  return 1;
+}
+
 const idclass_t linuxdvb_satconf_en50494_class =
 {
   .ic_super      = &linuxdvb_satconf_class,
@@ -548,6 +591,29 @@ const idclass_t linuxdvb_satconf_en50494_class =
       .set      = linuxdvb_satconf_class_en50494_pin_set,
       .list     = linuxdvb_en50494_pin_list,
       .opts     = PO_NOSAVE,
+    },
+    {
+      .type     = PT_U16,
+      .id       = "unicable_group",
+      .name     = N_("Unicable group"),
+      .desc     = N_("Unicable elements in the same group share one cable: their "
+                     "commands are sent one at a time, those of the slaves through the "
+                     "master's tuner. None = no group."),
+      .get      = linuxdvb_satconf_class_en50494_group_get,
+      .set      = linuxdvb_satconf_class_en50494_group_set,
+      .list     = linuxdvb_en50494_group_list,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "is_master",
+      .name     = N_("Unicable master"),
+      .desc     = N_("This element's tuner sends the Unicable commands for all "
+                     "members of its group (one master per group). Without a usable "
+                     "master (disabled, or idle with power save) a slave sends itself."),
+      .get      = linuxdvb_satconf_class_en50494_master_get,
+      .set      = linuxdvb_satconf_class_en50494_master_set,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
     },
     {
       .type     = PT_STR,
@@ -612,6 +678,29 @@ const idclass_t linuxdvb_satconf_en50607_class =
       .set      = linuxdvb_satconf_class_en50494_pin_set,
       .list     = linuxdvb_en50494_pin_list,
       .opts     = PO_NOSAVE,
+    },
+    {
+      .type     = PT_U16,
+      .id       = "unicable_group",
+      .name     = N_("Unicable group"),
+      .desc     = N_("Unicable elements in the same group share one cable: their "
+                     "commands are sent one at a time, those of the slaves through the "
+                     "master's tuner. None = no group."),
+      .get      = linuxdvb_satconf_class_en50494_group_get,
+      .set      = linuxdvb_satconf_class_en50494_group_set,
+      .list     = linuxdvb_en50494_group_list,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "is_master",
+      .name     = N_("Unicable master"),
+      .desc     = N_("This element's tuner sends the Unicable commands for all "
+                     "members of its group (one master per group). Without a usable "
+                     "master (disabled, or idle with power save) a slave sends itself."),
+      .get      = linuxdvb_satconf_class_en50494_master_get,
+      .set      = linuxdvb_satconf_class_en50494_master_set,
+      .opts     = PO_NOSAVE | PO_ADVANCED,
     },
     {
       .type     = PT_STR,
@@ -862,6 +951,7 @@ static linuxdvb_satconf_ele_t *
 linuxdvb_satconf_find_ele( linuxdvb_satconf_t *ls, mpegts_mux_t *mux )
 {
   linuxdvb_satconf_ele_t *lse;
+
   TAILQ_FOREACH(lse, &ls->ls_elements, lse_link) {
     if (idnode_set_exists(lse->lse_networks, &mux->mm_network->mn_id))
       return lse;
@@ -882,6 +972,10 @@ linuxdvb_satconf_post_stop_mux
   ( linuxdvb_satconf_t *ls )
 {
   ls->ls_mmi = NULL;
+  ls->ls_drive = NULL;
+  /* no other try for the RF input of a mux that is gone */
+  mtimer_disarm(&ls->ls_rf_timer);
+  ls->ls_rf_retries = 0;
 }
 
 int
@@ -946,6 +1040,13 @@ linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol )
 }
 
 static void linuxdvb_satconf_ele_tune_cb ( void *o );
+#if ENABLE_LINUXDVB_NEUMO
+static void linuxdvb_satconf_rf_retry_cb ( void *o );
+#endif
+
+/* FE_SET_RF_INPUT answered "busy": try again this often, this far apart */
+#define LINUXDVB_RF_RETRIES  8
+#define LINUXDVB_RF_RETRY_MS 250
 
 static int
 linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
@@ -965,8 +1066,11 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     linuxdvb_satconf_power_save(ls);
     return 0;
   }
+  /* the mux stopped while a timer was pending: nothing to tune */
+  if (mmi == NULL)
+    return 0;
 
-  linuxdvb_frontend_t   *lfe   = (linuxdvb_frontend_t*)ls->ls_frontend;
+  linuxdvb_frontend_t   *lfe   = (linuxdvb_frontend_t*)(ls->ls_drive ?: ls->ls_frontend);
   dvb_mux_t             *lm    = (dvb_mux_t*)mmi->mmi_mux;
   linuxdvb_diseqc_t     *lds[] = {
     ls->ls_switch_rotor ? (linuxdvb_diseqc_t*)lse->lse_switch :
@@ -976,6 +1080,114 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     (linuxdvb_diseqc_t*)lse->lse_en50494,
     (linuxdvb_diseqc_t*)lse->lse_lnb
   };
+
+#if ENABLE_LINUXDVB_NEUMO
+  /*
+   * RF Input selection (Neumo DVB driver): the RF input of a virtual
+   * frontend (-1 = the frontend has none, the driver default stays)
+   */
+  int8_t rf_input_to_use = lfe->lfe_rf_input;
+
+  tvhtrace(LS_DISEQC, "tune: lfe_rf_input=%d, neumo_supported=%d",
+           lfe->lfe_rf_input, lfe->lfe_neumo_supported);
+
+  /* Only attempt RF input selection if Neumo driver is supported and RF input is specified */
+  if (rf_input_to_use >= 0 && lfe->lfe_fe_fd > 0 && lfe->lfe_neumo_supported) {
+    struct dtv_property prop;
+    struct dtv_properties props;
+    struct dvb_frontend_event ev;
+    struct fe_rf_input_control ic;
+    int drained;
+
+    /* Clear frontend and drain events - repeat until fully drained */
+    prop.cmd = DTV_CLEAR;
+    props.num = 1;
+    props.props = &prop;
+
+    do {
+      ioctl(lfe->lfe_fe_fd, FE_SET_PROPERTY, &props);
+      drained = 0;
+      while (ioctl(lfe->lfe_fe_fd, FE_GET_EVENT, &ev) >= 0)
+        drained++;
+    } while (drained > 0);
+
+    /* Set RF input */
+    memset(&ic, 0, sizeof(ic));
+    ic.owner = 0xffffffff;                /* Legacy owner */
+    /*
+     * config_id must be the same for all adapters sharing an RF input
+     * to allow proper master/slave sharing. Use config_id=1 to match
+     * the driver's legacy path which always uses config_id=1.
+     */
+    ic.config_id = 1;
+    ic.rf_in = rf_input_to_use;
+    ic.mode = FE_RESERVATION_MODE_MASTER_OR_SLAVE;
+
+    /* Unicable: set unicable_mode=1 to allow DiSEqC from slaves */
+    ic.unicable_mode = lse->lse_en50494 ? 1 : 0;
+
+    int rf_result = ioctl(lfe->lfe_fe_fd, FE_SET_RF_INPUT, &ic);
+    int rf_errno = errno;
+    /* this tuner sets up the input (tvh found it free), yet the driver makes
+     * it a slave: an idle demod still holds the input (its device stayed
+     * open) - close it and reserve again. With Unicable a slave is normal */
+    if (rf_result == FE_RESERVATION_SLAVE && !lse->lse_en50494 &&
+        ls->ls_rf_retries < LINUXDVB_RF_RETRIES &&
+        linuxdvb_frontend_rf_input_release(lfe, 1) > 0) {
+      ls->ls_rf_retries++;
+      tvhdebug(LS_DISEQC, "RF input %d still held by an idle tuner, released, trying again",
+               rf_input_to_use);
+      mtimer_arm_rel(&ls->ls_rf_timer, linuxdvb_satconf_rf_retry_cb, ls,
+                     ms2mono(LINUXDVB_RF_RETRY_MS));
+      return 0;
+    }
+    /* FE_SET_RF_INPUT returns enum fe_ioctl_result. Unless it succeeded, the
+     * driver did not switch: the demod would still listen on the previous RF
+     * input (another LNB/satellite), so the tune must not go on */
+    switch (rf_result) {
+    case FE_RESERVATION_MASTER:
+      /* the input was free: the driver turned voltage and tone off, a
+       * DiSEqC switch may have lost its position - send everything again */
+      ls->ls_last_switch = NULL;
+      ls->ls_last_toneburst = 0;
+      /* fall through */
+    case FE_RESERVATION_SLAVE:
+      /* RF input changed: the driver turned voltage/tone off on the old one,
+       * so re-apply them even if they look unchanged; a slave must send its
+       * FE_SET_VOLTAGE too, the driver decides (veto) */
+      ls->ls_last_vol = 0;
+      ls->ls_last_tone_off = 0;
+      /* fall through */
+    case FE_RESERVATION_UNCHANGED:
+      tvhtrace(LS_DISEQC, "set RF input %d (unicable=%d, config_id=%d, result=%d)",
+               rf_input_to_use, ic.unicable_mode, ic.config_id, rf_result);
+      /* Signal frontend to include DTV_SET_SEC_CONFIGURED in tune */
+      lfe->lfe_sec_configured = 1;
+      ls->ls_rf_retries = 0;
+      break;
+    case FE_RESERVATION_NOT_SUPPORTED:
+      /* this demod has no RF input selection: tune as without it */
+      tvhtrace(LS_DISEQC, "RF input selection not supported, tuning without");
+      break;
+    case FE_RESERVATION_RETRY:
+      /* RF input busy (e.g. its master demod has not configured it yet) */
+      if (++ls->ls_rf_retries <= LINUXDVB_RF_RETRIES) {
+        tvhdebug(LS_DISEQC, "RF input %d busy, trying again (%d/%d)",
+                 rf_input_to_use, ls->ls_rf_retries, LINUXDVB_RF_RETRIES);
+        mtimer_arm_rel(&ls->ls_rf_timer, linuxdvb_satconf_rf_retry_cb, ls,
+                       ms2mono(LINUXDVB_RF_RETRY_MS));
+        return 0;
+      }
+      tvherror(LS_DISEQC, "RF input %d still busy, tuning failed", rf_input_to_use);
+      return -1;
+    default:
+      /* FE_RESERVATION_FAILED, RELEASED (only for a release request), errors */
+      tvherror(LS_DISEQC, "FE_SET_RF_INPUT %d failed: result=%d%s%s", rf_input_to_use,
+               rf_result, rf_result < 0 ? ", " : "", rf_result < 0 ? strerror(rf_errno) : "");
+      return -1;
+    }
+  }
+#endif
 
   if (lse->lse_lnb) {
     pol  = lse->lse_lnb->lnb_pol (lse->lse_lnb, lm) & 0x1;
@@ -987,6 +1199,9 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
   }
   if (!lse->lse_en50494) {
     vol = pol;
+    /* an LNB may need a fixed voltage (external polarizer) */
+    if (lse->lse_lnb->lnb_vol && (r = lse->lse_lnb->lnb_vol(lse->lse_lnb, lm)) >= 0)
+      vol = r;
   } else {
     vol  = 0; /* 13V */
   }
@@ -1058,12 +1273,42 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
   return linuxdvb_frontend_tune1(lfe, mmi, f);
 }
 
+/* a tune from a timer failed (the start of the mux had already returned):
+ * the subscriptions of the mux take another tuner */
+static void
+linuxdvb_satconf_tune_failed ( linuxdvb_satconf_t *ls )
+{
+  mpegts_mux_instance_t *mmi = ls->ls_mmi;
+
+  if (mmi && mmi->mmi_input)
+    mmi->mmi_input->mi_error(mmi->mmi_input, mmi->mmi_mux, TSS_TUNING);
+}
+
 static void
 linuxdvb_satconf_ele_tune_cb ( void *o )
 {
-  (void)linuxdvb_satconf_ele_tune(o);
-  // TODO: how to signal error
+  linuxdvb_satconf_ele_t *lse = o;
+
+  if (linuxdvb_satconf_ele_tune(lse))
+    linuxdvb_satconf_tune_failed(lse->lse_parent);
 }
+
+#if ENABLE_LINUXDVB_NEUMO
+/* the RF input was busy: try again, for the mux being tuned now (its
+ * element is looked up again, the configuration may have changed) */
+static void
+linuxdvb_satconf_rf_retry_cb ( void *o )
+{
+  linuxdvb_satconf_t *ls = o;
+  linuxdvb_satconf_ele_t *lse;
+
+  if (ls->ls_mmi == NULL)
+    return;
+  lse = linuxdvb_satconf_find_ele(ls, ls->ls_mmi->mmi_mux);
+  if (lse == NULL || linuxdvb_satconf_ele_tune(lse))
+    linuxdvb_satconf_tune_failed(ls);
+}
+#endif
 
 int
 linuxdvb_satconf_lnb_freq
@@ -1097,7 +1342,12 @@ linuxdvb_satconf_start_mux
 {
   int r, f;
   linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mmi->mmi_mux);
-  linuxdvb_frontend_t    *lfe = (linuxdvb_frontend_t*)ls->ls_frontend;
+  linuxdvb_frontend_t    *lfe;
+
+  /* skip_diseqc: the frontend of the satconf joins an RF input in use (its
+   * LNB settings are set), else the tuner setting it up (ls_drive) */
+  lfe = (linuxdvb_frontend_t*)(skip_diseqc ? ls->ls_frontend :
+                               (ls->ls_drive ?: ls->ls_frontend));
 
   /* Not fully configured */
   if (!lse) return SM_CODE_TUNING_FAILED;
@@ -1114,6 +1364,11 @@ linuxdvb_satconf_start_mux
     f = linuxdvb_satconf_lnb_freq(ls, mmi);
     if (f < 0)
       return SM_CODE_TUNING_FAILED;
+#if ENABLE_LINUXDVB_NEUMO
+    /* the input is set up by another tuner: listen on it, as its slave */
+    if (linuxdvb_frontend_rf_port(lfe) && linuxdvb_frontend_rf_input_slave(lfe))
+      return SM_CODE_TUNING_FAILED;
+#endif
     return linuxdvb_frontend_tune1(lfe, mmi, f);
   }
   if (ls->ls_early_tune) {
@@ -1131,6 +1386,8 @@ linuxdvb_satconf_start_mux
   /* Diseqc */
   ls->ls_mmi        = mmi;
   ls->ls_diseqc_idx = 0;
+  ls->ls_rf_retries = 0;
+  mtimer_disarm(&ls->ls_rf_timer);
   if (lse->lse_rotor)
     if (lse->lse_rotor->ld_start(lse->lse_rotor, (dvb_mux_t *)mmi->mmi_mux, ls, lse))
       return 0;
@@ -1293,7 +1550,7 @@ linuxdvb_satconf_save ( linuxdvb_satconf_t *ls, htsmsg_t *m )
   htsmsg_add_str(m, "type", ls->ls_type);
   idnode_save(&ls->ls_id, m);
   l = htsmsg_create_list();
-  TAILQ_FOREACH(lse, &ls->ls_elements, lse_link){ 
+  TAILQ_FOREACH(lse, &ls->ls_elements, lse_link){
     e = htsmsg_create_map();
     idnode_save(&lse->lse_id, e);
     htsmsg_add_str(e, "uuid", idnode_uuid_as_str(&lse->lse_id, ubuf));
@@ -1519,7 +1776,9 @@ linuxdvb_satconf_ele_class_active_get ( void *obj )
   static int active;
   linuxdvb_satconf_ele_t *lse = obj;
   active = 0;
-  if (*(int *)linuxdvb_frontend_class_active_get(lse->lse_parent->ls_frontend))
+  /* Use mpegts_input_class_active_get to check only THIS frontend's enabled status,
+   * not linuxdvb_frontend_class_active_get which also considers grouped frontends */
+  if (*(int *)mpegts_input_class_active_get(lse->lse_parent->ls_frontend))
     active = lse->lse_enabled;
   return &active;
 }
@@ -1619,6 +1878,18 @@ const idclass_t linuxdvb_satconf_ele_class =
 void
 linuxdvb_satconf_ele_destroy ( linuxdvb_satconf_ele_t *ls )
 {
+  linuxdvb_satconf_t *lsp = ls->lse_parent;
+
+  /* a rotor or switch wait: its timer comes back with the element it was
+   * armed for, maybe this one - it ends here, the tune of its mux fails
+   * and where a rotor stopped is not known */
+  if (lsp->ls_active_diseqc) {
+    mtimer_disarm(&lsp->ls_diseqc_timer);
+    lsp->ls_active_diseqc = NULL;
+    lsp->ls_last_orbital_pos = 0;
+    lsp->ls_last_queued_pos = 0;
+    linuxdvb_satconf_tune_failed(lsp);
+  }
   TAILQ_REMOVE(&ls->lse_parent->ls_elements, ls, lse_link);
   idnode_save_check(&ls->lse_id, 1);
   idnode_unlink(&ls->lse_id);
@@ -1682,6 +1953,7 @@ linuxdvb_satconf_destroy ( linuxdvb_satconf_t *ls, int delconf )
   if (delconf)
     hts_settings_remove("input/linuxdvb/satconfs/%s", idnode_uuid_as_str(&ls->ls_id, ubuf));
   mtimer_disarm(&ls->ls_diseqc_timer);
+  mtimer_disarm(&ls->ls_rf_timer);
   for (lse = TAILQ_FIRST(&ls->ls_elements); lse != NULL; lse = nxt) {
     nxt = TAILQ_NEXT(lse, lse_link);
     linuxdvb_satconf_ele_destroy(lse);
@@ -1840,8 +2112,10 @@ linuxdvb_diseqc_send
 }
 
 int
-linuxdvb_diseqc_set_volt ( linuxdvb_satconf_t *ls, int vol )
+linuxdvb_diseqc_set_volt2 ( linuxdvb_satconf_t *ls, int vol )
 {
+  int r;
+
   vol = vol < 0 ? -1 : !!(vol > 0);
   /* Already set ? */
   if (vol >= 0 && ls->ls_last_vol == vol + 1)
@@ -1855,16 +2129,32 @@ linuxdvb_diseqc_set_volt ( linuxdvb_satconf_t *ls, int vol )
   }
   /* Set voltage */
   tvhtrace(LS_DISEQC, "set voltage %dV", vol ? (vol < 0 ? 0 : 18) : 13);
-  if (ioctl(linuxdvb_satconf_fe_fd(ls), FE_SET_VOLTAGE,
-            vol ? (vol < 0 ? SEC_VOLTAGE_OFF : SEC_VOLTAGE_18) : SEC_VOLTAGE_13)) {
-    tvherror(LS_DISEQC, "failed to set voltage (e=%s)", strerror(errno));
+  r = ioctl(linuxdvb_satconf_fe_fd(ls), FE_SET_VOLTAGE,
+            vol ? (vol < 0 ? SEC_VOLTAGE_OFF : SEC_VOLTAGE_18) : SEC_VOLTAGE_13);
+  if (r) {
     ls->ls_last_vol = 0;
+    /* > 0: a result of the driver, errno is not set (Neumo driver:
+     * FE_UNICABLE_DISEQC_RETRY, another tuner sends a Unicable command on
+     * the cable now) */
+    if (r > 0)
+      return r;
+    tvherror(LS_DISEQC, "failed to set voltage (e=%s)", strerror(errno));
     return -1;
   }
   if (vol >= 0)
     tvh_safe_usleep(15000);
   ls->ls_last_vol = vol + 1;
   return 0;
+}
+
+int
+linuxdvb_diseqc_set_volt ( linuxdvb_satconf_t *ls, int vol )
+{
+  int r = linuxdvb_diseqc_set_volt2(ls, vol);
+
+  if (r > 0)
+    tvherror(LS_DISEQC, "failed to set voltage (driver result %d)", r);
+  return r ? -1 : 0;
 }
 
 /******************************************************************************
