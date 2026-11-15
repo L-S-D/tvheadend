@@ -1619,6 +1619,17 @@ const idclass_t linuxdvb_satconf_ele_class =
 void
 linuxdvb_satconf_ele_destroy ( linuxdvb_satconf_ele_t *ls )
 {
+  linuxdvb_satconf_t *lsp = ls->lse_parent;
+
+  /* a rotor or switch wait: its timer comes back with the element it was
+   * armed for, maybe this one - it ends here, the tune of its mux fails
+   * and where a rotor stopped is not known */
+  if (lsp->ls_active_diseqc) {
+    mtimer_disarm(&lsp->ls_diseqc_timer);
+    lsp->ls_active_diseqc = NULL;
+    lsp->ls_last_orbital_pos = 0;
+    lsp->ls_last_queued_pos = 0;
+  }
   TAILQ_REMOVE(&ls->lse_parent->ls_elements, ls, lse_link);
   idnode_save_check(&ls->lse_id, 1);
   idnode_unlink(&ls->lse_id);
