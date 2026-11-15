@@ -30,6 +30,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <math.h>
+#include <arpa/inet.h>
 
 /* **************************************************************************
  * Class definition
@@ -171,6 +172,33 @@ dvb_mux_class_dab_eti_opts(void *o, uint32_t opts)
 }
 
 /*
+ * DAB UDP port: a PT_U32, as PT_U16 would cut a value to 16 bits before
+ * the setter sees it
+ */
+static const void *
+dvb_mux_class_dab_port_get(void *o)
+{
+  static uint32_t port;
+  const dvb_mux_t *lm = o;
+
+  port = lm->lm_tuning.dmc_dab_port;
+  return &port;
+}
+
+static int
+dvb_mux_class_dab_port_set(void *o, const void *v)
+{
+  dvb_mux_t *lm = o;
+  uint32_t port = *(const uint32_t *)v;
+
+  /* above 65535: refused, the port is kept */
+  if (port > 0xffff || port == lm->lm_tuning.dmc_dab_port)
+    return 0;
+  lm->lm_tuning.dmc_dab_port = port;
+  return 1;
+}
+
+/*
  * DAB IP address get/set helpers (string <-> uint32)
  */
 static const void *
@@ -196,11 +224,15 @@ dvb_mux_class_dab_ip_set(void *o, const void *v)
 {
   dvb_mux_t *lm = o;
   const char *s = v;
+  struct in_addr in;
   uint32_t ip = 0;
-  unsigned int q[4];
 
-  if (s && *s && sscanf(s, "%u.%u.%u.%u", &q[0], &q[1], &q[2], &q[3]) == 4)
-    ip = (q[0] << 24) | (q[1] << 16) | (q[2] << 8) | q[3];
+  /* empty: no address (0); anything but an IPv4 address is refused */
+  if (s && *s) {
+    if (inet_pton(AF_INET, s, &in) != 1)
+      return 0;
+    ip = ntohl(in.s_addr);
+  }
 
   if (ip != lm->lm_tuning.dmc_dab_ip) {
     lm->lm_tuning.dmc_dab_ip = ip;
@@ -307,11 +339,12 @@ const idclass_t dvb_mux_class =
       .get_opts = dvb_mux_class_dab_ip_opts,
     },
     {
-      .type     = PT_U16,
+      .type     = PT_U32,
       .id       = "dab_port",
       .name     = N_("DAB Port"),
       .desc     = N_("UDP port for DAB-MPE/GSE."),
-      .off      = offsetof(dvb_mux_t, lm_tuning.dmc_dab_port),
+      .get      = dvb_mux_class_dab_port_get,
+      .set      = dvb_mux_class_dab_port_set,
       .get_opts = dvb_mux_class_dab_ip_opts,
     },
     {
