@@ -1261,7 +1261,6 @@ dvb_network_create0
 {
   dvb_network_t *ln;
   dvb_mux_t *lm;
-  mpegts_mux_t *mm;
   htsmsg_t *c, *e;
   htsmsg_field_t *f;
   const char *s;
@@ -1305,11 +1304,6 @@ dvb_network_create0
     htsmsg_destroy(c);
     /* the input streams of multistream transponders from before */
     dvb_network_link_multistream(ln);
-    /* all are loaded: the names of the sub-muxes, which take something of
-     * other muxes (what carries them, an ensemble of the same name) */
-    LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link)
-      if (mpegts_mux_is_submux(mm))
-        mpegts_mux_update_nice_name(mm);
   }
 
   return ln;

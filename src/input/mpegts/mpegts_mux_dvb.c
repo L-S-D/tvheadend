@@ -1845,19 +1845,20 @@ dvb_mux_t2mi_name ( const dvb_mux_conf_t *dmc, char *buf, size_t len )
 
 /*
  * The name of a sub-mux is the name of what carries it, then one part for
- * it: "T2MI <PID>" for a T2-MI stream, the ensemble for DAB.
+ * it: "ISI <n>" for an input stream (TS or GSE), "T2MI <PID>" for a T2-MI
+ * stream, the ensemble for DAB.
  * The type is not in the name (it has a field of its own).
  */
 
 /* where a DAB ensemble is in what carries it: the PID (ETI-NA, TS NI), the
- * IP address and port (MPE) */
+ * IP address and port (MPE, GSE) */
 static void
 dvb_mux_dab_address ( mpegts_mux_t *mm, char *buf, size_t len )
 {
   const dvb_mux_conf_t *dmc = &((dvb_mux_t *)mm)->lm_tuning;
   uint32_t ip = dmc->dmc_dab_ip;
 
-  if (mm->mm_type == MM_TYPE_DAB_MPE)
+  if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE)
     snprintf(buf, len, "%u.%u.%u.%u:%u",
              (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
              dmc->dmc_dab_port);
@@ -1865,43 +1866,59 @@ dvb_mux_dab_address ( mpegts_mux_t *mm, char *buf, size_t len )
     snprintf(buf, len, "PID %u", dmc->dmc_fe_pid);
 }
 
-/* another ensemble of the same name in the same transponder: the two need
- * their address */
+/* DAB in GSE is in an input stream: its ISI, when the transponder has
+ * several (-1 else) */
+static int
+dvb_mux_dab_isi ( mpegts_mux_t *mm )
+{
+  dvb_mux_t *lm = (dvb_mux_t *)mm, *t;
+
+  if (mm->mm_type != MM_TYPE_DAB_GSE || lm->lm_tuning.dmc_fe_stream_id < 0)
+    return -1;
+  t = dvb_mux_submux_parent(lm);
+  return t && t->lm_multistream ? lm->lm_tuning.dmc_fe_stream_id : -1;
+}
+
+/* another ensemble of the same name in the same carrier (the same
+ * transponder, or input stream in it): the two need their address */
 static int
 dvb_mux_dab_named_twice ( mpegts_mux_t *mm )
 {
   dvb_mux_t *lm = (dvb_mux_t *)mm, *p, *ls;
   mpegts_mux_t *s;
+  int isi;
 
   if ((p = dvb_mux_submux_parent(lm)) == NULL)
     return 0;
+  isi = dvb_mux_dab_isi(mm);
   LIST_FOREACH(s, &mm->mm_network->mn_muxes, mm_network_link) {
     if (s == mm || !mpegts_mux_is_dab(s))
       continue;
     ls = (dvb_mux_t *)s;
     if (ls->lm_dab_ensemble && !strcmp(ls->lm_dab_ensemble, lm->lm_dab_ensemble) &&
-        dvb_mux_submux_parent(ls) == p)
+        dvb_mux_submux_parent(ls) == p && dvb_mux_dab_isi(s) == isi)
       return 1;
   }
   return 0;
 }
 
-/* " T2MI <PID>[ PLP <n>]", " <ensemble>[ (<address>)]", " DAB <address>" */
+/* " ISI <n>", " T2MI <PID>[ PLP <n>]", " [ISI <n> ]<ensemble>[ (<address>)]",
+ * " [ISI <n> ]DAB <address>" */
 static void
 dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
 {
   dvb_mux_t *lm = (dvb_mux_t*)mm;
   const dvb_mux_conf_t *dmc = &lm->lm_tuning;
   size_t l = strlen(buf);
-  char addr[32];
+  char isi[16], addr[32];
+  int n;
 
   if (mm->mm_type == MM_TYPE_TS || l + 1 >= len)
     return;
   buf += l;
   len -= l;
   if (mm->mm_type == MM_TYPE_ISI || mm->mm_type == MM_TYPE_GSE) {
-    snprintf(buf, len, " %sISI %d", mm->mm_type == MM_TYPE_GSE ? "GSE " : "",
-             dmc->dmc_fe_stream_id);
+    snprintf(buf, len, " ISI %d", dmc->dmc_fe_stream_id);
     return;
   }
   if (mm->mm_type == MM_TYPE_T2MI) {
@@ -1909,14 +1926,17 @@ dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
     return;
   }
   if (mpegts_mux_is_dab(mm)) {
+    isi[0] = '\0';
+    if ((n = dvb_mux_dab_isi(mm)) >= 0)
+      snprintf(isi, sizeof(isi), " ISI %d", n);
     dvb_mux_dab_address(mm, addr, sizeof(addr));
     /* before the first scan: where the ensemble is */
     if (lm->lm_dab_ensemble == NULL || *lm->lm_dab_ensemble == '\0')
-      snprintf(buf, len, " DAB %s", addr);
+      snprintf(buf, len, "%s DAB %s", isi, addr);
     else if (dvb_mux_dab_named_twice(mm))
-      snprintf(buf, len, " %s (%s)", lm->lm_dab_ensemble, addr);
+      snprintf(buf, len, "%s %s (%s)", isi, lm->lm_dab_ensemble, addr);
     else
-      snprintf(buf, len, " %s", lm->lm_dab_ensemble);
+      snprintf(buf, len, "%s %s", isi, lm->lm_dab_ensemble);
   }
 }
 
@@ -2384,4 +2404,10 @@ dvb_network_link_multistream ( dvb_network_t *ln )
     tvhinfo(LS_MPEGTS, "%s: input stream of the transponder %s", mm->mm_nicename,
             t->mm_nicename);
   }
+
+  /* all are loaded: the names of the sub-muxes, which take something of
+   * other muxes (what carries them, an ensemble of the same name) */
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link)
+    if (mpegts_mux_is_submux(mm))
+      mpegts_mux_update_nice_name(mm);
 }
