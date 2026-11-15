@@ -123,6 +123,17 @@
     }
   },
 
+  "mh_epg": {
+    "name": {
+      "eng": "MH EPG"
+    },
+    "prio": 0,
+    "carousel": {
+      "dirs": [ "mh_epg", "mh_epgex" ],
+      "charset": "ISO-8859-9"
+    }
+  },
+
   "eit": {
     "name": {
       "eng": "EIT: EPG Grabber"

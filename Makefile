@@ -391,6 +391,7 @@ SRCS-MPEGTS = \
 	src/input/mpegts/mpegts_input.c \
 	src/input/mpegts/tsdemux.c \
 	src/input/mpegts/dvb_psi_hbbtv.c \
+	src/input/mpegts/dsmcc_oc.c \
 	src/input/mpegts/dvb_psi_lib.c \
 	src/input/mpegts/mpegts_network.c \
 	src/input/mpegts/mpegts_mux.c \
@@ -423,6 +424,7 @@ I18N-C += $(SRCS-MPEGTS-DVB)
 SRCS-MPEGTS-EPG = \
 	src/epggrab/otamux.c\
 	src/epggrab/module/eit.c \
+	src/epggrab/module/eitoc.c \
 	src/epggrab/module/eitpatternlist.c \
 	src/epggrab/module/psip.c \
 	src/epggrab/support/freesat_huffman.c \

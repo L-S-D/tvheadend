@@ -68,6 +68,7 @@ typedef struct eit_private
   LIST_HEAD(, eit_nit) nit;
   LIST_HEAD(, eit_sdt) sdt;
   epggrab_ota_module_ops_t *ops;
+  void *carousel;     /* EIT in the files of an object carousel (eitoc.c) */
 } eit_private_t;
 
 #define EIT_CONV_HUFFMAN            1
@@ -1155,6 +1156,208 @@ _eit_process_immediate(void *m, const void *ptr, uint32_t len, eit_data_t *ed)
     epg_updated();
 }
 
+/*
+ * One EIT section, without its 3 byte header and CRC: find the mux and the
+ * service, apply the processing policy and queue the events
+ */
+static void
+_eit_section
+  ( epggrab_module_t *mod, epggrab_ota_map_t *map, epggrab_ota_mux_t *ota,
+    mpegts_mux_t *mm, const char *name, uint32_t hacks,
+    const uint8_t *ptr, int len, int tableid, int sect,
+    uint16_t onid, uint16_t tsid, uint16_t sid, const char *charset_src )
+{
+  mpegts_service_t     *svc;
+  eit_data_t           *data;
+  const char           *cridauth, *charset;
+  int                   cridauth_len, charset_len, data_len;
+
+  /* UK Cable Virgin: EPG data for services in other transponders is transmitted
+  // in the 'actual' transpoder table IDs */
+  if ((hacks & EIT_HACK_EXTRAMUXLOOKUP) != 0 && (tableid == 0x50 || tableid == 0x4E)) {
+    mm = mpegts_network_find_mux(mm->mm_network, onid, tsid, 1);
+  }
+  if(!mm)
+    return;
+
+  /* Get transport stream */
+  // Note: tableid=0x4f,0x60-0x6f is other TS
+  //       so must find the tdmi
+  if (tableid == 0x4f || tableid >= 0x60) {
+    mm = mpegts_network_find_mux(mm->mm_network, onid, tsid, 1);
+  } else {
+    if ((mm->mm_tsid != tsid || mm->mm_onid != onid) &&
+        !mm->mm_eit_tsid_nocheck) {
+      if (mm->mm_onid != MPEGTS_ONID_NONE &&
+          mm->mm_tsid != MPEGTS_TSID_NONE)
+        tvhtrace(LS_TBL_EIT,
+                "%s: invalid tsid found tid 0x%02X, onid:tsid %d:%d != %d:%d",
+                name, tableid, mm->mm_onid, mm->mm_tsid, onid, tsid);
+      mm = NULL;
+    }
+  }
+  if(!mm)
+    return;
+
+  /* Get service */
+  svc = mpegts_mux_find_service(mm, sid);
+  if (!svc) {
+    /* NZ Freesat: use main data */
+    if (hacks & EIT_HACK_SVCNETLOOKUP) {
+      svc = mpegts_network_find_active_service(mm->mm_network, sid, &mm);
+      if (svc)
+        goto svc_ok;
+    }
+
+    tvhtrace(LS_TBL_EIT, "sid %i not found", sid);
+    return;
+  }
+
+svc_ok:
+  if (map->om_first) {
+    map->om_tune_count++;
+    map->om_first = 0;
+  }
+
+  /* Register this */
+  if (ota)
+    epggrab_ota_service_add(map, ota, &svc->s_id.in_uuid, 1);
+
+  /* No point processing */
+  if (!LIST_FIRST(&svc->s_channels))
+    return;
+
+  /* Apply the effective EIT processing policy for this service:
+   * the per-service value, falling back to the global default when
+   * the service is set to Default. Tableid ranges in this callback
+   * (see the bounds check earlier in this function) are
+   *   0x4e               actual-TS present/following
+   *   0x50-0x5f          actual-TS schedule
+   *   0x4f, 0x60-0x6f    other-TS present/following + schedule. */
+  int processing = svc->s_dvb_eit_processing;
+  if (processing == EIT_PROCESSING_DEFAULT)
+    processing = epggrab_conf.eit_processing_default;
+
+  switch (processing) {
+  case EIT_PROCESSING_NONE:
+    return;
+  case EIT_PROCESSING_ACTUAL_ONLY:
+    if (tableid == 0x4f || tableid >= 0x60)
+      return;
+    break;
+  case EIT_PROCESSING_OTHER_ONLY:
+    if (tableid == 0x4e || (tableid >= 0x50 && tableid < 0x60))
+      return;
+    break;
+  case EIT_PROCESSING_ADAPTIVE:
+    /* Track actual-TS schedule arrival per service. Once seen,
+     * drop further other-TS for it so a neighbouring multiplex's
+     * coarse description cannot overwrite the service's own
+     * detailed schedule. Services whose actual-TS is never
+     * received keep using other-TS, so a dedicated EPG multiplex
+     * still works. P/F (0x4e / 0x4f) is only two events per
+     * service and is not used as the "actual-TS seen" trigger. */
+    if (tableid >= 0x50 && tableid < 0x60) {
+      if (!svc->s_dvb_eit_actual_seen) {
+        svc->s_dvb_eit_actual_seen = 1;
+        tvhtrace(LS_TBL_EIT, "%s: %s actual-TS schedule seen",
+                 name, svc->s_nicename);
+      }
+    } else if ((tableid == 0x4f || tableid >= 0x60) &&
+               svc->s_dvb_eit_actual_seen) {
+      tvhtrace(LS_TBL_EIT,
+               "%s: skip other-TS tid 0x%02X for %s, actual-TS seen",
+               name, tableid, svc->s_nicename);
+      return;
+    }
+    break;
+  case EIT_PROCESSING_EITHER:
+  default:
+    break;
+  }
+
+  /* Queue events */
+  len -= 11;
+  ptr += 11;
+  if (len >= 12) {
+    cridauth = svc->s_dvb_cridauth;
+    if (!cridauth)
+      cridauth = svc->s_dvb_mux->mm_crid_authority;
+    cridauth_len = cridauth ? strlen(cridauth) + 1 : 0;
+    charset = charset_src ?: dvb_charset_find(NULL, NULL, svc);
+    charset_len = charset ? strlen(charset) + 1 : 0;
+    data_len = sizeof(*data) + cridauth_len + charset_len;
+    data = alloca(data_len);
+    data->tableid = tableid;
+    data->sect = sect;
+    data->svc_uuid = svc->s_id.in_uuid;
+    data->onid = onid;
+    data->local_time = mm->mm_network->mn_localtime;
+    if (cridauth_len) {
+      data->cridauth_len = cridauth_len;
+      memcpy(data->data, cridauth, cridauth_len);
+    } else {
+      data->cridauth_len = 0;
+    }
+    if (charset_len) {
+      data->charset_len = charset_len;
+      memcpy(data->data + cridauth_len, charset, charset_len);
+    } else {
+      data->charset_len = 0;
+    }
+    if (((eit_module_t *)mod)->running_immediate && tableid == 0x4e) {
+      /* handle running state immediately */
+      _eit_process_immediate(mod, ptr, len, data);
+    } else {
+      /* handle those data later */
+      epggrab_queue_data(mod, data, data_len, ptr, len);
+    }
+  }
+
+}
+
+/*
+ * EIT sections that come inside other data, e.g. the files of a DSM-CC object
+ * carousel (eitoc.c): a whole section with header and CRC, processed for the
+ * module of map like a received one; charset: for its strings instead of the
+ * one of the service (NULL: that one)
+ */
+void
+eit_carousel_section
+  ( epggrab_ota_map_t *map, mpegts_mux_t *mm, const uint8_t *sec, int len,
+    const char *charset )
+{
+  epggrab_module_t *mod;
+  eit_private_t *priv;
+  const uint8_t *ptr;
+  int tableid, slen;
+
+  lock_assert(&global_lock);
+
+  if (!epggrab_ota_running || !map || len < 3)
+    return;
+  mod = (epggrab_module_t *)map->om_module;
+  priv = (eit_private_t *)((epggrab_module_ota_t *)mod)->opaque;
+  if (!priv)
+    return;
+  tableid = sec[0];
+  slen = ((sec[1] & 0x0f) << 8) | sec[2];
+  if (tableid < 0x4e || tableid > 0x6f || slen + 3 > len || slen < 11 + 4)
+    return;
+  ptr = sec + 3;
+  _eit_section(mod, map, NULL, mm, mod->id, priv->hacks, ptr, slen - 4,
+               tableid, ptr[3], ptr[7] << 8 | ptr[8], ptr[5] << 8 | ptr[6],
+               ptr[0] << 8 | ptr[1], charset);
+}
+
+/* the carousel configuration of an EIT module (eitoc.c), NULL without one */
+void *
+eit_module_carousel ( epggrab_module_ota_t *m )
+{
+  eit_private_t *priv = m ? m->opaque : NULL;
+  return priv ? priv->carousel : NULL;
+}
+
 static int
 _eit_callback
   (mpegts_table_t *mt, const uint8_t *ptr, int len, int tableid)
@@ -1163,16 +1366,12 @@ _eit_callback
   uint8_t  seg;
   uint16_t onid, tsid, sid;
   uint32_t extraid, hacks;
-  mpegts_service_t     *svc;
   mpegts_mux_t         *mm;
   epggrab_ota_map_t    *map;
   epggrab_module_t     *mod;
   epggrab_ota_mux_t    *ota = NULL;
   mpegts_psi_table_state_t *st;
   th_subscription_t    *ths;
-  eit_data_t           *data;
-  const char           *cridauth, *charset;
-  int                   cridauth_len, charset_len, data_len;
   eit_private_t        *priv;
 
   if (!epggrab_ota_running)
@@ -1243,149 +1442,9 @@ _eit_callback
     st->sections[sa/32] &= ~mask;
   }
 
-  /* UK Cable Virgin: EPG data for services in other transponders is transmitted
-  // in the 'actual' transpoder table IDs */
-  if ((hacks & EIT_HACK_EXTRAMUXLOOKUP) != 0 && (tableid == 0x50 || tableid == 0x4E)) {
-    mm = mpegts_network_find_mux(mm->mm_network, onid, tsid, 1);
-  }
-  if(!mm)
-    goto done;
+  _eit_section(mod, map, ota, mm, mt->mt_name, hacks, ptr, len, tableid, sect,
+               onid, tsid, sid, NULL);
 
-  /* Get transport stream */
-  // Note: tableid=0x4f,0x60-0x6f is other TS
-  //       so must find the tdmi
-  if (tableid == 0x4f || tableid >= 0x60) {
-    mm = mpegts_network_find_mux(mm->mm_network, onid, tsid, 1);
-  } else {
-    if ((mm->mm_tsid != tsid || mm->mm_onid != onid) &&
-        !mm->mm_eit_tsid_nocheck) {
-      if (mm->mm_onid != MPEGTS_ONID_NONE &&
-          mm->mm_tsid != MPEGTS_TSID_NONE)
-        tvhtrace(LS_TBL_EIT,
-                "%s: invalid tsid found tid 0x%02X, onid:tsid %d:%d != %d:%d",
-                mt->mt_name, tableid, mm->mm_onid, mm->mm_tsid, onid, tsid);
-      mm = NULL;
-    }
-  }
-  if(!mm)
-    goto done;
-
-  /* Get service */
-  svc = mpegts_mux_find_service(mm, sid);
-  if (!svc) {
-    /* NZ Freesat: use main data */
-    if (hacks & EIT_HACK_SVCNETLOOKUP) {
-      svc = mpegts_network_find_active_service(mm->mm_network, sid, &mm);
-      if (svc)
-        goto svc_ok;
-    }
-
-    tvhtrace(LS_TBL_EIT, "sid %i not found", sid);
-    goto done;
-  }
-
-svc_ok:
-  if (map->om_first) {
-    map->om_tune_count++;
-    map->om_first = 0;
-  }
-
-  /* Register this */
-  if (ota)
-    epggrab_ota_service_add(map, ota, &svc->s_id.in_uuid, 1);
-
-  /* No point processing */
-  if (!LIST_FIRST(&svc->s_channels))
-    goto done;
-
-  /* Apply the effective EIT processing policy for this service:
-   * the per-service value, falling back to the global default when
-   * the service is set to Default. Tableid ranges in this callback
-   * (see the bounds check earlier in this function) are
-   *   0x4e               actual-TS present/following
-   *   0x50-0x5f          actual-TS schedule
-   *   0x4f, 0x60-0x6f    other-TS present/following + schedule. */
-  int processing = svc->s_dvb_eit_processing;
-  if (processing == EIT_PROCESSING_DEFAULT)
-    processing = epggrab_conf.eit_processing_default;
-
-  switch (processing) {
-  case EIT_PROCESSING_NONE:
-    goto done;
-  case EIT_PROCESSING_ACTUAL_ONLY:
-    if (tableid == 0x4f || tableid >= 0x60)
-      goto done;
-    break;
-  case EIT_PROCESSING_OTHER_ONLY:
-    if (tableid == 0x4e || (tableid >= 0x50 && tableid < 0x60))
-      goto done;
-    break;
-  case EIT_PROCESSING_ADAPTIVE:
-    /* Track actual-TS schedule arrival per service. Once seen,
-     * drop further other-TS for it so a neighbouring multiplex's
-     * coarse description cannot overwrite the service's own
-     * detailed schedule. Services whose actual-TS is never
-     * received keep using other-TS, so a dedicated EPG multiplex
-     * still works. P/F (0x4e / 0x4f) is only two events per
-     * service and is not used as the "actual-TS seen" trigger. */
-    if (tableid >= 0x50 && tableid < 0x60) {
-      if (!svc->s_dvb_eit_actual_seen) {
-        svc->s_dvb_eit_actual_seen = 1;
-        tvhtrace(LS_TBL_EIT, "%s: %s actual-TS schedule seen",
-                 mt->mt_name, svc->s_nicename);
-      }
-    } else if ((tableid == 0x4f || tableid >= 0x60) &&
-               svc->s_dvb_eit_actual_seen) {
-      tvhtrace(LS_TBL_EIT,
-               "%s: skip other-TS tid 0x%02X for %s, actual-TS seen",
-               mt->mt_name, tableid, svc->s_nicename);
-      goto done;
-    }
-    break;
-  case EIT_PROCESSING_EITHER:
-  default:
-    break;
-  }
-
-  /* Queue events */
-  len -= 11;
-  ptr += 11;
-  if (len >= 12) {
-    cridauth = svc->s_dvb_cridauth;
-    if (!cridauth)
-      cridauth = svc->s_dvb_mux->mm_crid_authority;
-    cridauth_len = cridauth ? strlen(cridauth) + 1 : 0;
-    charset = dvb_charset_find(NULL, NULL, svc);
-    charset_len = charset ? strlen(charset) + 1 : 0;
-    data_len = sizeof(*data) + cridauth_len + charset_len;
-    data = alloca(data_len);
-    data->tableid = tableid;
-    data->sect = sect;
-    data->svc_uuid = svc->s_id.in_uuid;
-    data->onid = onid;
-    data->local_time = mm->mm_network->mn_localtime;
-    if (cridauth_len) {
-      data->cridauth_len = cridauth_len;
-      memcpy(data->data, cridauth, cridauth_len);
-    } else {
-      data->cridauth_len = 0;
-    }
-    if (charset_len) {
-      data->charset_len = charset_len;
-      memcpy(data->data + cridauth_len, charset, charset_len);
-    } else {
-      data->charset_len = 0;
-    }
-    if (((eit_module_t *)mod)->running_immediate && tableid == 0x4e) {
-      /* handle running state immediately */
-      _eit_process_immediate(mod, ptr, len, data);
-    } else {
-      /* handle those data later */
-      epggrab_queue_data(mod, data, data_len, ptr, len);
-    }
-  }
-
-done:
   r = dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 complete:
   if (ota && !r && (tableid >= 0x50 && tableid < 0x60))
@@ -1596,6 +1655,8 @@ void eit_nit_callback
            dm->mm_tsid, dm->mm_tsid, dm->mm_onid, dm->mm_onid, nbid, nbid, name, nitpriv);
 
   TAILQ_FOREACH(priv, &eit_private_list, link) {
+    if (priv->carousel)
+      continue;
     if (priv->priv && priv->priv != nitpriv)
       continue;
     if (LIST_FIRST(&priv->nit)) {
@@ -1633,7 +1694,7 @@ void eit_sdt_callback(mpegts_table_t *mt, uint32_t sdtpriv)
            dm->mm_tsid, dm->mm_tsid, dm->mm_onid, dm->mm_onid, sdtpriv);
 
   TAILQ_FOREACH(priv, &eit_private_list, link) {
-    if (!priv->sdt_enable)
+    if (!priv->sdt_enable || priv->carousel)
       continue;
     if (priv->priv && priv->priv != sdtpriv)
       continue;
@@ -1753,6 +1814,9 @@ static void _eit_done0( eit_private_t *priv )
     free(nit->name);
     free(nit);
   }
+#if ENABLE_ZLIB
+  eitoc_config_free(priv->carousel);
+#endif
   free(priv->ops);
   lang_str_destroy(priv->name);
   free(priv);
@@ -1888,6 +1952,15 @@ static void eit_init_one ( const char *id, htsmsg_t *conf )
     }
   }
   priv->sdt_enable = htsmsg_get_u32_or_default(conf, "sdt_enable", 0);
+#if ENABLE_ZLIB
+  /* EIT in the files of an object carousel: found on any transponder */
+  if ((map = htsmsg_get_map(conf, "carousel")) != NULL &&
+      (priv->carousel = eitoc_config_load(map)) != NULL) {
+    ops->start = eitoc_start;
+    ops->handlers = eitoc_handlers;
+    ops->tune = eitoc_tune;
+  }
+#endif
   map = htsmsg_get_map(conf, "sdt");
   if (map) {
     HTSMSG_FOREACH(f, map) {
