@@ -1094,6 +1094,26 @@ descrambler_descramble ( service_t *t,
     return 1;
   }
 
+  /*
+   * The queue holds packets which wait for a key. Without a key it is not
+   * processed, and its head is dropped when it is full: the clear streams
+   * of the service would be lost with it, the AIT of an HbbTV application
+   * for one. The clear packets of the streams which are neither video,
+   * audio nor PCR (AIT, teletext, subtitles, ECM, ...) need no key:
+   * they pass now, ahead of the queued packets (and after those the CSA
+   * engine holds, so a stream keeps its order). Video, audio and the PCR
+   * (its stream, and whatever stream carries it) stay in the queue, in
+   * their order: a PCR ahead of the queued audio/video would run the clock
+   * of the parser, and of a pass-through client, away from them.
+   */
+  if ((tsb[3] & 0xc0) == 0 && st && !SCT_ISAV(st->es_type) &&
+      st->es_type != SCT_PCR && st->es_pid != t->s_components.set_pcr_pid) {
+    old_key_flush(dr, t);
+    debug2("%p: direct2 %d, %s[%d]", dr, len, keystr(tsb), extractpid(tsb));
+    ts_recv_packet0((mpegts_service_t *)t, st, tsb, len);
+    return 1;
+  }
+
   update_tk = 0;
   flush_data = 0;
   if (dr->dr_ca_resolved > 0) {
