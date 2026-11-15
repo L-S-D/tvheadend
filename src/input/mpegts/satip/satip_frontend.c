@@ -743,6 +743,10 @@ satip_frontend_is_enabled
     return MI_IS_ENABLED_NEVER;
   if (mm == NULL)
     return MI_IS_ENABLED_OK;
+  /* a multistream transponder as a whole: a SAT>IP server delivers the TS
+   * of one input stream, the streams are tuned themselves (MM_TYPE_ISI) */
+  if (idnode_is_instance(&mm->mm_id, &dvb_mux_class) && ((dvb_mux_t *)mm)->lm_multistream)
+    return MI_IS_ENABLED_NEVER;
   if (lfe->sf_type != DVB_TYPE_S)
     return MI_IS_ENABLED_OK;
   /* delivery system specific check */
@@ -2372,6 +2376,8 @@ satip_frontend_create
   lfe->ti_wizard_set     = satip_frontend_wizard_set;
   lfe->mi_display_name   = satip_frontend_display_name;
   lfe->mi_is_enabled     = satip_frontend_is_enabled;
+  /* an input stream of a multistream transponder: tuned with its stream */
+  lfe->mi_mux_types     |= (1u << MM_TYPE_ISI);
   lfe->mi_warm_mux       = satip_frontend_warm_mux;
   lfe->mi_start_mux      = satip_frontend_start_mux;
   lfe->mi_stop_mux       = satip_frontend_stop_mux;
