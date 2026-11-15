@@ -38,6 +38,9 @@ export interface MuxRow {
   constellation?: string
   fec?: string
   symbolrate?: number
+  /* Hz, or kHz for satellite muxes (see muxFrequency.ts) */
+  frequency?: number
+  polarisation?: string
   rolloff?: string
   pilot?: string
   pls_mode?: string
@@ -58,7 +61,7 @@ export const MUX_FIELDS = [
   'name', 'network_uuid', 'parent_mux', 'multistream', 'tstype', 'stream_id', 'pid', 'dab_ip', 'dab_port',
   'carrier_sid', 'pnetwork_name', 'delsys', 'modulation', 'constellation', 'fec', 'symbolrate', 'rolloff',
   'pilot', 'pls_mode', 'pls_code', 'bandwidth', 'scan_result', 'scan_state', 'num_svc', 'num_chn',
-  'enabled',
+  'enabled', 'frequency', 'polarisation',
 ].join(',')
 
 export interface MuxTreeNode {

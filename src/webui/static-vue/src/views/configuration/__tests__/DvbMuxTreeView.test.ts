@@ -13,6 +13,7 @@ import PrimeVue from 'primevue/config'
 import { fireComet } from '@/test/__helpers__/cometClientMock'
 
 const stubs = await vi.hoisted(() => import('@/test/__helpers__/gridViewTestUtils'))
+const spies = vi.hoisted(() => ({ helpToggle: vi.fn(() => Promise.resolve()), openPlay: vi.fn() }))
 vi.mock('@/api/client', () => stubs.apiClient)
 vi.mock('@/api/comet', () => import('@/test/__helpers__/cometClientMock'))
 vi.mock('@/components/IdnodeEditor.vue', () => stubs.emptyComponent)
@@ -20,6 +21,11 @@ vi.mock('@/components/IdnodePickEntityDialog.vue', () => stubs.emptyComponent)
 vi.mock('vue-router', () => stubs.vueRouter)
 vi.mock('@/composables/useConfirmDialog', () => stubs.confirmDialog)
 vi.mock('@/composables/useToastNotify', () => stubs.toastNotify)
+vi.mock('@/composables/useHelp', async () => {
+  const { ref } = await import('vue')
+  return { useHelp: () => ({ isOpen: ref(false), toggle: spies.helpToggle }) }
+})
+vi.mock('@/utils/playUrl', () => ({ openPlay: spies.openPlay }))
 
 import DvbMuxTreeView from '../DvbMuxTreeView.vue'
 
@@ -591,6 +597,42 @@ describe('DvbMuxTreeView address of a DAB sub-mux', () => {
     expect(calls('idnode/save')).toHaveLength(0)
     expect(stubs.toast.warn).toHaveBeenCalledTimes(2)
     expect(rowOf(w, 'DAB-MPE').find('td.mux-tree__address').text()).toContain('239.1.2.3:5000')
+  })
+})
+
+describe('DvbMuxTreeView what the grid had', () => {
+  it('opens the help page of the muxes', async () => {
+    spies.helpToggle.mockClear()
+    const w = await mountTree()
+    await w.find('button.mux-tree__help').trigger('click')
+    expect(spies.helpToggle).toHaveBeenCalledWith('class/mpegts_mux')
+  })
+
+  it('plays a mux and a service', async () => {
+    spies.openPlay.mockClear()
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    await expand(w, '11494H')
+    const playOf = (text: string) => rowOf(w, text).find('button[aria-label="Play this stream"]')
+    await playOf('11494H').trigger('click')
+    expect(spies.openPlay).toHaveBeenLastCalledWith(`stream/mux/m1?title=${encodeURIComponent('11494H / Astra')}`)
+    await playOf('Das Erste HD').trigger('click')
+    expect(spies.openPlay).toHaveBeenLastCalledWith(`stream/service/s1?title=${encodeURIComponent('Das Erste HD')}`)
+    /* a click on Play selects nothing */
+    expect(w.findAll('tr.mux-tree__row--selected')).toHaveLength(0)
+  })
+
+  it('shows the frequency of a transponder with its unit', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    expect(rowOf(w, '11494H').find('td.mux-tree__name').attributes('title')).toContain('11494000 kHz')
+  })
+
+  it('says how to get muxes when there are none', async () => {
+    const s = server()
+    s.networks = []
+    const w = await mountTree(s)
+    expect(w.find('.mux-tree__empty').text()).toContain('No muxes defined')
   })
 })
 

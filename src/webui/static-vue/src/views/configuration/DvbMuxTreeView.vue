@@ -58,7 +58,19 @@
 import { computed, onBeforeUnmount, onMounted, onUpdated, ref, shallowRef, triggerRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
-import { ChevronDown, ChevronRight, List, Lock, Pencil, Plus, RefreshCw, ScanSearch, Trash2 } from 'lucide-vue-next'
+import {
+  ChevronDown,
+  ChevronRight,
+  HelpCircle,
+  List,
+  Lock,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  ScanSearch,
+  Trash2,
+} from 'lucide-vue-next'
 import IdnodeEditor from '@/components/IdnodeEditor.vue'
 import IdnodePickEntityDialog from '@/components/IdnodePickEntityDialog.vue'
 import SearchInput from '@/components/SearchInput.vue'
@@ -68,9 +80,12 @@ import type { IdnodeNotification } from '@/types/comet'
 import { useStaleDataRecovery } from '@/composables/useStaleDataRecovery'
 import { useAccessStore } from '@/stores/access'
 import { useConfirmDialog } from '@/composables/useConfirmDialog'
+import { useHelp } from '@/composables/useHelp'
 import { useI18n } from '@/composables/useI18n'
 import { useToastNotify } from '@/composables/useToastNotify'
 import { apiErrorMessage } from '@/utils/apiErrorMessage'
+import { openPlay } from '@/utils/playUrl'
+import { formatMuxFrequency } from './muxFrequency'
 import {
   addressLabel,
   buildMuxTree,
@@ -118,6 +133,7 @@ const access = useAccessStore()
 const confirmDialog = useConfirmDialog()
 const router = useRouter()
 const toast = useToastNotify()
+const help = useHelp()
 
 interface NetworkEntry {
   uuid: string
@@ -166,6 +182,8 @@ const expanded = ref(new Set<string>())
 const services = shallowRef<Record<string, Map<string, ServiceRow[]>>>({})
 const loadingServices = ref(new Set<string>())
 const onlyWithSubMuxes = ref(false)
+/* the networks loaded once: an empty tree says why */
+const networksLoaded = ref(false)
 
 /* Errors: a failed load stays in a line above the tree until that load
  * succeeds (by what failed: the networks, the muxes or services of a
@@ -230,6 +248,7 @@ async function fetchNetworks() {
         numChn: Number(r.num_chn ?? 0),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+    networksLoaded.value = true
     setLoadError('networks')
   } catch (e) {
     setLoadError('networks', e)
@@ -400,6 +419,31 @@ function collapseAll() {
 /* the flat grid of all muxes: the list view of this tab */
 function showList() {
   router.push({ name: 'config-dvb-mux-list' }).catch(() => {})
+}
+
+/* the help page of the muxes, as the grids have it */
+function onHelp() {
+  help.toggle('class/mpegts_mux').catch(() => {})
+}
+
+/* no muxes at all (no networks, or none with a mux) */
+const noMuxes = computed(() => networksLoaded.value && networks.value.every((n) => n.numMux === 0))
+
+/* Play: a mux or a service in the external player, as the Play column of
+ * the grids (`/play/ticket/stream/...`) */
+function playPath(r: FlatRow): string | null {
+  if (r.service) return `stream/service/${r.service.uuid}`
+  if (r.node?.row) return `stream/mux/${r.node.row.uuid}`
+  return null
+}
+
+function play(r: FlatRow) {
+  const path = playPath(r)
+  if (!path) return
+  const title = r.service
+    ? r.service.svcname ?? ''
+    : [r.node?.row?.name, r.net?.name].filter(Boolean).join(' / ')
+  openPlay(title ? `${path}?title=${encodeURIComponent(title)}` : path)
 }
 
 /* all again: what is loaded is replaced in place (the open rows stay and
@@ -1156,7 +1200,9 @@ function nameTitle(r: FlatRow): string | undefined {
   if (r.network) return r.network.name
   const row = r.node?.row
   if (!row) return undefined
-  return [row.name, r.wide ? tuningLabel(row) : '', row.pnetwork_name].filter(Boolean).join(' — ')
+  /* the frequency in the unit of its mux class: Hz, or kHz (satellite) */
+  const freq = r.wide ? formatMuxFrequency(row.frequency, row) : ''
+  return [row.name, freq, r.wide ? tuningLabel(row) : '', row.pnetwork_name].filter(Boolean).join(' — ')
 }
 
 /* Services and Channels: a mux with sub-muxes counts all levels below */
@@ -1236,6 +1282,16 @@ onMounted(loadNetworks)
         <template v-if="selection.length">{{ t('{0} selected', selection.length) }} · </template>
         {{ t('{0} networks, {1} muxes loaded', networks.length, muxTotal) }}
       </span>
+      <button
+        type="button"
+        class="mux-tree__help"
+        :title="t('Help')"
+        :aria-label="t('Help')"
+        :aria-pressed="help.isOpen.value"
+        @click="onHelp"
+      >
+        <HelpCircle :size="16" :stroke-width="2" />
+      </button>
     </div>
     <div class="mux-tree__toolbar mux-tree__filters">
       <SearchInput
@@ -1489,6 +1545,17 @@ onMounted(loadNetworks)
             </td>
             <td class="mux-tree__action">
               <button
+                v-if="playPath(r)"
+                type="button"
+                class="mux-tree__play"
+                :title="t('Play this stream')"
+                :aria-label="t('Play this stream')"
+                @click.stop="play(r)"
+                @dblclick.stop
+              >
+                <Play :size="15" :stroke-width="2" />
+              </button>
+              <button
                 v-if="r.node && (r.node.row || r.node.virtual)"
                 type="button"
                 class="mux-tree__scan"
@@ -1507,6 +1574,13 @@ onMounted(loadNetworks)
           </tr>
         </tbody>
       </table>
+      <p v-if="noMuxes" class="mux-tree__empty">
+        {{
+          t(
+            'No muxes defined. Add one against an existing network — or trigger a network scan from the Networks page to populate them automatically.',
+          )
+        }}
+      </p>
     </div>
   </section>
   <IdnodePickEntityDialog
@@ -1566,6 +1640,41 @@ onMounted(loadNetworks)
   font-size: var(--tvh-text-sm);
 }
 
+.mux-tree__help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  background: var(--tvh-bg-page);
+  color: var(--tvh-text);
+  border: 1px solid var(--tvh-border);
+  border-radius: var(--tvh-radius-sm);
+  cursor: pointer;
+}
+
+.mux-tree__help:hover {
+  background: color-mix(in srgb, var(--tvh-primary) var(--tvh-hover-strength), var(--tvh-bg-page));
+}
+
+.mux-tree__help:focus-visible {
+  outline: 2px solid var(--tvh-primary);
+  outline-offset: 1px;
+}
+
+.mux-tree__help[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--tvh-primary) 14%, transparent);
+  color: var(--tvh-primary);
+  border-color: var(--tvh-primary);
+}
+
+.mux-tree__empty {
+  color: var(--tvh-text-muted);
+  text-align: center;
+  padding: var(--tvh-space-6);
+}
+
 .mux-tree__error {
   color: var(--tvh-error);
   font-size: var(--tvh-text-sm);
@@ -1610,7 +1719,7 @@ onMounted(loadNetworks)
 }
 
 .mux-tree__col-action {
-  width: 40px;
+  width: 64px;
 }
 
 .mux-tree__col-select {
@@ -1684,7 +1793,8 @@ onMounted(loadNetworks)
   text-align: center;
 }
 
-.mux-tree__scan {
+.mux-tree__scan,
+.mux-tree__play {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1698,7 +1808,8 @@ onMounted(loadNetworks)
   cursor: pointer;
 }
 
-.mux-tree__scan:hover:not(:disabled) {
+.mux-tree__scan:hover:not(:disabled),
+.mux-tree__play:hover {
   color: var(--tvh-primary);
   background: color-mix(in srgb, var(--tvh-primary) var(--tvh-hover-strength), transparent);
 }
@@ -1708,7 +1819,8 @@ onMounted(loadNetworks)
   cursor: default;
 }
 
-.mux-tree__scan:focus-visible {
+.mux-tree__scan:focus-visible,
+.mux-tree__play:focus-visible {
   outline: 2px solid var(--tvh-focus);
 }
 
