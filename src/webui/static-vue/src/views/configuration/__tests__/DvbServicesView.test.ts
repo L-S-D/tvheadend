@@ -31,6 +31,16 @@ stubs.resetEachTest()
 const { captured } = stubs
 
 describe('DvbServicesView columns', () => {
+  it('shows type, streams and source, the DVB ids and HbbTV on demand', () => {
+    mount(DvbServicesView)
+    const fields = stubs.gridColumns().map((c) => c.field)
+    for (const f of ['type', 'streams', 'source', 'onid', 'tsid', 'hbbtv']) expect(fields, f).toContain(f)
+    expect(stubs.gridColumn('type')?.hiddenByDefault).toBeFalsy()
+    expect(stubs.gridColumn('onid')?.hiddenByDefault).toBe(true)
+    expect(stubs.gridColumn('hbbtv')?.hiddenByDefault).toBe(true)
+    expect(stubs.gridColumn('tsid')?.format?.(-1, { uuid: 'x' })).toBe('')
+  })
+
   it('shows EIT processing, not the removed dvb_ignore_eit field', () => {
     mount(DvbServicesView)
     const fields = stubs.gridColumns().map((c) => c.field)
