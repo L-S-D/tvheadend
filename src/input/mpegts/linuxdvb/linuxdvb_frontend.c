@@ -1452,6 +1452,39 @@ linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
   }
   return 1;
 }
+
+/*
+ * A tune asked for from a blindscan: the frequency where the demodulator
+ * found the carrier (it searched around the one tuned), in the direction
+ * of the LNB's conversion
+ */
+static void
+linuxdvb_frontend_blindscan_update_freq(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
+{
+  struct dtv_property prop = { .cmd = DTV_FREQUENCY };
+  struct dtv_properties props = { .num = 1, .props = &prop };
+  linuxdvb_frontend_t *conf = lfe;
+  int64_t delta, f;
+  int dir;
+  char buf[256];
+
+  /* a slave tuner tunes with the satconf of its master */
+  if (lfe->lfe_master)
+    conf = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL);
+  if (lfe->lfe_freq <= 0 || conf == NULL || conf->lfe_satconf == NULL ||
+      ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &props) || prop.u.data == 0)
+    return;
+  dir = linuxdvb_satconf_blindscan_dir(conf->lfe_satconf, (mpegts_mux_t *)lm);
+  delta = (int64_t)prop.u.data - lfe->lfe_freq;
+  if (dir == 0 || delta == 0 || delta > 20000 || delta < -20000)
+    return;
+  f = (int64_t)lm->lm_tuning.dmc_fe_freq + dir * delta;
+  lfe->mi_display_name((mpegts_input_t*)lfe, buf, sizeof(buf));
+  tvhinfo(LS_LINUXDVB, "%s - blindscan: carrier at %"PRId64" kHz (tuned %u)",
+          buf, f, lm->lm_tuning.dmc_fe_freq);
+  lm->lm_tuning.dmc_fe_freq = (uint32_t)f;
+  idnode_changed(&lm->mm_id);
+}
 #endif /* ENABLE_LINUXDVB_NEUMO */
 
 #if ENABLE_LINUXDVB_NEUMO
@@ -1522,7 +1555,8 @@ linuxdvb_frontend_other_carrier ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
   struct dtv_properties props = { .num = 2, .props = prop };
   uint32_t want, got, df;
 
-  if (!lfe->lfe_blind)
+  /* a blindscan tune takes what it finds within its range */
+  if (!lfe->lfe_blind || ((dvb_mux_t *)mm)->lm_blindscan_tune)
     return 0;
   want = ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.symbol_rate;
   if (want == 0 || ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &props))
@@ -1746,7 +1780,11 @@ linuxdvb_frontend_monitor ( void *aux )
       /* the MATYPE is valid a while after the lock */
       lfe->lfe_stream_info = mclk() + sec2mono(2);
       /* Update mux parameters from blindscan results if enabled */
-      if (config.blindscan_update_mux &&
+      if (lfe->lfe_type == DVB_TYPE_S && ((dvb_mux_t *)mm)->lm_blindscan_tune) {
+        /* a tune asked for from a blindscan: the carrier found makes the mux */
+        params_read = linuxdvb_frontend_blindscan_update_mux(lfe, (dvb_mux_t *)mm);
+        linuxdvb_frontend_blindscan_update_freq(lfe, (dvb_mux_t *)mm);
+      } else if (config.blindscan_update_mux &&
           config.blindscan_mode >= 1 &&
           mm->mm_scan_state == MM_SCAN_STATE_ACTIVE) {
         params_read = linuxdvb_frontend_blindscan_update_mux(lfe, (dvb_mux_t *)mm);
@@ -1754,7 +1792,7 @@ linuxdvb_frontend_monitor ( void *aux )
       /* a blind tune (as linuxdvb_frontend_tune0() chooses it) locks the
        * carrier it finds, whatever the parameters of the mux */
       blind = lfe->lfe_neumo_supported && lfe->lfe_type == DVB_TYPE_S &&
-              (config.blindscan_mode == 2 ||
+              (((dvb_mux_t *)mm)->lm_blindscan_tune || config.blindscan_mode == 2 ||
                (config.blindscan_mode == 1 &&
                 (mm->mm_scan_state == MM_SCAN_STATE_ACTIVE ||
                  mm->mm_scan_state == MM_SCAN_STATE_PEND ||
@@ -2702,7 +2740,15 @@ linuxdvb_frontend_tune0
      * blindscan_mode: 0=never, 1=scanning only, 2=always */
     lfe->lfe_blind_narrow = 0;
     lfe->lfe_blind = 0;
-    if (lfe->lfe_neumo_supported &&
+    if (lfe->lfe_neumo_supported && lm->lm_blindscan_tune) {
+      /* a tune asked for from a blindscan: within the range it gives (the
+       * full width, Hz) */
+      S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
+      S2CMD(DTV_DELIVERY_SYSTEM, SYS_AUTO);
+      lfe->lfe_blind = 1;
+      if (lm->lm_blindscan_range)
+        S2CMD(DTV_SEARCH_RANGE,  lm->lm_blindscan_range * 1000);
+    } else if (lfe->lfe_neumo_supported &&
         (config.blindscan_mode == 2 ||
          (config.blindscan_mode == 1 &&
           /* the tune that starts a scan: mpegts_mux_scan_active() sets

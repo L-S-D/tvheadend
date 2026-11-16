@@ -197,6 +197,36 @@ api_mpegts_network_blindscan
 }
 
 static int
+api_mpegts_network_blindscan_tune
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+  mpegts_network_t *mn;
+  const char *uuid, *err = NULL;
+  char muxuuid[UUID_HEX_SIZE];
+  int r;
+
+  if (!(uuid = htsmsg_get_str(args, "uuid")))
+    return EINVAL;
+  tvh_mutex_lock(&global_lock);
+  if ((mn = mpegts_network_find(uuid)) == NULL) {
+    tvh_mutex_unlock(&global_lock);
+    return ENOENT;
+  }
+  r = linuxdvb_blindscan_tune(mn, htsmsg_get_u32_or_default(args, "freq", 0),
+                              htsmsg_get_str(args, "pol"),
+                              htsmsg_get_u32_or_default(args, "sr", 0),
+                              htsmsg_get_u32_or_default(args, "range", 0), &err, muxuuid);
+  tvh_mutex_unlock(&global_lock);
+  *resp = htsmsg_create_map();
+  htsmsg_add_bool(*resp, "started", r == 0);
+  if (r == 0)
+    htsmsg_add_str(*resp, "mux", muxuuid);
+  if (err)
+    htsmsg_add_str(*resp, "error", err);
+  return 0;
+}
+
+static int
 api_mpegts_network_blindscan_stop
   ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
 {
@@ -487,6 +517,7 @@ api_mpegts_init ( void )
 #if ENABLE_LINUXDVB_NEUMO
     { "mpegts/network/blindscan",  ACCESS_ADMIN, api_mpegts_network_blindscan, NULL },
     { "mpegts/network/blindscan_stop", ACCESS_ADMIN, api_mpegts_network_blindscan_stop, NULL },
+    { "mpegts/network/blindscan_tune", ACCESS_ADMIN, api_mpegts_network_blindscan_tune, NULL },
     { "mpegts/network/blindscan_result", ACCESS_ADMIN, api_mpegts_network_blindscan_result, NULL },
 #endif
     { "mpegts/mux/grid",           ACCESS_ADMIN, api_idnode_grid,  api_mpegts_mux_grid },

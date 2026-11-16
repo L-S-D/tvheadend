@@ -686,6 +686,7 @@ int linuxdvb_satconf_blindscan_path
     uint32_t freq, int vertical, uint32_t *ifreq );
 uint32_t linuxdvb_satconf_blindscan_if
   ( linuxdvb_satconf_ele_t *lse, uint32_t freq, int vertical, int *band );
+int linuxdvb_satconf_blindscan_dir ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm );
 
 /* a frontend goes away: its blindscan ends first (global_lock) */
 void linuxdvb_blindscan_frontend_gone ( linuxdvb_frontend_t *lfe );

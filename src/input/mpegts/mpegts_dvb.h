@@ -126,7 +126,23 @@ typedef struct dvb_mux
   int      lm_tuning_ok_src;
   time_t   lm_tuning_failed_first;
   time_t   lm_tuning_failed;
+
+  /*
+   * A tune asked for from a blindscan (linuxdvb_blindscan_tune(), not
+   * saved): its next scan tunes blind within lm_blindscan_range (kHz) and
+   * takes frequency and parameters from the demodulator.
+   * DVB_MUX_BLINDSCAN_NEW: the blindscan created it, a failed scan deletes
+   * it again
+   */
+  int      lm_blindscan_tune;
+  uint32_t lm_blindscan_range;
 } dvb_mux_t;
+
+#define DVB_MUX_BLINDSCAN_TUNE 1
+#define DVB_MUX_BLINDSCAN_NEW  2
+
+/* the scan of a blindscan tune ended (mpegts_network_scan_mux_done0) */
+void dvb_mux_blindscan_done ( dvb_mux_t *lm, int result );
 
 #define DVB_MUX_TUNING_LOCKED 1 ///< a tune with them locked
 #define DVB_MUX_TUNING_READ   2 ///< read from the demodulator at a lock

@@ -360,6 +360,10 @@ mpegts_network_scan_mux_done0
   if (result == MM_SCAN_FAIL && !mpegts_mux_is_submux(mm) &&
       idnode_is_instance(&mm->mm_id, &dvb_mux_class))
     dvb_mux_tuning_failed((dvb_mux_t *)mm);
+  /* a tune asked for from a blindscan: its result goes back to it */
+  if (result != MM_SCAN_NONE && idnode_is_instance(&mm->mm_id, &dvb_mux_class) &&
+      ((dvb_mux_t *)mm)->lm_blindscan_tune)
+    dvb_mux_blindscan_done((dvb_mux_t *)mm, result);
 #endif
 
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {

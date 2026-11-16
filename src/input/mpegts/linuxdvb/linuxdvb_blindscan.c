@@ -37,6 +37,7 @@
 #include "notify.h"
 #include "settings.h"
 #include "input/mpegts/dvb_blindscan_detect.h"
+#include "input/mpegts/mpegts_network_scan.h"
 
 #include <sys/ioctl.h>
 #include <poll.h>
@@ -773,6 +774,93 @@ linuxdvb_blindscan_done ( void )
   while ((lb = LIST_FIRST(&linuxdvb_blindscans)) != NULL)
     lb_destroy(lb);
   tvh_mutex_unlock(&global_lock);
+}
+
+/* ------------------------------------------------------------------------
+ * A tune at a frequency (global_lock)
+ * ----------------------------------------------------------------------*/
+
+/* the mux of the network at freq: within a quarter of the symbol rates,
+ * 1 MHz at least; the transponder, not one of its sub-muxes */
+static dvb_mux_t *
+lb_mux_at ( mpegts_network_t *mn, uint32_t freq, int pol, uint32_t sr )
+{
+  mpegts_mux_t *mm;
+  dvb_mux_t *lm, *best = NULL;
+  uint32_t d, tol, bestd = UINT32_MAX;
+
+  LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link) {
+    if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class) || mpegts_mux_is_submux(mm))
+      continue;
+    lm = (dvb_mux_t *)mm;
+    if (lm->lm_tuning.dmc_fe_type != DVB_TYPE_S ||
+        lm->lm_tuning.u.dmc_fe_qpsk.polarisation != pol)
+      continue;
+    d = deltaU32(lm->lm_tuning.dmc_fe_freq, freq);
+    tol = MAX(1000, MIN(lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate, sr) / 4000);
+    if (d <= tol && d < bestd) {
+      best = lm;
+      bestd = d;
+    }
+  }
+  return best;
+}
+
+int
+linuxdvb_blindscan_tune
+  ( mpegts_network_t *mn, uint32_t freq, const char *pols, uint32_t sr,
+    uint32_t range, const char **err, char *muxuuid )
+{
+  dvb_mux_t *lm;
+  mpegts_mux_t *mm;
+  htsmsg_t *conf;
+  int pol, flags = DVB_MUX_BLINDSCAN_TUNE;
+
+  lock_assert(&global_lock);
+  *err = NULL;
+  if (!idnode_is_instance(&mn->mn_id, &dvb_network_dvbs_class)) {
+    *err = "not a DVB-S network";
+    return EINVAL;
+  }
+  if (pols == NULL || (pols[0] != 'H' && pols[0] != 'V') || pols[1] ||
+      freq < 1000000 || freq > 30000000 || sr < 100000 || sr > 100000000) {
+    *err = "frequency (kHz), polarisation (H or V) and symbol rate (symbols/s) needed";
+    return EINVAL;
+  }
+  pol = pols[0] == 'V' ? DVB_POLARISATION_VERTICAL : DVB_POLARISATION_HORIZONTAL;
+  if (range == 0)
+    range = MIN(20000, MAX(4000, sr / 1000 * 2));
+  if ((lm = lb_mux_at(mn, freq, pol, sr)) != NULL) {
+    mm = (mpegts_mux_t *)lm;
+    if (mm->mm_enabled != MM_ENABLE) {
+      *err = mm->mm_enabled == MM_IGNORE ? "the mux there is ignored" : "the mux there is disabled";
+      return EINVAL;
+    }
+    /* searched around the frequency asked for */
+    tvhinfo(LS_LINUXDVB, "blindscan: tune %s blind around %u kHz", mm->mm_nicename, freq);
+  } else {
+    conf = htsmsg_create_map();
+    htsmsg_add_str(conf, "delsys", "DVB-S2");
+    htsmsg_add_u32(conf, "frequency", freq);
+    htsmsg_add_u32(conf, "symbolrate", sr);
+    htsmsg_add_str(conf, "polarisation", pols);
+    htsmsg_add_str(conf, "modulation", "AUTO");
+    htsmsg_add_str(conf, "fec", "AUTO");
+    mm = mn->mn_mux_create2(mn, conf);
+    htsmsg_destroy(conf);
+    if (mm == NULL) {
+      *err = "the mux cannot be created";
+      return EIO;
+    }
+    lm = (dvb_mux_t *)mm;
+    flags |= DVB_MUX_BLINDSCAN_NEW;
+    tvhinfo(LS_LINUXDVB, "blindscan: new mux %s, tuned blind", mm->mm_nicename);
+  }
+  lm->lm_blindscan_tune = flags;
+  lm->lm_blindscan_range = range;
+  mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_USER, SUBSCRIPTION_USERSCAN, 0);
+  idnode_uuid_as_str(&mm->mm_id, muxuuid);
+  return 0;
 }
 
 /* ------------------------------------------------------------------------
