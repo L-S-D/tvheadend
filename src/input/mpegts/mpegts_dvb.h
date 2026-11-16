@@ -80,7 +80,24 @@ typedef struct dvb_mux
    */
   int lm_matype;
   int lm_modcod;
+
+  /*
+   * DVB-S: the present tuning parameters locked at lm_tuning_ok
+   * (lm_tuning_ok_key: dvb_mux_tuning_key() of them then; lm_tuning_ok_src:
+   * DVB_MUX_TUNING_LOCKED, or DVB_MUX_TUNING_READ when they were read from
+   * the demodulator); scans with them failed from lm_tuning_failed_first
+   * to lm_tuning_failed (not saved). The NIT does not change trusted
+   * parameters (dvb_mux_tuning_trusted)
+   */
+  time_t   lm_tuning_ok;
+  uint32_t lm_tuning_ok_key;
+  int      lm_tuning_ok_src;
+  time_t   lm_tuning_failed_first;
+  time_t   lm_tuning_failed;
 } dvb_mux_t;
+
+#define DVB_MUX_TUNING_LOCKED 1 ///< a tune with them locked
+#define DVB_MUX_TUNING_READ   2 ///< read from the demodulator at a lock
 
 /* the PID the Neumo driver embeds the BBFrames of all input streams in */
 #define DVB_BBFRAMES_PID 0x10e
@@ -141,6 +158,11 @@ uint16_t   dvb_mux_stream_pid    ( mpegts_mux_t *mm );
 
 /* sub-muxes follow the tuning of the transponder they are carried in */
 dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
+
+uint32_t dvb_mux_tuning_key ( const dvb_mux_conf_t *dmc );
+void dvb_mux_tuning_confirmed ( dvb_mux_t *lm, int src );
+void dvb_mux_tuning_failed ( dvb_mux_t *lm );
+int dvb_mux_tuning_trusted ( const dvb_mux_t *lm );
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 void       dvb_network_link_multistream ( dvb_network_t *ln );
 dvb_mux_t *dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm );
