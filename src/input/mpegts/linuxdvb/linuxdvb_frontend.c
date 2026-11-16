@@ -1541,36 +1541,52 @@ linuxdvb_frontend_narrow_range ( uint32_t symbol_rate )
 }
 
 /*
- * The Neumo driver searches once per tune. On a narrow carrier the search
- * often fails: it ends without the carrier (TIMEDOUT), or the demodulator
- * locks and the packet delineator does not (LOCK without VITERBI; the
- * driver waits up to 3 s for it). A new search mostly succeeds, so search
- * again while the subscription waits.
+ * On a narrow carrier a search of the Neumo driver often fails: it ends
+ * without the carrier (TIMEDOUT), or the demodulator locks and the packet
+ * delineator does not (LOCK without VITERBI; the driver waits up to 3 s for
+ * it). A new search mostly succeeds, so search again while the subscription
+ * waits.
+ *
+ * After a search without the carrier the driver searches again by itself,
+ * 0.1-0.5 s later. A driver that reports no status while a search runs
+ * (FE_READ_STATUS answered without waiting for it) shows each search ending:
+ * tune again once two of them failed, the one of the tune and the driver's
+ * own. With a driver that makes the reader wait for the running search, the
+ * status stays TIMEDOUT: tune again after 3 s, about two searches as well.
  */
 static int
 linuxdvb_frontend_search_again ( linuxdvb_frontend_t *lfe, fe_status_t fe_status )
 {
-  int64_t wait;
+  int prev;
 
   if (!lfe->lfe_neumo_supported || lfe->lfe_type != DVB_TYPE_S ||
       lfe->lfe_bbframes || lfe->lfe_freq <= 0)
     return 0;
-  if (fe_status & FE_TIMEDOUT)
-    wait = ms2mono(500);
-  else if ((fe_status & FE_HAS_LOCK) && !(fe_status & FE_HAS_VITERBI))
-    wait = ms2mono(3500);
-  else {
-    lfe->lfe_search_failed = 0;
+  prev = lfe->lfe_search_status;
+  lfe->lfe_search_status = fe_status;
+  if (fe_status & FE_TIMEDOUT) {
+    if (!(prev & FE_TIMEDOUT) && lfe->lfe_search_fails++ == 0)
+      lfe->lfe_search_failed = mclk();
+    if (lfe->lfe_search_fails < 2 && mclk() - lfe->lfe_search_failed < sec2mono(3))
+      return 0;
+  } else if ((fe_status & FE_HAS_LOCK) && !(fe_status & FE_HAS_VITERBI)) {
+    if (prev != (int)fe_status) {
+      lfe->lfe_search_failed = mclk();
+      return 0;
+    }
+    if (mclk() - lfe->lfe_search_failed < ms2mono(3500))
+      return 0;
+  } else {
+    /* a search runs, or the carrier is locked */
+    if (fe_status & FE_HAS_LOCK) {
+      lfe->lfe_search_fails = 0;
+      lfe->lfe_search_failed = 0;
+    }
     return 0;
   }
-  if (!lfe->lfe_search_failed || lfe->lfe_search_status != (int)fe_status) {
-    lfe->lfe_search_failed = mclk();
-    lfe->lfe_search_status = fe_status;
-    return 0;
-  }
-  if (mclk() - lfe->lfe_search_failed < wait)
-    return 0;
+  lfe->lfe_search_fails = 0;
   lfe->lfe_search_failed = 0;
+  lfe->lfe_search_status = 0;
   return 1;
 }
 #endif
@@ -2308,6 +2324,8 @@ linuxdvb_frontend_clear
   lfe->lfe_status  = 0;
   lfe->lfe_status2 = 0;
   lfe->lfe_search_failed = 0;
+  lfe->lfe_search_status = 0;
+  lfe->lfe_search_fails = 0;
 
 #if DVB_API_VERSION >= 5
   static struct dtv_property clear_p[] = {
