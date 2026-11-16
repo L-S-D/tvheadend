@@ -1874,6 +1874,7 @@ dvb_mux_blindscan_done ( dvb_mux_t *lm, int result )
 
   htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&mm->mm_network->mn_id, ubuf));
   htsmsg_add_u32(m, "freq", lm->lm_tuning.dmc_fe_freq);
+  htsmsg_add_str(m, "pol", lm->lm_tuning.u.dmc_fe_qpsk.polarisation == DVB_POLARISATION_VERTICAL ? "V" : "H");
   htsmsg_add_u32(m, "sr", lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate);
   htsmsg_add_str(m, "result", result == MM_SCAN_FAIL ? "fail" : "ok");
   /* a new mux that locked a transponder the network has: that one */

@@ -187,7 +187,10 @@ api_mpegts_network_blindscan
   }
   r = linuxdvb_blindscan_start(mn, htsmsg_get_str(args, "pols"),
                                htsmsg_get_u32_or_default(args, "start", 0),
-                               htsmsg_get_u32_or_default(args, "end", 0), &err);
+                               htsmsg_get_u32_or_default(args, "end", 0),
+                               /* lock the new carriers: from this SNR (0.01 dB) */
+                               htsmsg_get_s32_or_default(args, "lock_snr", -1),
+                               &err);
   tvh_mutex_unlock(&global_lock);
   *resp = htsmsg_create_map();
   htsmsg_add_bool(*resp, "started", r == 0);
