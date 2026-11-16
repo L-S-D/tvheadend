@@ -419,6 +419,7 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
   uint8_t matype_list[256];
   int isi_count = 0;
   int found = 0;
+  int locked = 0;
 
   if (!ctx)
     return 0;
@@ -441,10 +442,17 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
   } else {
     if (mm->mm_active && mm->mm_active->mmi_input == ctx->mi)
       lfe = (const linuxdvb_frontend_t *)ctx->mi;
-    if (lfe && lfe->lfe_fe_fd >= 0)
-      isi_count = isi_read_driver_list(lfe->lfe_fe_fd, isi_list, matype_list);
-    else
+    if (!lfe || lfe->lfe_fe_fd < 0)
       tvhdebug(LS_MPEGTS, "mux %s: ISI probe skipped (tuner no longer active)", mm->mm_nicename);
+    /* without a lock there are no streams to list, and the driver may be
+     * searching: it answers when the search ends, seconds on a narrow
+     * carrier, while the caller holds the global lock */
+    else if (!lfe->lfe_locked)
+      tvhdebug(LS_MPEGTS, "mux %s: ISI probe skipped (no lock)", mm->mm_nicename);
+    else {
+      locked = 1;
+      isi_count = isi_read_driver_list(lfe->lfe_fe_fd, isi_list, matype_list);
+    }
   }
 
   /* the streams of the frame headers the driver did not list */
@@ -481,8 +489,9 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
    * the result of its scan */
   if (((dvb_mux_t *)mm)->lm_multistream && isi_count > 0 && found == 0)
     found = isi_count;
-  /* ... and when there are none, the demodulator may tell why */
-  if (evaluate && ((dvb_mux_t *)mm)->lm_multistream && isi_count == 0 &&
+  /* ... and when there are none, the demodulator may tell why (only when
+   * it locked: lm_matype can be from an earlier tuning) */
+  if (locked && ((dvb_mux_t *)mm)->lm_multistream && isi_count == 0 &&
       ((dvb_mux_t *)mm)->lm_matype >= 0 && (((dvb_mux_t *)mm)->lm_matype & 0x20))
     tvhwarn(LS_MPEGTS, "mux %s: the transponder sends a single stream (MATYPE 0x%02X), "
             "it is no longer a multistream transponder?", mm->mm_nicename,
