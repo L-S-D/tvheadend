@@ -26,6 +26,22 @@ void linuxdvb_done ( void );
 
 idnode_set_t *linuxdvb_root ( void );
 
+#if ENABLE_LINUXDVB_NEUMO
+struct mpegts_network;
+
+/* blindscan of a DVB-S network (global_lock): the spectrum of the
+ * polarisations ("H", "V", "HV") from start to end (kHz, 0 = 10700000 and
+ * 12750000) on a free Neumo tuner; the carriers in it. Errors: EBUSY (*err
+ * says why), EIO */
+int linuxdvb_blindscan_start
+  ( struct mpegts_network *mn, const char *pols, uint32_t start, uint32_t end,
+    const char **err );
+void linuxdvb_blindscan_stop ( struct mpegts_network *mn );
+/* state and the last result, spectra reduced to points points (0 = all) */
+htsmsg_t *linuxdvb_blindscan_result ( struct mpegts_network *mn, int points );
+void linuxdvb_blindscan_done ( void );
+#endif
+
 #endif /* __TVH_LINUX_DVB_H__ */
 
 /******************************************************************************

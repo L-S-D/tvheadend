@@ -486,6 +486,7 @@ I18N-C += $(SRCS-IPTV)
 # ISI probe (multistream detection, Neumo driver; reads linuxdvb frontends)
 SRCS-${CONFIG_LINUXDVB} += src/input/mpegts/dab/isi_probe.c
 SRCS-${CONFIG_LINUXDVB} += src/input/mpegts/dvb_blindscan_detect.c
+SRCS-${CONFIG_LINUXDVB} += src/input/mpegts/linuxdvb/linuxdvb_blindscan.c
 
 # DAB (Digital Audio Broadcasting) probe and streaming - libdvbdab
 # (configure: dvbdab, flags come from pkg-config)

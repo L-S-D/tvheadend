@@ -37,6 +37,9 @@ void linuxdvb_init ( int adapter_mask )
 
 void linuxdvb_done ( void )
 {
+#if ENABLE_LINUXDVB_NEUMO
+  linuxdvb_blindscan_done();
+#endif
   linuxdvb_adapter_done();
   linuxdvb_en50494_done();
 }
