@@ -184,6 +184,15 @@ struct linuxdvb_frontend
    */
   int8_t                    lfe_rf_input;
 
+#if ENABLE_LINUXDVB_NEUMO
+  /*
+   * A blindscan has the frontend (linuxdvb_blindscan.c): it is busy for
+   * tuning, and its device stays open
+   */
+  struct linuxdvb_blindscan *lfe_blindscan;
+  int                       lfe_blindscan_rf;       /* ... and the RF input alone (DiSEqC, LNB) */
+#endif
+
   /*
    * Satconf (DVB-S only)
    */
@@ -663,5 +672,23 @@ int linuxdvb_frontend_rf_input_slave ( linuxdvb_frontend_t *lfe );
 /* close the idle demods still holding the RF input of the tuner (the driver
  * keeps a reservation until the device is closed); returns how many */
 int linuxdvb_frontend_rf_input_release ( linuxdvb_frontend_t *lfe, int except_own );
+
+#if ENABLE_LINUXDVB_NEUMO
+int linuxdvb_frontend_blindscan_open ( linuxdvb_frontend_t *lfe );
+void linuxdvb_frontend_blindscan_close ( linuxdvb_frontend_t *lfe, int rf_input );
+
+/* the RF path of a satconf element for a frequency and polarisation (RF
+ * input, DiSEqC switch or Unicable command, voltage, tone) as a tune sets it
+ * up, without tuning: the frequency to give the demodulator (kHz) in *ifreq.
+ * For a blindscan, from its thread: the frontend is reserved for it */
+int linuxdvb_satconf_blindscan_path
+  ( linuxdvb_satconf_ele_t *lse, linuxdvb_frontend_t *lfe,
+    uint32_t freq, int vertical, uint32_t *ifreq );
+uint32_t linuxdvb_satconf_blindscan_if
+  ( linuxdvb_satconf_ele_t *lse, uint32_t freq, int vertical, int *band );
+
+/* a frontend goes away: its blindscan ends first (global_lock) */
+void linuxdvb_blindscan_frontend_gone ( linuxdvb_frontend_t *lfe );
+#endif
 
 #endif /* __TVH_LINUXDVB_PRIVATE_H__ */

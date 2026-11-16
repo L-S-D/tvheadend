@@ -1273,6 +1273,136 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
   return linuxdvb_frontend_tune1(lfe, mmi, f);
 }
 
+#if ENABLE_LINUXDVB_NEUMO
+/* the frequency the demodulator gets for this one (the LNB's), and its band;
+ * nothing is sent. 0 without an LNB */
+uint32_t
+linuxdvb_satconf_blindscan_if
+  ( linuxdvb_satconf_ele_t *lse, uint32_t freq, int vertical, int *band )
+{
+  dvb_mux_t *lm;
+  uint32_t f;
+
+  if (lse->lse_lnb == NULL || (lm = calloc(1, sizeof(*lm))) == NULL)
+    return 0;
+  lm->lm_tuning.dmc_fe_type = DVB_TYPE_S;
+  lm->lm_tuning.dmc_fe_delsys = DVB_SYS_DVBS2;
+  lm->lm_tuning.dmc_fe_freq = freq;
+  lm->lm_tuning.u.dmc_fe_qpsk.polarisation = vertical ? DVB_POLARISATION_VERTICAL
+                                                     : DVB_POLARISATION_HORIZONTAL;
+  if (band)
+    *band = lse->lse_lnb->lnb_band(lse->lse_lnb, lm) & 0x1;
+  f = lse->lse_lnb->lnb_freq(lse->lse_lnb, lm);
+  free(lm);
+  return f;
+}
+
+/*
+ * The RF path for a blindscan: as linuxdvb_satconf_ele_tune() sets it up for
+ * a mux of this frequency and polarisation, but without a mux and without
+ * tuning, in the blindscan's thread (the frontend is reserved for it: no
+ * tune uses this satconf meanwhile). Waits of the DiSEqC devices (another
+ * tuner sends a Unicable command) are slept here. No rotor.
+ */
+int
+linuxdvb_satconf_blindscan_path
+  ( linuxdvb_satconf_ele_t *lse, linuxdvb_frontend_t *lfe,
+    uint32_t freq, int vertical, uint32_t *ifreq )
+{
+  linuxdvb_satconf_t *ls = lse->lse_parent;
+  linuxdvb_diseqc_t *lds[] = {
+    lse->lse_switch, (linuxdvb_diseqc_t *)lse->lse_en50494, (linuxdvb_diseqc_t *)lse->lse_lnb
+  };
+  dvb_mux_t *lm;
+  struct dtv_property prop;
+  struct dtv_properties props;
+  struct dvb_frontend_event ev;
+  struct fe_rf_input_control ic;
+  int r, i, tries, pol, band, vol, f;
+
+  if (lse->lse_rotor || lse->lse_lnb == NULL || lfe->lfe_fe_fd <= 0)
+    return -1;
+
+  /* the RF input: a DiSEqC path needs it alone (the blindscan made sure no
+   * other tuner uses it), with Unicable the others stay */
+  if (lfe->lfe_rf_input >= 0 && lfe->lfe_neumo_supported) {
+    for (tries = 0; ; tries++) {
+      prop.cmd = DTV_CLEAR;
+      props.num = 1;
+      props.props = &prop;
+      ioctl(lfe->lfe_fe_fd, FE_SET_PROPERTY, &props);
+      while (ioctl(lfe->lfe_fe_fd, FE_GET_EVENT, &ev) >= 0);
+      memset(&ic, 0, sizeof(ic));
+      ic.owner = 0xffffffff;
+      ic.config_id = 1;
+      ic.rf_in = lfe->lfe_rf_input;
+      ic.mode = FE_RESERVATION_MODE_MASTER_OR_SLAVE;
+      ic.unicable_mode = lse->lse_en50494 ? 1 : 0;
+      r = ioctl(lfe->lfe_fe_fd, FE_SET_RF_INPUT, &ic);
+      if (r == FE_RESERVATION_MASTER || r == FE_RESERVATION_UNCHANGED ||
+          r == FE_RESERVATION_NOT_SUPPORTED ||
+          (r == FE_RESERVATION_SLAVE && lse->lse_en50494))
+        break;
+      if ((r == FE_RESERVATION_RETRY || r == FE_RESERVATION_SLAVE) && tries < LINUXDVB_RF_RETRIES) {
+        tvh_safe_usleep(LINUXDVB_RF_RETRY_MS * 1000);
+        continue;
+      }
+      tvherror(LS_DISEQC, "blindscan: RF input %d not available (result=%d)", lfe->lfe_rf_input, r);
+      return -1;
+    }
+    linuxdvb_satconf_reset(ls);
+  }
+
+  /* the LNB and the switch read only the tuning of a mux */
+  if ((lm = calloc(1, sizeof(*lm))) == NULL)
+    return -1;
+  lm->lm_tuning.dmc_fe_type = DVB_TYPE_S;
+  lm->lm_tuning.dmc_fe_delsys = DVB_SYS_DVBS2;
+  lm->lm_tuning.dmc_fe_freq = freq;
+  lm->lm_tuning.u.dmc_fe_qpsk.polarisation = vertical ? DVB_POLARISATION_VERTICAL
+                                                     : DVB_POLARISATION_HORIZONTAL;
+  lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate = 22000000;
+  pol  = lse->lse_lnb->lnb_pol (lse->lse_lnb, lm) & 0x1;
+  band = lse->lse_lnb->lnb_band(lse->lse_lnb, lm) & 0x1;
+  f    = lse->lse_lnb->lnb_freq(lse->lse_lnb, lm);
+  vol  = lse->lse_en50494 ? 0 : pol;
+  if (!lse->lse_en50494 && lse->lse_lnb->lnb_vol && (r = lse->lse_lnb->lnb_vol(lse->lse_lnb, lm)) >= 0)
+    vol = r;
+
+  r = 0;
+  if ((!lse->lse_en50494 || lse->lse_switch) && ls->ls_diseqc_full) {
+    ls->ls_last_tone_off = 0;
+    r = linuxdvb_satconf_start(ls, 0, vol);
+  }
+  for (i = 0; r >= 0 && i < ARRAY_SIZE(lds); i++) {
+    if (lds[i] == NULL)
+      continue;
+    for (tries = 0; tries < 10; tries++) {
+      r = lds[i]->ld_tune(lds[i], lm, ls, lse, vol, pol, band, f);
+      if (r <= 0)
+        break;
+      tvh_safe_usleep(r * 1000000LL);
+    }
+  }
+  free(lm);
+  if (r)
+    return -1;
+  if (linuxdvb_diseqc_set_volt(ls, vol))
+    return -1;
+  if (!lse->lse_en50494 && ls->ls_last_tone_off != band + 1) {
+    ls->ls_last_tone_off = 0;
+    if (ioctl(lfe->lfe_fe_fd, FE_SET_TONE, band ? SEC_TONE_ON : SEC_TONE_OFF)) {
+      tvherror(LS_DISEQC, "blindscan: failed to set tone (e=%s)", strerror(errno));
+      return -1;
+    }
+    ls->ls_last_tone_off = band + 1;
+    tvh_safe_usleep(20000);
+  }
+  *ifreq = lse->lse_en50494 ? ((linuxdvb_en50494_t *)lse->lse_en50494)->le_tune_freq : f;
+  return 0;
+}
+#endif
+
 /* a tune from a timer failed (the start of the mux had already returned):
  * the subscriptions of the mux take another tuner */
 static void

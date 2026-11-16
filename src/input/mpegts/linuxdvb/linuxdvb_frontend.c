@@ -77,6 +77,31 @@ static inline int lfe_group ( linuxdvb_frontend_t *lfe1,
          strcmp(lfe1->lfe_fe_path, lfe2->lfe_fe_path) == 0;
 }
 
+#if ENABLE_LINUXDVB_NEUMO
+/* a blindscan has the demod of lfe (its frontends share the device), or
+ * the RF input of lfe alone (it sets voltage, tone and switch) */
+static int
+linuxdvb_frontend_blindscan_busy ( linuxdvb_frontend_t *lfe )
+{
+  tvh_hardware_t *th;
+  linuxdvb_adapter_t *la;
+  linuxdvb_frontend_t *lfe2;
+
+  LIST_FOREACH(th, &tvh_hardware, th_link) {
+    if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class)) continue;
+    la = (linuxdvb_adapter_t*)th;
+    LIST_FOREACH(lfe2, &la->la_frontends, lfe_link) {
+      if (lfe2->lfe_blindscan == NULL)
+        continue;
+      if (lfe_group(lfe, lfe2) ||
+          (lfe2->lfe_blindscan_rf && linuxdvb_frontend_same_rf_input(lfe, lfe2)))
+        return 1;
+    }
+  }
+  return 0;
+}
+#endif
+
 /* lfe2 can be the master tuner of lfe: for a tuner on an RF input of a
  * Neumo card a tuner of another demod on the same input of the card (the
  * slave joins the input the master set up, on its own demod) */
@@ -718,6 +743,10 @@ linuxdvb_frontend_is_enabled
 #endif
   if (lfe->lfe_in_setup)
     return MI_IS_ENABLED_RETRY;
+#if ENABLE_LINUXDVB_NEUMO
+  if (linuxdvb_frontend_blindscan_busy(lfe))
+    return MI_IS_ENABLED_RETRY;
+#endif
   if (lfe->lfe_type != DVB_TYPE_S)
     goto ok;
 
@@ -807,7 +836,7 @@ linuxdvb_frontend_demod_close ( linuxdvb_frontend_t *lfe )
   int open = 0;
 
   LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link)
-    if (lfe_group(lfe, lfe2) && lfe2->lfe_refcount > 0)
+    if (lfe_group(lfe, lfe2) && (lfe2->lfe_refcount > 0 || lfe2->lfe_blindscan))
       return 0;
   LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link)
     if (lfe_group(lfe, lfe2)) {
@@ -859,6 +888,35 @@ linuxdvb_frontend_rf_input_release ( linuxdvb_frontend_t *lfe, int except_own )
     }
   }
   return n;
+}
+
+/* a blindscan takes the frontend (global_lock): its device open */
+int
+linuxdvb_frontend_blindscan_open ( linuxdvb_frontend_t *lfe )
+{
+  char buf[256];
+
+  lfe->mi_display_name((mpegts_input_t *)lfe, buf, sizeof(buf));
+  return linuxdvb_frontend_open_fd(lfe, buf);
+}
+
+/* ... and gives it back (global_lock): the next tune sets the RF path up
+ * again. A blindscan that had the RF input alone frees it as a stopped
+ * tuner does: the driver keeps the reservation while the device is open, the
+ * next tuner on the input (a slave counting on this one as its master too)
+ * would only become a slave. Otherwise an unused device is closed as after
+ * a tune */
+void
+linuxdvb_frontend_blindscan_close ( linuxdvb_frontend_t *lfe, int rf_input )
+{
+  if (lfe->lfe_satconf)
+    linuxdvb_satconf_reset(lfe->lfe_satconf);
+  if (rf_input && linuxdvb_frontend_rf_port(lfe)) {
+    linuxdvb_frontend_demod_close(lfe);
+    linuxdvb_frontend_rf_input_release(lfe, 0);
+  } else if (!lfe->lfe_refcount && lfe->lfe_powersave) {
+    linuxdvb_frontend_close_fd(lfe, NULL);
+  }
 }
 #endif
 
@@ -1578,7 +1636,11 @@ linuxdvb_frontend_monitor ( void *aux )
     mmi->mmi_mux->mm_stop(mmi->mmi_mux, 1, SM_CODE_ABORTED);
 
   /* Close FE */
-  if (lfe->lfe_fe_fd > 0 && !lfe->lfe_refcount && lfe->lfe_powersave) {
+  if (lfe->lfe_fe_fd > 0 && !lfe->lfe_refcount && lfe->lfe_powersave
+#if ENABLE_LINUXDVB_NEUMO
+      && !lfe->lfe_blindscan
+#endif
+      ) {
     if (lfe->lfe_satconf && linuxdvb_satconf_power_save(lfe->lfe_satconf) > 0) {
       /* re-arm */
       mtimer_arm_rel(&lfe->lfe_monitor_timer, linuxdvb_frontend_monitor, lfe, sec2mono(1));
@@ -3162,6 +3224,11 @@ linuxdvb_frontend_destroy ( linuxdvb_frontend_t *lfe )
   char *name;
 
   lock_assert(&global_lock);
+
+#if ENABLE_LINUXDVB_NEUMO
+  /* a blindscan with it ends first */
+  linuxdvb_blindscan_frontend_gone(lfe);
+#endif
 
   /* Ensure we're stopped */
   mpegts_input_stop_all((mpegts_input_t*)lfe);

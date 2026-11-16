@@ -24,6 +24,9 @@
 #include "input.h"
 #if ENABLE_MPEGTS_DVB
 #include "input/mpegts/scanfile.h"
+#if ENABLE_LINUXDVB_NEUMO
+#include "input/mpegts/linuxdvb.h"
+#endif
 #endif
 
 /*
@@ -165,6 +168,66 @@ api_mpegts_network_scan
 
   return 0;
 }
+
+#if ENABLE_LINUXDVB_NEUMO
+static int
+api_mpegts_network_blindscan
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+  mpegts_network_t *mn;
+  const char *uuid, *err = NULL;
+  int r;
+
+  if (!(uuid = htsmsg_get_str(args, "uuid")))
+    return EINVAL;
+  tvh_mutex_lock(&global_lock);
+  if ((mn = mpegts_network_find(uuid)) == NULL) {
+    tvh_mutex_unlock(&global_lock);
+    return ENOENT;
+  }
+  r = linuxdvb_blindscan_start(mn, htsmsg_get_str(args, "pols"),
+                               htsmsg_get_u32_or_default(args, "start", 0),
+                               htsmsg_get_u32_or_default(args, "end", 0), &err);
+  tvh_mutex_unlock(&global_lock);
+  *resp = htsmsg_create_map();
+  htsmsg_add_bool(*resp, "started", r == 0);
+  if (err)
+    htsmsg_add_str(*resp, "error", err);
+  return r == EINVAL ? r : 0;
+}
+
+static int
+api_mpegts_network_blindscan_stop
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+  mpegts_network_t *mn;
+  const char *uuid;
+
+  if (!(uuid = htsmsg_get_str(args, "uuid")))
+    return EINVAL;
+  tvh_mutex_lock(&global_lock);
+  if ((mn = mpegts_network_find(uuid)) != NULL)
+    linuxdvb_blindscan_stop(mn);
+  tvh_mutex_unlock(&global_lock);
+  return mn ? 0 : ENOENT;
+}
+
+static int
+api_mpegts_network_blindscan_result
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+  mpegts_network_t *mn;
+  const char *uuid;
+
+  if (!(uuid = htsmsg_get_str(args, "uuid")))
+    return EINVAL;
+  tvh_mutex_lock(&global_lock);
+  if ((mn = mpegts_network_find(uuid)) != NULL)
+    *resp = linuxdvb_blindscan_result(mn, htsmsg_get_s32_or_default(args, "points", 4000));
+  tvh_mutex_unlock(&global_lock);
+  return mn ? 0 : ENOENT;
+}
+#endif
 
 static int
 api_mpegts_network_muxclass
@@ -421,6 +484,11 @@ api_mpegts_init ( void )
     { "mpegts/network/mux_class",  ACCESS_ADMIN, api_mpegts_network_muxclass, NULL },
     { "mpegts/network/mux_create", ACCESS_ADMIN, api_mpegts_network_muxcreate, NULL },
     { "mpegts/network/scan",       ACCESS_ADMIN, api_mpegts_network_scan, NULL },
+#if ENABLE_LINUXDVB_NEUMO
+    { "mpegts/network/blindscan",  ACCESS_ADMIN, api_mpegts_network_blindscan, NULL },
+    { "mpegts/network/blindscan_stop", ACCESS_ADMIN, api_mpegts_network_blindscan_stop, NULL },
+    { "mpegts/network/blindscan_result", ACCESS_ADMIN, api_mpegts_network_blindscan_result, NULL },
+#endif
     { "mpegts/mux/grid",           ACCESS_ADMIN, api_idnode_grid,  api_mpegts_mux_grid },
     { "mpegts/mux/class",          ACCESS_ADMIN, api_idnode_class, (void*)&mpegts_mux_class },
     { "mpegts/service/grid",       ACCESS_ADMIN, api_idnode_grid,  api_mpegts_service_grid },
