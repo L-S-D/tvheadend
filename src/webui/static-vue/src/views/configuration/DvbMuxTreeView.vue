@@ -70,11 +70,14 @@ import {
   Pencil,
   Play,
   Plus,
+  Radar,
   RefreshCw,
   ScanSearch,
   Trash2,
 } from 'lucide-vue-next'
 import IdnodeEditor from '@/components/IdnodeEditor.vue'
+import BlindscanDialog from './BlindscanDialog.vue'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import IdnodePickEntityDialog from '@/components/IdnodePickEntityDialog.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import { apiCall } from '@/api/client'
@@ -150,6 +153,8 @@ interface NetworkEntry {
   numMux: number
   numSvc: number
   numChn: number
+  /* a DVB-S network (it has an orbital position): it can be blindscanned */
+  dvbs: boolean
 }
 
 interface GridResponse<T> {
@@ -250,6 +255,7 @@ async function fetchNetworks() {
         numMux: Number(r.num_mux ?? 0),
         numSvc: Number(r.num_svc ?? 0),
         numChn: Number(r.num_chn ?? 0),
+        dvbs: r.orbital_pos !== undefined,
       }))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
     networksLoaded.value = true
@@ -967,6 +973,7 @@ function onNetworkPicked(uuid: string, name: string) {
       numMux: 0,
       numSvc: 0,
       numChn: 0,
+      dvbs: false,
     },
   )
 }
@@ -1096,6 +1103,16 @@ async function scanMuxes(byNet: Map<NetworkEntry, string[]>) {
   }
   await Promise.all([...byNet.keys()].map((net) => loadMuxes(net, false)))
   for (const net of byNet.keys()) pollScans(net)
+}
+
+/* the blindscan of a DVB-S network (servers with the Neumo driver) */
+const capabilities = useCapabilitiesStore()
+if (!capabilities.loaded) void capabilities.load()
+const blindscanNet = ref<NetworkEntry | null>(null)
+const blindscanVisible = ref(false)
+function openBlindscan(net: NetworkEntry) {
+  blindscanNet.value = net
+  blindscanVisible.value = true
 }
 
 /* the network row: all muxes of the network; followed after a failed
@@ -1743,6 +1760,17 @@ onMounted(loadNetworks)
               >
                 <ScanSearch :size="15" :stroke-width="2" />
               </button>
+              <button
+                v-if="r.network && r.network.dvbs && capabilities.has('blindscan')"
+                type="button"
+                class="mux-tree__scan"
+                :title="t('Blindscan: the spectrum of this satellite, the carriers in it, tune by click')"
+                :aria-label="t('Blindscan')"
+                @click.stop="openBlindscan(r.network)"
+                @dblclick.stop
+              >
+                <Radar :size="15" :stroke-width="2" />
+              </button>
             </td>
           </tr>
           <tr v-if="padBottom > 0" class="mux-tree__pad" aria-hidden="true">
@@ -1759,6 +1787,12 @@ onMounted(loadNetworks)
       </p>
     </div>
   </section>
+  <BlindscanDialog
+    v-model:visible="blindscanVisible"
+    :network-uuid="blindscanNet?.uuid ?? null"
+    :network-name="blindscanNet?.name ?? ''"
+    @changed="blindscanNet && loadMuxes(blindscanNet, false)"
+  />
   <IdnodePickEntityDialog
     :visible="pickerVisible"
     grid-endpoint="mpegts/network/grid"
