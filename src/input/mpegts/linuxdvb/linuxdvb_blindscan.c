@@ -74,6 +74,7 @@ typedef struct linuxdvb_blindscan {
   int                     lb_unicable;
   char                    lb_pols[3];
   uint32_t                lb_start, lb_end;    /* kHz */
+  int                     lb_lock_snr;         /* -1, or lock the new carriers this far above the noise (0.01 dB) */
   pthread_t               lb_thread;
   int                     lb_joined;
   int                     lb_cancel;           /* atomic */
@@ -365,6 +366,7 @@ lb_result_pol ( dvb_blindscan_spectrum_t *sp, dvb_blindscan_carrier_t *c, int nc
 }
 
 static void lb_end_cb ( void *opaque, int disarmed );
+static int lb_lock_new ( struct linuxdvb_blindscan *lb );
 
 static void *
 lb_thread ( void *aux )
@@ -619,6 +621,8 @@ lb_end_cb ( void *opaque, int disarmed )
     tvh_mutex_unlock(&lb->lb_lock);
     tvhinfo(LS_LINUXDVB, "%s - blindscan %s", lb->lb_name, lb_state_str[lb->lb_state]);
     lb_notify(lb);
+    if (lb->lb_state == LB_DONE && lb->lb_lock_snr >= 0)
+      tvhinfo(LS_LINUXDVB, "%s - blindscan: %d new carrier(s) to lock", lb->lb_name, lb_lock_new(lb));
   }
   tvh_mutex_unlock(&global_lock);
 }
@@ -688,7 +692,8 @@ lb_frontend ( mpegts_network_t *mn, linuxdvb_satconf_ele_t **lsep, const char **
 
 int
 linuxdvb_blindscan_start
-  ( mpegts_network_t *mn, const char *pols, uint32_t start, uint32_t end, const char **err )
+  ( mpegts_network_t *mn, const char *pols, uint32_t start, uint32_t end, int lock_snr,
+    const char **err )
 {
   linuxdvb_blindscan_t *lb;
   linuxdvb_frontend_t *lfe;
@@ -724,6 +729,7 @@ linuxdvb_blindscan_start
       lb->lb_pols[i++] = *pols;
   if (i == 0)
     strcpy(lb->lb_pols, "HV");
+  lb->lb_lock_snr = lock_snr;
   lb->lb_start = start ?: 10700000;
   lb->lb_end = end > lb->lb_start ? end : 12750000;
   tvh_mutex_init(&lb->lb_lock, NULL);
@@ -780,10 +786,11 @@ linuxdvb_blindscan_done ( void )
  * A tune at a frequency (global_lock)
  * ----------------------------------------------------------------------*/
 
-/* the mux of the network at freq: within a quarter of the symbol rates,
- * 1 MHz at least; the transponder, not one of its sub-muxes */
+/* the mux of the network at freq: the transponder (not one of its
+ * sub-muxes) whose band freq is in (its symbol rate, rolloff 0.35), 1 MHz
+ * at least - two carriers of one satellite and polarisation do not overlap */
 static dvb_mux_t *
-lb_mux_at ( mpegts_network_t *mn, uint32_t freq, int pol, uint32_t sr )
+lb_mux_at ( mpegts_network_t *mn, uint32_t freq, int pol )
 {
   mpegts_mux_t *mm;
   dvb_mux_t *lm, *best = NULL;
@@ -797,7 +804,7 @@ lb_mux_at ( mpegts_network_t *mn, uint32_t freq, int pol, uint32_t sr )
         lm->lm_tuning.u.dmc_fe_qpsk.polarisation != pol)
       continue;
     d = deltaU32(lm->lm_tuning.dmc_fe_freq, freq);
-    tol = MAX(1000, MIN(lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate, sr) / 4000);
+    tol = MAX(1000, (uint32_t)((uint64_t)lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate * 27 / 40000));
     if (d <= tol && d < bestd) {
       best = lm;
       bestd = d;
@@ -813,7 +820,8 @@ linuxdvb_blindscan_tune
 {
   dvb_mux_t *lm;
   mpegts_mux_t *mm;
-  htsmsg_t *conf;
+  htsmsg_t *conf, *m;
+  char ubuf[UUID_HEX_SIZE];
   int pol, flags = DVB_MUX_BLINDSCAN_TUNE;
 
   lock_assert(&global_lock);
@@ -830,7 +838,7 @@ linuxdvb_blindscan_tune
   pol = pols[0] == 'V' ? DVB_POLARISATION_VERTICAL : DVB_POLARISATION_HORIZONTAL;
   if (range == 0)
     range = MIN(20000, MAX(4000, sr / 1000 * 2));
-  if ((lm = lb_mux_at(mn, freq, pol, sr)) != NULL) {
+  if ((lm = lb_mux_at(mn, freq, pol)) != NULL) {
     mm = (mpegts_mux_t *)lm;
     if (mm->mm_enabled != MM_ENABLE) {
       *err = mm->mm_enabled == MM_IGNORE ? "the mux there is ignored" : "the mux there is disabled";
@@ -860,7 +868,52 @@ linuxdvb_blindscan_tune
   lm->lm_blindscan_range = range;
   mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_USER, SUBSCRIPTION_USERSCAN, 0);
   idnode_uuid_as_str(&mm->mm_id, muxuuid);
+  m = htsmsg_create_map();
+  htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&mn->mn_id, ubuf));
+  htsmsg_add_str(m, "mux", muxuuid);
+  htsmsg_add_str(m, "state", "tuning");
+  htsmsg_add_u32(m, "freq", freq);
+  htsmsg_add_str(m, "pol", pols);
+  htsmsg_add_u32(m, "sr", sr);
+  notify_by_msg("blindscan", m, 0, 0);
   return 0;
+}
+
+/* after a blindscan: a tune at each carrier it found (in the polarisations
+ * it took, not those kept from earlier runs) where the network has no
+ * transponder, at least lock_snr above the noise floor; how many */
+static int
+lb_lock_new ( linuxdvb_blindscan_t *lb )
+{
+  mpegts_network_t *mn = mpegts_network_find(lb->lb_network);
+  htsmsg_t *pols, *carriers, *c;
+  htsmsg_field_t *f, *g;
+  const char *pol, *err;
+  char muxuuid[UUID_HEX_SIZE];
+  uint32_t freq, sr;
+  int64_t snr;
+  int n = 0;
+
+  if (mn == NULL || lb->lb_result == NULL || (pols = htsmsg_get_map(lb->lb_result, "pols")) == NULL)
+    return 0;
+  HTSMSG_FOREACH(f, pols) {
+    pol = htsmsg_field_name(f);
+    if (!pol[0] || pol[1] || !strchr(lb->lb_pols, pol[0]) ||
+        (c = htsmsg_field_get_map(f)) == NULL || (carriers = htsmsg_get_list(c, "carriers")) == NULL)
+      continue;
+    HTSMSG_FOREACH(g, carriers) {
+      if ((c = htsmsg_field_get_map(g)) == NULL ||
+          htsmsg_get_u32(c, "freq", &freq) || htsmsg_get_u32(c, "sr", &sr) ||
+          htsmsg_get_s64(c, "snr", &snr) || snr < lb->lb_lock_snr)
+        continue;
+      if (lb_mux_at(mn, freq, pol[0] == 'V' ? DVB_POLARISATION_VERTICAL
+                                            : DVB_POLARISATION_HORIZONTAL))
+        continue;
+      if (linuxdvb_blindscan_tune(mn, freq, pol, sr, 0, &err, muxuuid) == 0)
+        n++;
+    }
+  }
+  return n;
 }
 
 /* ------------------------------------------------------------------------
