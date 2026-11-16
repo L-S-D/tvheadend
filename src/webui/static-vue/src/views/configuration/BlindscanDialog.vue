@@ -66,6 +66,9 @@ const POINTS = 20000
 const result = ref<BlindscanResult | null>(null)
 const progress = ref<BlindscanResult | null>(null)
 const polSel = ref<'HV' | 'H' | 'V'>('HV')
+/* after the spectrum: a tune at each new carrier this far above the noise */
+const lockNew = ref(false)
+const lockSnrDb = ref(3)
 const startMhz = ref(10700)
 const endMhz = ref(12750)
 const show = ref<Record<Pol, boolean>>({ H: true, V: true })
@@ -193,7 +196,8 @@ const cometOff = cometClient.on('blindscan', (m) => {
   const msg = m as Record<string, unknown>
   if (!props.visible || msg.uuid !== props.networkUuid) return
   if (typeof msg.mux === 'string') {
-    onTuneResult(msg)
+    if (msg.state === 'tuning') onTuneStart(msg)
+    else onTuneResult(msg)
     return
   }
   if (msg.state === 'running') {
@@ -220,6 +224,7 @@ async function start() {
       pols: polSel.value,
       start: Math.round(startMhz.value * 1000),
       end: Math.round(endMhz.value * 1000),
+      lock_snr: lockNew.value ? Math.round(lockSnrDb.value * 100) : undefined,
     })
     if (!r.started) toast.error(r.error ?? t('The blindscan did not start'))
     else {
@@ -580,12 +585,34 @@ async function tune() {
   }
 }
 
+function polOf(v: unknown, def: Pol): Pol {
+  return v === 'H' || v === 'V' ? v : def
+}
+
+/* a tune started (here, or by the blindscan for its new carriers) */
+function onTuneStart(m: Record<string, unknown>) {
+  const uuid = String(m.mux)
+  if (tunes.value[uuid]) return
+  const freq = Number(m.freq ?? 0)
+  const pol = polOf(m.pol, 'H')
+  tunes.value = {
+    ...tunes.value,
+    [uuid]: {
+      freq,
+      pol,
+      state: 'scanning',
+      text: t('Scanning {0} MHz {1}…', (freq / 1000).toFixed(3), pol),
+    },
+  }
+}
+
 function onTuneResult(m: Record<string, unknown>) {
   const uuid = String(m.mux)
   const prev = tunes.value[uuid]
   const ok = m.result === 'ok'
   const freq = Number(m.freq ?? prev?.freq ?? 0)
-  const where = `${(freq / 1000).toFixed(3)} MHz ${prev?.pol ?? ''}`
+  const pol = polOf(m.pol, prev?.pol ?? 'H')
+  const where = `${(freq / 1000).toFixed(3)} MHz ${pol}`
   let text: string
   if (ok && typeof m.same_name === 'string')
     text = t('{0}: locked the transponder {1}, which the network has', where, m.same_name)
@@ -599,13 +626,24 @@ function onTuneResult(m: Record<string, unknown>) {
   else text = t('{0}: the scan failed', where)
   tunes.value = {
     ...tunes.value,
-    [uuid]: { freq, pol: prev?.pol ?? 'H', state: ok ? 'ok' : 'fail', text },
+    [uuid]: { freq, pol, state: ok ? 'ok' : 'fail', text },
   }
   emit('changed')
   void loadMuxes()
 }
 
-const tuneList = computed(() => Object.entries(tunes.value).reverse().slice(0, 5))
+/* the tunes, newest first, and how they went */
+const tuneList = computed(() => Object.entries(tunes.value).reverse())
+const tuneSummary = computed(() => {
+  const all = Object.values(tunes.value)
+  const n = (s: TuneState['state']) => all.filter((x) => x.state === s).length
+  return t(
+    'Tunes: {0} running, {1} locked, {2} without a lock',
+    String(n('scanning')),
+    String(n('ok')),
+    String(n('fail'))
+  )
+})
 
 const header = computed(() => t('Blindscan: {0}', props.networkName))
 </script>
@@ -649,6 +687,28 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
           min="3000"
           max="13000"
           step="10"
+          :disabled="running"
+        />
+      </label>
+      <label
+        class="bs-check"
+        :title="
+          t(
+            'After the spectrum, tune at each carrier found where the network has no transponder; a new mux is kept only when it locks'
+          )
+        "
+      >
+        <input v-model="lockNew" type="checkbox" :disabled="running" />
+        {{ t('Then lock the new carriers') }}
+      </label>
+      <label v-if="lockNew" class="bs-field">
+        <span>{{ t('From SNR (dB)') }}</span>
+        <input
+          v-model.number="lockSnrDb"
+          type="number"
+          min="0"
+          max="30"
+          step="0.5"
           :disabled="running"
         />
       </label>
@@ -826,6 +886,7 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
       <Button size="small" :label="t('Tune and scan')" @click="tune" />
       <Button size="small" text :label="t('Close')" @click="pick = null" />
     </div>
+    <div v-if="tuneList.length" class="bs-tunes-head">{{ tuneSummary }}</div>
     <ul v-if="tuneList.length" class="bs-tunes">
       <li v-for="[k, s] in tuneList" :key="k" :class="`bs-tune--${s.state}`">{{ s.text }}</li>
     </ul>
@@ -997,8 +1058,15 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
   flex-basis: 100%;
   font-size: var(--tvh-text-sm, 0.85rem);
 }
+.bs-tunes-head {
+  margin-top: var(--tvh-space-2, 8px);
+  font-size: var(--tvh-text-sm, 0.85rem);
+  color: var(--tvh-text-muted);
+}
 .bs-tunes {
-  margin: var(--tvh-space-2, 8px) 0 0;
+  max-height: 9em;
+  overflow-y: auto;
+  margin: var(--tvh-space-1, 4px) 0 0;
   padding-left: 1.2em;
   font-size: var(--tvh-text-sm, 0.85rem);
 }
