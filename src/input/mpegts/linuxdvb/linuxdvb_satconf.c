@@ -1297,6 +1297,29 @@ linuxdvb_satconf_blindscan_if
   return f;
 }
 
+/* the direction of the conversion of the LNB for mm: 1 when a higher
+ * transponder frequency is a higher one at the tuner, -1 when lower (C band
+ * LNB), 0 without an LNB for it */
+int
+linuxdvb_satconf_blindscan_dir ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm )
+{
+  linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mm);
+  dvb_mux_t *lm = (dvb_mux_t *)mm;
+  uint32_t f = lm->lm_tuning.dmc_fe_freq, i0, i1;
+  int v = lm->lm_tuning.u.dmc_fe_qpsk.polarisation == DVB_POLARISATION_VERTICAL;
+  int b0, b1;
+
+  if (lse == NULL || lse->lse_lnb == NULL)
+    return 0;
+  i0 = linuxdvb_satconf_blindscan_if(lse, f, v, &b0);
+  i1 = linuxdvb_satconf_blindscan_if(lse, f + 1000, v, &b1);
+  if (b0 != b1) {
+    i1 = i0;
+    i0 = linuxdvb_satconf_blindscan_if(lse, f - 1000, v, NULL);
+  }
+  return i1 >= i0 ? 1 : -1;
+}
+
 /*
  * The RF path for a blindscan: as linuxdvb_satconf_ele_tune() sets it up for
  * a mux of this frequency and polarisation, but without a mux and without

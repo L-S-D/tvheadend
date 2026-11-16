@@ -37,6 +37,13 @@ int linuxdvb_blindscan_start
   ( struct mpegts_network *mn, const char *pols, uint32_t start, uint32_t end,
     const char **err );
 void linuxdvb_blindscan_stop ( struct mpegts_network *mn );
+/* a blind tune at freq (kHz) with the polarisation ("H", "V") and symbol
+ * rate, within range (kHz, the full width; 0: from the symbol rate): the
+ * mux there, else a new one; scanned, a new one deleted when nothing was
+ * found. The mux in muxuuid (UUID_HEX_SIZE) */
+int linuxdvb_blindscan_tune
+  ( struct mpegts_network *mn, uint32_t freq, const char *pol, uint32_t sr,
+    uint32_t range, const char **err, char *muxuuid );
 /* state and the last result, spectra reduced to points points (0 = all) */
 htsmsg_t *linuxdvb_blindscan_result ( struct mpegts_network *mn, int points );
 void linuxdvb_blindscan_done ( void );
