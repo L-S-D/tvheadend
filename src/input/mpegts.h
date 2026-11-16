@@ -485,6 +485,7 @@ struct mpegts_mux
   int                      mm_scan_weight;  ///< Scan priority
   int                      mm_scan_flags;   ///< Subscription flags
   int                      mm_scan_init;    ///< Flag to timeout handler
+  int                      mm_scan_submux_ok; ///< A sub-mux was read while this scan ran
   mtimer_t                 mm_scan_timeout; ///< Timer to handle timeout
   TAILQ_ENTRY(mpegts_mux)  mm_scan_link;    ///< Link to Queue
   mpegts_mux_scan_state_t  mm_scan_state;   ///< Scanning state
