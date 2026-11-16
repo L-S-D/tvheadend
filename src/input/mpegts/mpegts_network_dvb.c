@@ -547,6 +547,41 @@ dvb_network_check_orbital_pos ( int satpos1, int satpos2 )
   return 0;
 }
 
+/* The mux of the carrier of a NIT entry when its present tuning a lock
+ * confirmed (DVB-S): the frequency within half its symbol rate, the same
+ * polarisation and input stream; not a sub-mux, nor an ignored or disabled
+ * mux. Whatever symbol rate, system or transport stream an outdated NIT
+ * gives: two carriers do not overlap. */
+static dvb_mux_t *
+dvb_network_find_mux_trusted ( dvb_network_t *ln, const dvb_mux_conf_t *dmc )
+{
+  mpegts_mux_t *mm;
+  dvb_mux_t *lm;
+  uint32_t sr;
+
+  if (dmc->dmc_fe_type != DVB_TYPE_S)
+    return NULL;
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    if (mpegts_mux_is_submux(mm) || mm->mm_enabled != MM_ENABLE)
+      continue;
+    lm = (dvb_mux_t *)mm;
+    if (lm->lm_tuning.dmc_fe_type != DVB_TYPE_S ||
+        lm->lm_tuning.u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation ||
+        lm->lm_tuning.dmc_fe_stream_id != dmc->dmc_fe_stream_id ||
+        dvb_network_check_orbital_pos(lm->lm_tuning.u.dmc_fe_qpsk.orbital_pos,
+                                      dmc->u.dmc_fe_qpsk.orbital_pos))
+      continue;
+    /* frequencies in kHz, symbol rates in symbols/s */
+    sr = lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate;
+    if (sr == 0 ||
+        2000 * (uint64_t)deltaU32(lm->lm_tuning.dmc_fe_freq, dmc->dmc_fe_freq) >= sr)
+      continue;
+    if (dvb_mux_tuning_trusted(lm))
+      return lm;
+  }
+  return NULL;
+}
+
 #if ENABLE_LINUXDVB_NEUMO
 /* Find mux by physical parameters only (freq + pol for DVB-S): a transponder
  * of the same stream - not a sub-mux, which shares its transponder's tuning,
@@ -1063,6 +1098,10 @@ dvb_network_create_mux
 
   ln = (dvb_network_t*)mn;
   mm = dvb_network_find_mux(ln, dmc, onid, tsid, 0, (ln->mn_autodiscovery == MN_DISCOVERY_CHANGE));
+  /* a carrier whose tuning a lock confirmed: the NIT entry is its mux, not
+   * a new one with the NIT's (maybe outdated) parameters */
+  if (!mm)
+    mm = dvb_network_find_mux_trusted(ln, dmc);
   if (!mm && (ln->mn_autodiscovery != MN_DISCOVERY_DISABLE || force)) {
 #if ENABLE_LINUXDVB_NEUMO
     /* Check if mux with same physical parameters exists */
@@ -1110,6 +1149,7 @@ dvb_network_create_mux
     dvb_mux_conf_t tuning_new, tuning_old;
     dvb_mux_t *lm = (dvb_mux_t*)mm;
     int change = (ln->mn_autodiscovery == MN_DISCOVERY_CHANGE) || force;
+    int trusted, read;
     /* the nit tables may be inconsistent (like rolloff ping-pong) */
     /* accept information only from one origin mux */
     if (mm->mm_dmc_origin_expire > mclk() && mm->mm_dmc_origin && mm->mm_dmc_origin != origin)
@@ -1148,12 +1188,17 @@ dvb_network_create_mux
     /* Do not change anything else without autodiscovery flag */
     if (!ln->mn_autodiscovery)
       goto save;
+    /* parameters a lock confirmed: the NIT may be outdated, it does not
+     * change them - nor FEC and modulation the demodulator reported */
+    trusted = dvb_mux_tuning_trusted(lm);
+    read = trusted && lm->lm_tuning_ok_src >= DVB_MUX_TUNING_READ;
     /* Handle big diffs that have been allowed through for DVB-S */
-    if (deltaU32(dmc->dmc_fe_freq, tuning_new.dmc_fe_freq) > 4000) {
+    if (!trusted && deltaU32(dmc->dmc_fe_freq, tuning_new.dmc_fe_freq) > 4000) {
       tuning_new.dmc_fe_freq = dmc->dmc_fe_freq;
       save |= CBIT_FREQ;
     }
-    save |= COMPAREN(dmc_fe_modulation, CBIT_MODULATION);
+    if (!read)
+      save |= COMPAREN(dmc_fe_modulation, CBIT_MODULATION);
     save |= COMPAREN(dmc_fe_inversion, CBIT_INVERSION);
     save |= COMPAREN(dmc_fe_rolloff, CBIT_ROLLOFF);
     save |= COMPAREN(dmc_fe_pilot, CBIT_PILOT);
@@ -1172,12 +1217,15 @@ dvb_network_create_mux
       save |= COMPARE(u.dmc_fe_qpsk.polarisation, CBIT_POLARISATION);
       /* with "update mux from blindscan" the symbol rate measured by the
        * blind tune wins over the nominal one of the NIT (no flapping) */
-      if (!config.blindscan_update_mux)
+      if (!config.blindscan_update_mux && !trusted)
         save |= COMPARE(u.dmc_fe_qpsk.symbol_rate, CBIT_RATE);
-      save |= COMPARE(dmc_fe_stream_id, CBIT_STREAM_ID);
-      save |= COMPAREN(dmc_fe_pls_mode, CBIT_PLS_MODE);
-      save |= COMPAREN(dmc_fe_pls_code, CBIT_PLS_CODE);
-      save |= COMPAREN(u.dmc_fe_qpsk.fec_inner, CBIT_FEC_INNER);
+      if (!trusted) {
+        save |= COMPARE(dmc_fe_stream_id, CBIT_STREAM_ID);
+        save |= COMPAREN(dmc_fe_pls_mode, CBIT_PLS_MODE);
+        save |= COMPAREN(dmc_fe_pls_code, CBIT_PLS_CODE);
+      }
+      if (!read)
+        save |= COMPAREN(u.dmc_fe_qpsk.fec_inner, CBIT_FEC_INNER);
       break;
     case DVB_TYPE_C:
     case DVB_TYPE_ATSC_C:

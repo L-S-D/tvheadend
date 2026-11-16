@@ -349,6 +349,14 @@ mpegts_network_scan_mux_done0
   }
   mm->mm_scan_submux_ok = 0;
 
+#if ENABLE_MPEGTS_DVB
+  /* a scan with the present tuning failed: after a day of such the NIT
+   * may change parameters a lock had confirmed */
+  if (result == MM_SCAN_FAIL && !mpegts_mux_is_submux(mm) &&
+      idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    dvb_mux_tuning_failed((dvb_mux_t *)mm);
+#endif
+
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {
     mm->mm_scan_last_seen = gclk();
     if (mm->mm_scan_first == 0)

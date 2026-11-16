@@ -1273,43 +1273,14 @@ linuxdvb2tvh_fec(int fec)
   }
 }
 
-#if DVB_VER_ATLEAST(5,0)
-static dvb_fe_pilot_t
-linuxdvb2tvh_pilot(int pilot)
-{
-  switch (pilot) {
-    case PILOT_ON:   return DVB_PILOT_ON;
-    case PILOT_OFF:  return DVB_PILOT_OFF;
-    case PILOT_AUTO: return DVB_PILOT_AUTO;
-    default:         return DVB_PILOT_AUTO;
-  }
-}
-
-static dvb_fe_rolloff_t
-linuxdvb2tvh_rolloff(int rolloff)
-{
-  switch (rolloff) {
-    case ROLLOFF_35:   return DVB_ROLLOFF_35;
-    case ROLLOFF_20:   return DVB_ROLLOFF_20;
-    case ROLLOFF_25:   return DVB_ROLLOFF_25;
-    case ROLLOFF_AUTO: return DVB_ROLLOFF_AUTO;
-#if DVB_VER_ATLEAST(5,12)
-    case ROLLOFF_5:    return DVB_ROLLOFF_5;
-    case ROLLOFF_10:   return DVB_ROLLOFF_10;
-    case ROLLOFF_15:   return DVB_ROLLOFF_15;
-#endif
-    default:           return DVB_ROLLOFF_AUTO;
-  }
-}
-#endif /* DVB_VER_ATLEAST(5,0) */
 
 /*
  * Update mux parameters from blindscan results after lock
- * Only updates: delsys, modulation, fec, pilot, rolloff, pls_mode, pls_code
+ * Only updates: delsys, modulation, fec, pls_mode, pls_code
  * Does NOT update: frequency
  * Symbol rate only if difference > 100kHz
  */
-static void
+static int
 linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
 {
   struct dtv_property props[10];
@@ -1319,11 +1290,11 @@ linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
   char buf[256];
 
   if (!lfe->lfe_neumo_supported)
-    return;
+    return 0;
 
   /* Only for DVB-S/S2 */
   if (lfe->lfe_type != DVB_TYPE_S)
-    return;
+    return 0;
 
   lfe->mi_display_name((mpegts_input_t*)lfe, buf, sizeof(buf));
 
@@ -1341,7 +1312,7 @@ linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
   if (ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &dtv_prop)) {
     tvhwarn(LS_LINUXDVB, "%s - blindscan FE_GET_PROPERTY failed: %s",
             buf, strerror(errno));
-    return;
+    return 0;
   }
 
   /* Delivery System - use existing linuxdvb2tvh_delsys */
@@ -1387,24 +1358,9 @@ linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
   }
 
 #if DVB_VER_ATLEAST(5,0)
-  /* Pilot - only for DVB-S2 */
   if (dmc->dmc_fe_delsys == DVB_SYS_DVBS2) {
-    dvb_fe_pilot_t pilot = linuxdvb2tvh_pilot(props[4].u.data);
-    if (pilot != DVB_PILOT_AUTO && pilot != dmc->dmc_fe_pilot) {
-      tvhdebug(LS_LINUXDVB, "%s - blindscan update pilot: %d -> %d",
-               buf, dmc->dmc_fe_pilot, pilot);
-      dmc->dmc_fe_pilot = pilot;
-      updated = 1;
-    }
-
-    /* Rolloff */
-    dvb_fe_rolloff_t rolloff = linuxdvb2tvh_rolloff(props[5].u.data);
-    if (rolloff != DVB_ROLLOFF_AUTO && rolloff != dmc->dmc_fe_rolloff) {
-      tvhdebug(LS_LINUXDVB, "%s - blindscan update rolloff: %d -> %d",
-               buf, dmc->dmc_fe_rolloff, rolloff);
-      dmc->dmc_fe_rolloff = rolloff;
-      updated = 1;
-    }
+    /* not pilot and rolloff: a tune does not need them (the demodulator
+     * finds them), and they would change the mux at every scan */
 
 #if DVB_VER_ATLEAST(5,9)
     /* PLS Mode and Code - only update if not default (Gold code 0) */
@@ -1436,6 +1392,7 @@ linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
     tvhinfo(LS_LINUXDVB, "%s - mux parameters updated from blindscan", buf);
     idnode_changed(&lm->mm_id);
   }
+  return 1;
 }
 #endif /* ENABLE_LINUXDVB_NEUMO */
 
@@ -1721,6 +1678,7 @@ linuxdvb_frontend_monitor ( void *aux )
 #endif
       tvhdebug(LS_LINUXDVB, "%s - locked", buf);
       lfe->lfe_locked = 1;
+      int params_read = 0, blind = 0;
 
 #if ENABLE_LINUXDVB_NEUMO
       /* the MATYPE is valid a while after the lock */
@@ -1729,9 +1687,23 @@ linuxdvb_frontend_monitor ( void *aux )
       if (config.blindscan_update_mux &&
           config.blindscan_mode >= 1 &&
           mm->mm_scan_state == MM_SCAN_STATE_ACTIVE) {
-        linuxdvb_frontend_blindscan_update_mux(lfe, (dvb_mux_t *)mm);
+        params_read = linuxdvb_frontend_blindscan_update_mux(lfe, (dvb_mux_t *)mm);
       }
+      /* a blind tune (as linuxdvb_frontend_tune0() chooses it) locks the
+       * carrier it finds, whatever the parameters of the mux */
+      blind = lfe->lfe_neumo_supported && lfe->lfe_type == DVB_TYPE_S &&
+              (config.blindscan_mode == 2 ||
+               (config.blindscan_mode == 1 &&
+                (mm->mm_scan_state == MM_SCAN_STATE_ACTIVE ||
+                 mm->mm_scan_state == MM_SCAN_STATE_PEND ||
+                 mm->mm_scan_state == MM_SCAN_STATE_IPEND)));
 #endif
+      /* the present tuning parameters locked: the NIT keeps them (after a
+       * blind tune only those read from the demodulator) */
+      if (params_read)
+        dvb_mux_tuning_confirmed((dvb_mux_t *)mm, DVB_MUX_TUNING_READ);
+      else if (!blind)
+        dvb_mux_tuning_confirmed((dvb_mux_t *)mm, DVB_MUX_TUNING_LOCKED);
 
       /* Start input */
       tvh_pipe(O_NONBLOCK, &lfe->lfe_dvr_pipe);

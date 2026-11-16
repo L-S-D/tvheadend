@@ -1021,6 +1021,31 @@ const idclass_t dvb_mux_dvbs_class =
       .opts     = PO_RDONLY | PO_HIDDEN | PO_NOUI,
     },
     {
+      .type     = PT_TIME,
+      .id       = "tuning_ok",
+      .name     = N_("Tuning confirmed"),
+      .desc     = N_("When a tune with the present tuning parameters last "
+                     "locked. The NIT does not change such parameters, nor "
+                     "adds another mux for the carrier, unless scans failed "
+                     "for a day after that."),
+      .off      = offsetof(dvb_mux_t, lm_tuning_ok),
+      .opts     = PO_RDONLY | PO_EXPERT,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "tuning_ok_key",
+      .name     = N_("Tuning confirmed (key)"),
+      .off      = offsetof(dvb_mux_t, lm_tuning_ok_key),
+      .opts     = PO_RDONLY | PO_HIDDEN | PO_NOUI,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "tuning_ok_src",
+      .name     = N_("Tuning confirmed (source)"),
+      .off      = offsetof(dvb_mux_t, lm_tuning_ok_src),
+      .opts     = PO_RDONLY | PO_HIDDEN | PO_NOUI,
+    },
+    {
       .type     = PT_STR,
       .id       = "orbital",
       .name     = N_("Orbital position"),
@@ -1691,6 +1716,77 @@ dvb_mux_submux_link ( dvb_mux_t *sm, const dvb_mux_t *parent )
     return;
   tvh_str_update(&sm->lm_parent, u);
   idnode_changed(&sm->mm_id);
+}
+
+/*
+ * Tuning parameters a lock confirmed (DVB-S). A key of the parameters a
+ * lock depends on - system, symbol rate, polarisation, stream and PLS -
+ * tells whether the present ones are still those (another change, by
+ * hand or by the NIT, makes them unconfirmed until the next lock).
+ */
+uint32_t
+dvb_mux_tuning_key ( const dvb_mux_conf_t *dmc )
+{
+  uint32_t v[] = {
+    dmc->dmc_fe_delsys, dmc->u.dmc_fe_qpsk.symbol_rate, dmc->u.dmc_fe_qpsk.polarisation,
+    (uint32_t)dmc->dmc_fe_stream_id, dmc->dmc_fe_pls_mode, dmc->dmc_fe_pls_code
+  };
+  uint32_t h = 2166136261u;
+  size_t i;
+
+  for (i = 0; i < ARRAY_SIZE(v); i++) {
+    h = (h ^ (v[i] & 0xffff)) * 16777619u;
+    h = (h ^ (v[i] >> 16)) * 16777619u;
+  }
+  return h ?: 1;
+}
+
+/* a tune with the present parameters locked (src: DVB_MUX_TUNING_*);
+ * saved when the parameters or the source changed, or a day after the
+ * last save - not at every tune */
+void
+dvb_mux_tuning_confirmed ( dvb_mux_t *lm, int src )
+{
+  uint32_t key;
+  time_t now = gclk();
+  int save;
+
+  if (lm->lm_tuning.dmc_fe_type != DVB_TYPE_S)
+    return;
+  key = dvb_mux_tuning_key(&lm->lm_tuning);
+  /* a later plain lock does not lower what the demodulator confirmed */
+  if (key == lm->lm_tuning_ok_key && lm->lm_tuning_ok_src > src)
+    src = lm->lm_tuning_ok_src;
+  save = key != lm->lm_tuning_ok_key || src != lm->lm_tuning_ok_src ||
+         now - lm->lm_tuning_ok >= 24 * 3600;
+  lm->lm_tuning_ok = now;
+  lm->lm_tuning_ok_key = key;
+  lm->lm_tuning_ok_src = src;
+  if (save)
+    idnode_changed(&lm->mm_id);
+}
+
+/* a scan with the present parameters failed */
+void
+dvb_mux_tuning_failed ( dvb_mux_t *lm )
+{
+  time_t now = gclk();
+
+  if (lm->lm_tuning_failed_first <= lm->lm_tuning_ok)
+    lm->lm_tuning_failed_first = now;
+  lm->lm_tuning_failed = now;
+}
+
+/* the present parameters locked, and since then scans did not fail for
+ * a day (failures within a day may be the weather) */
+int
+dvb_mux_tuning_trusted ( const dvb_mux_t *lm )
+{
+  if (lm->lm_tuning.dmc_fe_type != DVB_TYPE_S || !lm->lm_tuning_ok ||
+      lm->lm_tuning_ok_key != dvb_mux_tuning_key(&lm->lm_tuning))
+    return 0;
+  return lm->lm_tuning_failed_first <= lm->lm_tuning_ok ||
+         lm->lm_tuning_failed - lm->lm_tuning_failed_first < 24 * 3600;
 }
 
 /* a mux whose TS can carry a sub-mux in a PID (a T2-MI stream, a DAB
