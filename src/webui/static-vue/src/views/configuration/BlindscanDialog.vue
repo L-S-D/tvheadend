@@ -18,6 +18,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
+import { Loader2 } from 'lucide-vue-next'
 import { apiCall } from '@/api/client'
 import { cometClient } from '@/api/comet'
 import { useI18n } from '@/composables/useI18n'
@@ -89,6 +90,12 @@ interface Pick {
 const pick = ref<Pick | null>(null)
 
 const running = computed(() => progress.value?.state === 'running')
+/* the share of the slices taken, for the bar */
+const progressPct = computed(() => {
+  const p = progress.value
+  if (!p?.slices) return 0
+  return Math.min(100, Math.max(0, (100 * Math.max(0, (p.slice ?? 0) - 1)) / p.slices))
+})
 const muxRows = ref<MuxRow[]>([])
 const muxes = computed<GraphMux[]>(() => graphMuxes(muxRows.value))
 
@@ -643,6 +650,9 @@ function onTuneResult(m: Record<string, unknown>) {
 
 /* the tunes, newest first, and how they went */
 const tuneList = computed(() => Object.entries(tunes.value).reverse())
+const tunesRunning = computed(
+  () => Object.values(tunes.value).filter((x) => x.state === 'scanning').length
+)
 const tuneSummary = computed(() => {
   const all = Object.values(tunes.value)
   const n = (s: TuneState['state']) => all.filter((x) => x.state === s).length
@@ -729,9 +739,21 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
         @click="start"
       />
       <Button v-else size="small" severity="danger" :label="t('Stop')" @click="stop" />
-      <span class="bs-status" :class="{ 'bs-status--err': progress?.state === 'failed' }">{{
-        statusText
-      }}</span>
+      <span class="bs-status" :class="{ 'bs-status--err': progress?.state === 'failed' }">
+        <Loader2 v-if="running" :size="14" :stroke-width="2" class="bs-spin" aria-hidden="true" />
+        {{ statusText }}
+      </span>
+    </div>
+    <div
+      v-if="running"
+      class="bs-progress"
+      role="progressbar"
+      :aria-label="t('Blindscan')"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuenow="Math.round(progressPct)"
+    >
+      <div class="bs-progress__fill" :style="{ width: `${progressPct}%` }" />
     </div>
     <div class="bs-bar bs-bar--small">
       <label v-for="p in POLS" :key="p" class="bs-check" :class="`bs-check--${p}`">
@@ -750,6 +772,7 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
     <svg
       ref="svgEl"
       class="bs-graph"
+      :class="{ 'bs-graph--stale': running }"
       :viewBox="`0 0 ${W} ${H}`"
       role="img"
       :aria-label="t('Spectrum')"
@@ -888,9 +911,27 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
       <Button size="small" :label="t('Tune and scan')" @click="tune" />
       <Button size="small" text :label="t('Close')" @click="pick = null" />
     </div>
-    <div v-if="tuneList.length" class="bs-tunes-head">{{ tuneSummary }}</div>
+    <div v-if="tuneList.length" class="bs-tunes-head">
+      <Loader2
+        v-if="tunesRunning"
+        :size="14"
+        :stroke-width="2"
+        class="bs-spin"
+        aria-hidden="true"
+      />
+      {{ tuneSummary }}
+    </div>
     <ul v-if="tuneList.length" class="bs-tunes">
-      <li v-for="[k, s] in tuneList" :key="k" :class="`bs-tune--${s.state}`">{{ s.text }}</li>
+      <li v-for="[k, s] in tuneList" :key="k" :class="`bs-tune--${s.state}`">
+        <Loader2
+          v-if="s.state === 'scanning'"
+          :size="12"
+          :stroke-width="2"
+          class="bs-spin"
+          aria-hidden="true"
+        />
+        {{ s.text }}
+      </li>
     </ul>
   </Dialog>
 </template>
@@ -930,8 +971,46 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
   font-size: var(--tvh-text-sm, 0.85rem);
 }
 .bs-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: var(--tvh-text-sm, 0.85rem);
   color: var(--tvh-text-muted);
+}
+/* running: a blindscan or a tune */
+.bs-spin {
+  flex: none;
+  vertical-align: -2px;
+  animation: bs-spin 1.2s linear infinite;
+}
+@keyframes bs-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bs-spin {
+    animation: none;
+  }
+}
+.bs-progress {
+  height: 3px;
+  margin: 0 0 var(--tvh-space-2, 8px);
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--tvh-border);
+}
+.bs-progress__fill {
+  height: 100%;
+  background: var(--tvh-primary);
+  transition: width 0.4s ease;
+}
+/* the spectrum shown is the one before: a new one is being taken */
+.bs-graph--stale {
+  opacity: 0.55;
 }
 .bs-status--err {
   color: var(--tvh-error);
@@ -1056,6 +1135,9 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
   font-size: var(--tvh-text-sm, 0.85rem);
 }
 .bs-tunes-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: var(--tvh-space-2, 8px);
   font-size: var(--tvh-text-sm, 0.85rem);
   color: var(--tvh-text-muted);
