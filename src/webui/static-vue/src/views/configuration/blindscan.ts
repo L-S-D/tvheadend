@@ -41,12 +41,24 @@ export interface BlindscanResult {
   state?: string
   slice?: number
   slices?: number
+  /* the polarisations of the blindscan (running or the last one): HV, H, V */
+  run_pols?: string
+  /* the one being taken */
   pol?: string
   error?: string
   /* seconds since 1970 of the result kept */
   time?: number
   frontend?: string
   pols?: Partial<Record<Pol, BlindscanPol>>
+}
+
+export type PolSel = 'HV' | 'H' | 'V'
+
+/* H, V or both, from a string of them (HV, VH, H, ...); null without one */
+export function polSelOf(pols: string | undefined | null): PolSel | null {
+  const h = !!pols?.includes('H')
+  const v = !!pols?.includes('V')
+  return h && v ? 'HV' : h ? 'H' : v ? 'V' : null
 }
 
 /* a transponder of the network, for the graph */

@@ -33,12 +33,14 @@ import {
   levelRange,
   muxOfCarrier,
   muxWidth,
+  polSelOf,
   ticks,
   type BlindscanCarrier,
   type BlindscanPol,
   type BlindscanResult,
   type GraphMux,
   type Pol,
+  type PolSel,
 } from './blindscan'
 
 const { t } = useI18n()
@@ -67,13 +69,13 @@ const POINTS = 20000
 
 const result = ref<BlindscanResult | null>(null)
 const progress = ref<BlindscanResult | null>(null)
-const polSel = ref<'HV' | 'H' | 'V'>('HV')
+/* the polarisations to take and to show: those of a running blindscan */
+const polSel = ref<PolSel>('HV')
 /* after the spectrum: a tune at each new carrier this far above the noise */
 const lockNew = ref(false)
 const lockSnrDb = ref(3)
 const startMhz = ref(10700)
 const endMhz = ref(12750)
-const show = ref<Record<Pol, boolean>>({ H: true, V: true })
 const view = ref<[number, number] | null>(null)
 const busy = ref(false)
 
@@ -90,6 +92,13 @@ interface Pick {
 const pick = ref<Pick | null>(null)
 
 const running = computed(() => progress.value?.state === 'running')
+const shown = (p: Pol) => polSel.value.includes(p)
+watch(
+  () => (running.value ? polSelOf(progress.value?.run_pols) : null),
+  (rp) => {
+    if (rp) polSel.value = rp
+  }
+)
 /* the share of the slices taken, for the bar */
 const progressPct = computed(() => {
   const p = progress.value
@@ -119,7 +128,7 @@ async function loadMuxes() {
 }
 
 /* the polarisations of the result, their levels above the noise floor */
-const shown = computed(() => {
+const aboveFloorPols = computed(() => {
   const out: Partial<Record<Pol, BlindscanPol>> = {}
   for (const p of POLS) {
     const d = result.value?.pols?.[p]
@@ -129,7 +138,7 @@ const shown = computed(() => {
 })
 
 function polData(p: Pol): BlindscanPol | null {
-  return shown.value[p] ?? null
+  return aboveFloorPols.value[p] ?? null
 }
 
 /* the frequencies of the result, or of the range asked for */
@@ -194,6 +203,8 @@ watch(
     muxRows.value = []
     void loadMuxes()
     await loadFull()
+    /* what the result has (a running blindscan: its own, by the watch) */
+    if (!running.value) polSel.value = polSelOf(POLS.filter((p) => polData(p)).join('')) ?? 'HV'
     if (running.value) follow()
   },
   { immediate: true }
@@ -248,6 +259,7 @@ async function start() {
       progress.value = {
         ...(progress.value ?? {}),
         state: 'running',
+        run_pols: polSel.value,
         slice: 0,
         slices: 0,
         error: undefined,
@@ -339,7 +351,9 @@ const LANES: Array<{ pol: Pol; kind: 'mux' | 'found' }> = [
   { pol: 'V', kind: 'mux' },
   { pol: 'V', kind: 'found' },
 ]
-const H = LANE_Y + LANES.length * (LANE_H + LANE_GAP) + 4
+/* the lanes of the polarisations shown */
+const lanes = computed(() => LANES.filter((ln) => shown(ln.pol)))
+const H = computed(() => LANE_Y + lanes.value.length * (LANE_H + LANE_GAP) + 4)
 
 function laneY(i: number): number {
   return LANE_Y + i * (LANE_H + LANE_GAP)
@@ -348,7 +362,7 @@ function laneY(i: number): number {
 const levels = computed<[number, number]>(() => {
   const [lo, hi] = range.value
   return levelRange(
-    POLS.filter((p) => show.value[p])
+    POLS.filter((p) => shown(p))
       .map((p) => polData(p))
       .filter((d): d is BlindscanPol => !!d),
     lo,
@@ -370,7 +384,7 @@ function y(l: number): number {
 }
 
 const curves = computed(() =>
-  POLS.filter((p) => show.value[p] && polData(p)).map((p) => {
+  POLS.filter((p) => shown(p) && polData(p)).map((p) => {
     const d = polData(p)!
     const pts = decimate(d.freq, d.level, range.value[0], range.value[1], (X1 - X0) * 2)
     return {
@@ -414,7 +428,7 @@ function muxState(m: GraphMux): string {
 
 const laneRects = computed<LaneRect[]>(() => {
   const out: LaneRect[] = []
-  LANES.forEach((ln, i) => {
+  lanes.value.forEach((ln, i) => {
     if (ln.kind === 'mux') {
       for (const m of muxes.value) {
         if (m.pol !== ln.pol) continue
@@ -459,7 +473,10 @@ const dragFrom = ref<number | null>(null)
 
 function svgPoint(e: PointerEvent | MouseEvent): { px: number; py: number } {
   const r = svgEl.value!.getBoundingClientRect()
-  return { px: ((e.clientX - r.left) * W) / r.width, py: ((e.clientY - r.top) * H) / r.height }
+  return {
+    px: ((e.clientX - r.left) * W) / r.width,
+    py: ((e.clientY - r.top) * H.value) / r.height,
+  }
 }
 
 function onDown(e: PointerEvent) {
@@ -498,7 +515,7 @@ const hoverText = computed(() => {
   const parts = [`${(f / 1000).toFixed(3)} MHz`]
   for (const p of POLS) {
     const d = polData(p)
-    if (!d || !show.value[p]) continue
+    if (!d || !shown(p)) continue
     const l = levelAt(d.freq, d.level, f)
     if (l !== null) parts.push(`${p} ${(l / 100).toFixed(1)} dB`)
   }
@@ -516,7 +533,7 @@ function carrierAt(p: Pol, f: number): Found | null {
 function pickAt(px: number, py: number) {
   const f = fAt(px)
   /* a lane: what is there */
-  const li = LANES.findIndex((_, i) => py >= laneY(i) - 1 && py <= laneY(i) + LANE_H + 1)
+  const li = lanes.value.findIndex((_, i) => py >= laneY(i) - 1 && py <= laneY(i) + LANE_H + 1)
   if (li >= 0) {
     const hit = laneRects.value.find((r) => r.lane === li && px >= r.x - 2 && px <= r.x + r.w + 2)
     if (!hit) return
@@ -531,7 +548,7 @@ function pickAt(px: number, py: number) {
   let best = -Infinity
   for (const p of POLS) {
     const d = polData(p)
-    if (!d || !show.value[p]) continue
+    if (!d || !shown(p)) continue
     const l = levelAt(d.freq, d.level, f)
     if (l !== null && l > best) {
       best = l
@@ -756,10 +773,6 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
       <div class="bs-progress__fill" :style="{ width: `${progressPct}%` }" />
     </div>
     <div class="bs-bar bs-bar--small">
-      <label v-for="p in POLS" :key="p" class="bs-check" :class="`bs-check--${p}`">
-        <input v-model="show[p]" type="checkbox" />
-        {{ p }}
-      </label>
       <Button v-if="view" size="small" text :label="t('Show all')" @click="resetZoom" />
       <span class="bs-hint">{{
         hoverText ||
@@ -811,12 +824,12 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
       </g>
       <g>
         <text
-          v-for="(ln, i) in LANES"
-          :key="`l${i}`"
+          v-for="(ln, i) in lanes"
+          :key="`l${ln.pol}${ln.kind}`"
           :x="X0 - 6"
           :y="laneY(i) + LANE_H - 2"
           text-anchor="end"
-          class="bs-lane-label"
+          :class="`bs-lane-label bs-lane-label--${ln.pol}`"
         >
           {{ ln.pol }} {{ ln.kind === 'mux' ? t('TP') : t('found') }}
         </text>
@@ -964,12 +977,6 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
   color: var(--tvh-text);
   font: inherit;
 }
-.bs-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: var(--tvh-text-sm, 0.85rem);
-}
 .bs-status {
   display: inline-flex;
   align-items: center;
@@ -1048,15 +1055,18 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-.bs-curve--H,
-.bs-check--H {
+.bs-curve--H {
   stroke: var(--tvh-primary);
-  color: var(--tvh-primary);
 }
-.bs-curve--V,
-.bs-check--V {
+.bs-curve--V {
   stroke: var(--tvh-warning);
-  color: var(--tvh-warning-text, var(--tvh-warning));
+}
+/* the labels of the lanes name the colours of the polarisations */
+.bs-lane-label--H {
+  fill: var(--tvh-primary);
+}
+.bs-lane-label--V {
+  fill: var(--tvh-warning-text, var(--tvh-warning));
 }
 .bs-noise {
   stroke: var(--tvh-text-muted, currentColor);
