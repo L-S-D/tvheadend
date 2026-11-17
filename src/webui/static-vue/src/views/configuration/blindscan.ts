@@ -250,6 +250,44 @@ export interface PidStat {
   /* the BBFrames the demodulator passes (a generic stream) */
   bbframes?: { frames: number; hem: number; dfl_bits: number; matype?: number; isis?: number[] }
 }
+export interface IpStat {
+  packets: number
+  bytes: number
+}
+export interface GseFlow {
+  addr: string
+  port: number
+  packets: number
+  bytes: number
+  /* udp, ts, rtp, rtp-ts, edi */
+  kind: string
+  rtp_pt?: number
+}
+/* what the BBFrames of the demodulator carried (generic streams, GSE) */
+export interface GseContent {
+  /* frames by TS/GS: packetized, continuous, GSE-HEM, TS */
+  frames: number[]
+  /* generic frames with user packets (no GSE), their UPL in bits */
+  frames_upl?: number
+  upl?: number
+  isis?: number[]
+  packets: number
+  pdus: number
+  fragmented: number
+  crc_errors: number
+  length_errors: number
+  /* PDUs with a right CRC-32 and another total length (an encoder's) */
+  length_off?: number
+  corrupt: number
+  hem_errors: number
+  protocols: Array<{ type: number; pdus: number; bytes: number }>
+  labels: { six: number; three: number; broadcast: number; distinct: number; more?: boolean }
+  ip: Record<string, IpStat>
+  flows: GseFlow[]
+  flows_other?: number
+  /* the TS of generic streams of 188 byte user packets */
+  ts?: TsContent
+}
 export interface TsContent {
   /* microseconds from the first packet to the last */
   us: number
@@ -258,6 +296,7 @@ export interface TsContent {
   tei: number
   pids: number
   list?: PidStat[]
+  gse?: GseContent
 }
 
 /* a tune from the dialog, or of the blindscan for a new carrier */
@@ -378,6 +417,122 @@ function pesName(sid: number): string {
   return `PES ${hex(sid, 2)}`
 }
 
+const PROTOCOL_NAMES: Record<number, string> = {
+  0x0800: 'IPv4',
+  0x86dd: 'IPv6',
+  0x0806: 'ARP',
+  0x8100: 'VLAN',
+  0x88e5: 'MACsec',
+}
+
+function protocolName(type: number): string {
+  if (PROTOCOL_NAMES[type]) return PROTOCOL_NAMES[type]
+  return type < 0x0600 ? `extension header ${hex(type, 4)}` : hex(type, 4)
+}
+
+const FLOW_KINDS: Record<string, string> = {
+  udp: 'UDP',
+  ts: 'MPEG-TS',
+  rtp: 'RTP',
+  'rtp-ts': 'MPEG-TS in RTP',
+  edi: 'DAB EDI',
+}
+
+/* what the generic streams carried, as lines (us: the time they took) */
+export function gseLines(g: GseContent, us: number, t: Translate): string[] {
+  const lines: string[] = []
+  const [gp, gc, hem] = g.frames
+  const types = [
+    gc ? t('{0} generic continuous', String(gc)) : '',
+    gp ? t('{0} generic packetized', String(gp)) : '',
+    hem ? t('{0} GSE-HEM', String(hem)) : '',
+  ].filter(Boolean)
+  if (types.length)
+    lines.push(
+      t('Generic stream frames: {0}', types.join(', ')) +
+        (g.isis?.length ? ` · ISI ${g.isis.join(', ')}` : '')
+    )
+  if (g.frames_upl && g.upl)
+    lines.push(
+      t(
+        '{0} frames with user packets of {1} bytes: no GSE',
+        String(g.frames_upl),
+        String(g.upl / 8)
+      )
+    )
+  if (g.ts?.packets) {
+    lines.push(t('The TS in them:'))
+    for (const l of contentLines(g.ts, t)) lines.push(`  ${l}`)
+  }
+  if (gc + gp + hem > (g.frames_upl ?? 0)) {
+    const errs = [
+      g.crc_errors ? t('{0} CRC errors', String(g.crc_errors)) : '',
+      g.length_errors ? t('{0} length errors', String(g.length_errors)) : '',
+      g.length_off ? t('{0} with another total length (CRC right)', String(g.length_off)) : '',
+      g.corrupt ? t('{0} times no GSE', String(g.corrupt)) : '',
+      g.hem_errors ? t('{0} GSE-HEM frames that did not fit', String(g.hem_errors)) : '',
+    ].filter(Boolean)
+    lines.push(
+      t(
+        'GSE: {0} packets, {1} PDUs ({2} put together from fragments)',
+        String(g.packets),
+        String(g.pdus),
+        String(g.fragmented)
+      ) + (errs.length ? ` · ${errs.join(', ')}` : '')
+    )
+  }
+  if (g.protocols.length) {
+    const total = g.protocols.reduce((a, p) => a + p.bytes, 0) || 1
+    lines.push(
+      t(
+        'Protocols: {0}',
+        g.protocols
+          .map(
+            (p) =>
+              `${protocolName(p.type)} ${((100 * p.bytes) / total).toFixed(0)} % (${rateText(p.bytes * 8, us)})`
+          )
+          .join(', ')
+      )
+    )
+    const lb = g.labels
+    lines.push(
+      t(
+        'Labels: {0} of 6 bytes, {1} of 3 bytes, {2} broadcast; {3} different',
+        String(lb.six),
+        String(lb.three),
+        String(lb.broadcast),
+        `${lb.distinct}${lb.more ? '+' : ''}`
+      )
+    )
+  }
+  const ip = g.ip ?? {}
+  const ipParts: Array<[string, string]> = [
+    ['v4_multicast', 'IPv4 multicast'],
+    ['v4_broadcast', 'IPv4 broadcast'],
+    ['v4_unicast_udp', 'IPv4 unicast UDP'],
+    ['v4_unicast_tcp', 'IPv4 unicast TCP'],
+    ['v4_unicast_other', 'IPv4 unicast other'],
+    ['v6_multicast', 'IPv6 multicast'],
+    ['v6_unicast_udp', 'IPv6 unicast UDP'],
+    ['v6_unicast_tcp', 'IPv6 unicast TCP'],
+    ['v6_unicast_other', 'IPv6 unicast other'],
+  ]
+  const ipText = ipParts
+    .filter(([k]) => ip[k]?.packets)
+    .map(([k, name]) => `${name} ${rateText(ip[k].bytes * 8, us)}`)
+  if (ipText.length) lines.push(ipText.join(' · '))
+  for (const f of g.flows ?? [])
+    lines.push(
+      `${f.addr.includes(':') ? `[${f.addr}]` : f.addr}:${f.port}: ${rateText(f.bytes * 8, us)} · ` +
+        (FLOW_KINDS[f.kind] ?? f.kind) +
+        (f.rtp_pt !== undefined && f.kind !== 'rtp-ts'
+          ? ` (${t('payload type {0}', String(f.rtp_pt))})`
+          : '')
+    )
+  if (g.flows_other) lines.push(t('{0} packets of further groups', String(g.flows_other)))
+  return lines
+}
+
 /* the statistics of the PIDs as lines: the total, then a line per PID */
 export function contentLines(c: TsContent, t: Translate): string[] {
   if (!c.packets) return [t('No TS packets')]
@@ -413,5 +568,6 @@ export function contentLines(c: TsContent, t: Translate): string[] {
       `PID ${p.pid} (${hex(p.pid, 4)}): ${rateText(p.packets * 1504, c.us)} · ${what.join(' · ')}`
     )
   }
+  if (c.gse) lines.push(...gseLines(c.gse, c.us, t))
   return lines
 }

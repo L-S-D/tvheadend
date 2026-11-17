@@ -1459,7 +1459,7 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
 }
 .bs-content-line {
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  white-space: pre;
 }
 .bs-services-wrap {
   max-height: 16em;
