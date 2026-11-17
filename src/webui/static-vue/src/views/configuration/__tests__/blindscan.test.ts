@@ -11,6 +11,7 @@ import {
   levelRange,
   muxOfCarrier,
   muxWidth,
+  polSelOf,
   ticks,
 } from '../blindscan'
 import type { MuxRow } from '../muxTree'
@@ -144,5 +145,16 @@ describe('the noise floor', () => {
       2000, 1000,
     ])
     expect(aboveFloor({ freq: [0], level: [-6000] }).level).toEqual([-6000])
+  })
+})
+
+describe('polSelOf', () => {
+  it('H, V or both', () => {
+    expect(polSelOf('HV')).toBe('HV')
+    expect(polSelOf('VH')).toBe('HV')
+    expect(polSelOf('H')).toBe('H')
+    expect(polSelOf('V')).toBe('V')
+    expect(polSelOf('')).toBeNull()
+    expect(polSelOf(undefined)).toBeNull()
   })
 })
