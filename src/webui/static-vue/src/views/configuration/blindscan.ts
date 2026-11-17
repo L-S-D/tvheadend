@@ -106,17 +106,19 @@ export function muxWidth(sr: number): number {
   return (sr * 1.35) / 1000
 }
 
-/* the transponder a carrier belongs to: same polarisation, its middle in
- * the band of the transponder (1 MHz at least) - two carriers of one
- * satellite and polarisation do not overlap; as the server picks the mux
- * of a tune */
+/* the transponder a carrier is: same polarisation, each one's middle in
+ * the band of the other (1 MHz at least) - two carriers of one satellite
+ * and polarisation do not overlap; a narrow carrier in the band of a wide
+ * transponder (an outdated one) is not it. As the server picks the mux of
+ * a tune */
 export function muxOfCarrier(c: BlindscanCarrier, pol: Pol, muxes: GraphMux[]): GraphMux | null {
   let best: GraphMux | null = null
   let bestD = Infinity
   for (const m of muxes) {
     if (m.pol !== pol) continue
     const d = Math.abs(m.freq - c.freq)
-    const tol = Math.max(1000, muxWidth(m.sr) / 2)
+    const sr = c.sr > 0 && (!m.sr || c.sr < m.sr) ? c.sr : m.sr
+    const tol = Math.max(1000, muxWidth(sr) / 2)
     if (d <= tol && d < bestD) {
       best = m
       bestD = d
