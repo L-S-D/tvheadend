@@ -19,15 +19,17 @@
 
 /*
  * The spectrum of a satellite position, taken by the demodulator in slices,
- * is merged into one (the levels of the slices matched where they overlap)
- * and smoothed twice (Gauss, sigma 2 and 5 samples); a carrier is a peak at
- * least min_snr_db above the noise floor and as prominent, its edges where
- * the level falls 3 dB below the peak. The results of both smoothings are
- * merged, the wider of two overlapping carriers kept.
+ * is merged into one (the levels of the slices matched where they overlap).
+ * Its noise floor along the band is the lower envelope of the levels, which
+ * leaves out the carriers. The levels above that floor are smoothed twice
+ * (Gauss, sigma 2 and 5 samples); a carrier is a peak at least min_snr_db
+ * above the floor and as prominent, its edges where the level falls 3 dB
+ * below the peak. The results of both smoothings are merged, the wider of
+ * two overlapping carriers kept.
  *
  * The arithmetic follows what NumPy/SciPy do for the same steps (percentile,
- * gaussian_filter1d, find_peaks, interp), so results can be compared with an
- * implementation using them.
+ * gaussian_filter1d, find_peaks, interp, minimum/maximum/uniform_filter1d),
+ * so results can be compared with an implementation using them.
  */
 
 #include "dvb_blindscan_detect.h"
@@ -46,6 +48,8 @@ dvb_blindscan_params_default ( dvb_blindscan_params_t *p )
   p->min_snr_db  = 3;
   p->overlap_khz = 20000;
   p->extract_khz = 40000;
+  p->floor_block_khz = 2000;
+  p->floor_window_khz = 120000;
 }
 
 void
@@ -55,6 +59,8 @@ dvb_blindscan_spectrum_free ( dvb_blindscan_spectrum_t *s )
     return;
   free(s->freq_khz);
   free(s->level_db);
+  free(s->floor_freq_khz);
+  free(s->floor_db);
   memset(s, 0, sizeof(*s));
 }
 
@@ -145,6 +151,14 @@ np_interp ( double x, const double *xp, const double *fp, size_t n )
       hi = mid;
   }
   return (fp[hi] - fp[lo]) / (xp[hi] - xp[lo]) * (x - xp[lo]) + fp[lo];
+}
+
+double
+dvb_blindscan_floor_at ( const dvb_blindscan_spectrum_t *s, double freq_khz )
+{
+  if (s->floor_count == 0)
+    return s->noise_db;
+  return np_interp(freq_khz, s->floor_freq_khz, s->floor_db, s->floor_count);
 }
 
 /* scipy.ndimage.gaussian_filter1d(x, sigma) (truncate 4, mode "reflect") */
@@ -278,10 +292,11 @@ find_peaks ( const double *x, size_t n, double height, double prominence,
  * Detection
  * ----------------------------------------------------------------------*/
 
+/* peaks_sm, edge_sm: the smoothed levels above the noise floor (base) */
 static long
 detect1 ( const dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p,
-          const double *peaks_sm, const double *edge_sm, int sigma,
-          dvb_blindscan_carrier_t **out )
+          const double *peaks_sm, const double *edge_sm, const double *base,
+          int sigma, dvb_blindscan_carrier_t **out )
 {
   dvb_blindscan_carrier_t *c;
   size_t *pk = NULL, i, li, ri;
@@ -289,7 +304,7 @@ detect1 ( const dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p,
   double lvl, thr;
 
   *out = NULL;
-  n = find_peaks(peaks_sm, s->count, s->noise_db + p->min_snr_db, p->min_snr_db, 10, &pk);
+  n = find_peaks(peaks_sm, s->count, p->min_snr_db, p->min_snr_db, 10, &pk);
   if (n <= 0)
     return n;
   if ((c = calloc(n, sizeof(*c))) == NULL) {
@@ -299,8 +314,8 @@ detect1 ( const dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p,
   for (k = 0; k < n; k++) {
     lvl = peaks_sm[pk[k]];
     thr = lvl - 3.0;
-    if (thr < s->noise_db + 3.0)
-      thr = s->noise_db + 3.0;
+    if (thr < 3.0)
+      thr = 3.0;
     li = pk[k];
     for (i = pk[k]; i-- > 0; ) {
       li = i;
@@ -317,8 +332,8 @@ detect1 ( const dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p,
     c[cnt].right_khz = s->freq_khz[ri];
     c[cnt].bw_khz    = c[cnt].right_khz - c[cnt].left_khz;
     c[cnt].freq_khz  = (c[cnt].left_khz + c[cnt].right_khz) / 2.0;
-    c[cnt].snr_db    = lvl - s->noise_db;
-    c[cnt].peak_db   = lvl;
+    c[cnt].snr_db    = lvl;
+    c[cnt].peak_db   = lvl + base[pk[k]];
     c[cnt].sigma     = sigma;
     if (c[cnt].bw_khz < p->min_bw_khz || c[cnt].bw_khz > p->max_bw_khz ||
         c[cnt].snr_db < p->min_snr_db)
@@ -349,9 +364,10 @@ dvb_blindscan_detect
     dvb_blindscan_carrier_t **out )
 {
   dvb_blindscan_carrier_t *c2 = NULL, *c5 = NULL, *m = NULL, *t;
-  double *sm2 = NULL, *sm5 = NULL;
+  double *sm2 = NULL, *sm5 = NULL, *base = NULL, *above = NULL;
   char *used = NULL;
   long n2, n5, i, j, k = 0, l;
+  size_t q;
   int r = -1;
 
   *out = NULL;
@@ -359,12 +375,18 @@ dvb_blindscan_detect
     return 0;
   sm2 = malloc(s->count * sizeof(double));
   sm5 = malloc(s->count * sizeof(double));
-  if (sm2 == NULL || sm5 == NULL)
+  base = malloc(s->count * sizeof(double));
+  above = malloc(s->count * sizeof(double));
+  if (sm2 == NULL || sm5 == NULL || base == NULL || above == NULL)
     goto end;
-  gauss1d(s->level_db, s->count, 2, sm2);
-  gauss1d(s->level_db, s->count, 5, sm5);
-  if ((n2 = detect1(s, p, sm2, sm2, 2, &c2)) < 0 ||
-      (n5 = detect1(s, p, sm5, sm2, 5, &c5)) < 0)
+  for (q = 0; q < s->count; q++) {
+    base[q] = dvb_blindscan_floor_at(s, s->freq_khz[q]);
+    above[q] = s->level_db[q] - base[q];
+  }
+  gauss1d(above, s->count, 2, sm2);
+  gauss1d(above, s->count, 5, sm5);
+  if ((n2 = detect1(s, p, sm2, sm2, base, 2, &c2)) < 0 ||
+      (n5 = detect1(s, p, sm5, sm2, base, 5, &c5)) < 0)
     goto end;
   if (n2 + n5 == 0) {
     r = 0;
@@ -404,6 +426,8 @@ dvb_blindscan_detect
 end:
   free(sm2);
   free(sm5);
+  free(base);
+  free(above);
   free(c2);
   free(c5);
   free(m);
@@ -635,6 +659,72 @@ end:
   return r;
 }
 
+/* the noise floor along the band: the 10th percentile of each block of
+ * floor_block_khz; of these the lower envelope over floor_window_khz (a
+ * minimum and then a maximum filter: what is narrower than the window, a
+ * carrier, goes, a straight slope stays as it is), and that smoothed by a
+ * mean over the window. Beyond the ends the values at the ends count, as
+ * scipy.ndimage's mode "nearest" does. */
+static int
+spectrum_floor ( dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p )
+{
+  double step, v, *bl = NULL, *bf = NULL, *t = NULL;
+  size_t nb, n, k, a, b, h, j;
+  long i;
+
+  if (s->count == 0 || p->floor_block_khz <= 0)
+    return 0;
+  step = s->count > 1 ?
+         (s->freq_khz[s->count - 1] - s->freq_khz[0]) / (double)(s->count - 1) : 1;
+  nb = step > 0 ? (size_t)(p->floor_block_khz / step + 0.5) : 1;
+  if (nb < 1)
+    nb = 1;
+  n = s->count / nb;
+  if (n == 0) {
+    n = 1;
+    nb = s->count;
+  }
+  bl = malloc(n * sizeof(double));
+  bf = malloc(n * sizeof(double));
+  t = malloc(n * sizeof(double));
+  if (bl == NULL || bf == NULL || t == NULL)
+    goto fail;
+  for (k = 0; k < n; k++) {
+    a = k * nb;
+    b = k + 1 == n ? s->count : a + nb;
+    bl[k] = np_percentile(s->level_db + a, b - a, 10);
+    if (isnan(bl[k]))
+      goto fail;
+    bf[k] = (s->freq_khz[a] + s->freq_khz[b - 1]) / 2;
+  }
+  h = (size_t)(p->floor_window_khz / p->floor_block_khz / 2 + 0.5);
+#define FLOOR_AT(arr, x) (arr)[(x) < 0 ? 0 : (x) >= (long)n ? (long)n - 1 : (x)]
+  for (k = 0; k < n; k++)               /* minimum */
+    for (t[k] = bl[k], i = (long)k - (long)h; i <= (long)(k + h); i++)
+      if ((v = FLOOR_AT(bl, i)) < t[k])
+        t[k] = v;
+  for (k = 0; k < n; k++)               /* maximum of the minima */
+    for (bl[k] = t[k], i = (long)k - (long)h; i <= (long)(k + h); i++)
+      if ((v = FLOOR_AT(t, i)) > bl[k])
+        bl[k] = v;
+  for (k = 0; k < n; k++) {             /* mean */
+    for (v = 0, j = 0, i = (long)k - (long)h; i <= (long)(k + h); i++, j++)
+      v += FLOOR_AT(bl, i);
+    t[k] = v / (double)j;
+  }
+#undef FLOOR_AT
+  free(bl);
+  s->floor_count = n;
+  s->floor_freq_khz = bf;
+  s->floor_db = t;
+  return 0;
+fail:
+  free(bl);
+  free(bf);
+  free(t);
+  return -1;
+}
+
 static int
 cmp_slice ( const void *a, const void *b )
 {
@@ -664,8 +754,10 @@ dvb_blindscan_merge
   if (mode == DVB_BLINDSCAN_AUTO)
     mode = count == 1 ? DVB_BLINDSCAN_SINGLE :
            count == 2 ? DVB_BLINDSCAN_STANDARD : DVB_BLINDSCAN_UNICABLE;
-  if (mode == DVB_BLINDSCAN_SINGLE)
-    return merge_single(&slices[0], out);
+  if (mode == DVB_BLINDSCAN_SINGLE) {
+    r = merge_single(&slices[0], out);
+    goto floor;
+  }
   /* by their frequency */
   o = malloc(count * sizeof(*o));
   s = malloc(count * sizeof(*s));
@@ -684,5 +776,10 @@ dvb_blindscan_merge
     r = merge_unicable(s, count, p, out);
   free(o);
   free(s);
+floor:
+  if (r == 0 && spectrum_floor(out, p)) {
+    dvb_blindscan_spectrum_free(out);
+    r = -1;
+  }
   return r;
 }
