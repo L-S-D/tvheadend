@@ -43,14 +43,18 @@ import {
   levelAt,
   levelRange,
   muxOfCarrier,
+  matypeText,
   polSelOf,
   ticks,
+  triedAt,
+  tunesByNetwork,
   type BlindscanCarrier,
   type BlindscanPol,
   type BlindscanResult,
   type GraphMux,
   type Pol,
   type PolSel,
+  type TuneState,
 } from './blindscan'
 
 const { t } = useI18n()
@@ -232,12 +236,13 @@ const muxCometOff = cometClient.on('mpegts_mux', () => {
 
 const cometOff = cometClient.on('blindscan', (m) => {
   const msg = m as Record<string, unknown>
-  if (!props.visible || msg.uuid !== props.networkUuid) return
-  if (typeof msg.mux === 'string') {
-    if (msg.state === 'tuning') onTuneStart(msg)
-    else onTuneResult(msg)
+  /* the tunes of any network: they show when its dialog opens */
+  if (typeof msg.mux === 'string' && typeof msg.uuid === 'string') {
+    if (msg.state === 'tuning') onTuneStart(msg.uuid, msg)
+    else onTuneResult(msg.uuid, msg)
     return
   }
+  if (!props.visible || msg.uuid !== props.networkUuid) return
   if (msg.state === 'running') {
     progress.value = { ...(progress.value ?? {}), ...(msg as BlindscanResult) }
   } else if (typeof msg.state === 'string') {
@@ -416,6 +421,8 @@ interface LaneRect {
   title: string
   found?: Found
   mux?: GraphMux
+  /* the last tune there (in this page) */
+  tried?: TuneState | null
 }
 
 function clipRect(lo: number, hi: number): { x: number; w: number } | null {
@@ -449,13 +456,17 @@ const laneRects = computed<LaneRect[]>(() => {
         if (!r) continue
         const cls =
           m.enabled !== 1 ? 'off' : m.scanResult === 1 ? 'ok' : m.scanResult === 2 ? 'fail' : 'none'
+        const tried = triedAt(tuneArr.value, m.pol, m.freq, half)
         out.push({
           key: `m${m.uuid}`,
           lane: i,
           ...r,
           cls: `bs-mux bs-mux--${cls}`,
-          title: `${m.name} · ${(m.sr / 1000).toFixed(0)} kS/s · ${muxState(m)}`,
+          title:
+            `${m.name} · ${(m.sr / 1000).toFixed(0)} kS/s · ${muxState(m)}` +
+            (tried ? ` · ${t('tried')}: ${tried.text}` : ''),
           mux: m,
+          tried,
         })
       }
     } else {
@@ -463,13 +474,17 @@ const laneRects = computed<LaneRect[]>(() => {
         if (f.pol !== ln.pol) continue
         const r = clipRect(f.c.freq - f.c.bw / 2, f.c.freq + f.c.bw / 2)
         if (!r) continue
+        const tried = triedAt(tuneArr.value, f.pol, f.c.freq, f.c.bw / 2)
         out.push({
           key: `c${f.pol}${f.c.freq}`,
           lane: i,
           ...r,
           cls: `bs-found bs-found--${f.pol} ${f.mux ? 'bs-found--known' : 'bs-found--new'}`,
-          title: `${(f.c.freq / 1000).toFixed(3)} MHz ${f.pol} · ~${(f.c.sr / 1000).toFixed(0)} kS/s · ${(f.c.snr / 100).toFixed(1)} dB${f.mux ? ` · ${f.mux.name}` : ` · ${t('no mux')}`}`,
+          title:
+            `${(f.c.freq / 1000).toFixed(3)} MHz ${f.pol} · ~${(f.c.sr / 1000).toFixed(0)} kS/s · ${(f.c.snr / 100).toFixed(1)} dB${f.mux ? ` · ${f.mux.name}` : ` · ${t('no mux')}`}` +
+            (tried ? ` · ${t('tried')}: ${tried.text}` : ''),
           found: f,
+          tried,
         })
       }
     }
@@ -586,17 +601,22 @@ function setPick(freq: number, pol: Pol, fd: Found | null, mux: GraphMux | null)
 }
 
 const pickX = computed(() => (pick.value ? x(pick.value.freqMhz * 1000) : null))
+/* the last tune at the pick (the carrier, else the mux) */
+const pickTried = computed(() => {
+  const p = pick.value
+  if (!p) return null
+  const half = p.found ? p.found.c.bw / 2 : p.mux ? (p.mux.sr || 1000000) / 1000 / 2 : 0
+  return triedAt(tuneArr.value, p.pol, Math.round(p.freqMhz * 1000), half)
+})
 
-interface TuneState {
-  freq: number
-  pol: Pol
-  /* locked with data; locked, but no data; no lock */
-  state: 'scanning' | 'ok' | 'nodata' | 'fail'
-  text: string
-  /* locked: the mux kept, or the one of the network it is */
-  mux?: string
+/* the tunes of this network (kept while the page is open) */
+const tunes = computed<Record<string, TuneState>>(
+  () => tunesByNetwork[props.networkUuid ?? ''] ?? {}
+)
+const tuneArr = computed(() => Object.values(tunes.value))
+function setTune(net: string, mux: string, st: TuneState) {
+  tunesByNetwork[net] = { ...(tunesByNetwork[net] ?? {}), [mux]: st }
 }
-const tunes = ref<Record<string, TuneState>>({})
 
 async function tune() {
   const p = pick.value
@@ -618,15 +638,13 @@ async function tune() {
       toast.error(r.error ?? t('The tune did not start'))
       return
     }
-    tunes.value = {
-      ...tunes.value,
-      [r.mux]: {
-        freq,
-        pol: p.pol,
-        state: 'scanning',
-        text: t('Scanning {0} MHz {1}…', (freq / 1000).toFixed(3), p.pol),
-      },
-    }
+    setTune(props.networkUuid, r.mux, {
+      reqFreq: freq,
+      freq,
+      pol: p.pol,
+      state: 'scanning',
+      text: t('Scanning {0} MHz {1}…', (freq / 1000).toFixed(3), p.pol),
+    })
     emit('changed')
   } catch (e) {
     toast.error(`${t('Failed to tune')}: ${apiErrorMessage(e)}`)
@@ -638,52 +656,64 @@ function polOf(v: unknown, def: Pol): Pol {
 }
 
 /* a tune started (here, or by the blindscan for its new carriers) */
-function onTuneStart(m: Record<string, unknown>) {
+function onTuneStart(net: string, m: Record<string, unknown>) {
   const uuid = String(m.mux)
-  if (tunes.value[uuid]) return
+  if (tunesByNetwork[net]?.[uuid]?.state === 'scanning') return
   const freq = Number(m.freq ?? 0)
   const pol = polOf(m.pol, 'H')
-  tunes.value = {
-    ...tunes.value,
-    [uuid]: {
-      freq,
-      pol,
-      state: 'scanning',
-      text: t('Scanning {0} MHz {1}…', (freq / 1000).toFixed(3), pol),
-    },
-  }
+  setTune(net, uuid, {
+    reqFreq: freq,
+    freq,
+    pol,
+    state: 'scanning',
+    text: t('Scanning {0} MHz {1}…', (freq / 1000).toFixed(3), pol),
+  })
 }
 
-function onTuneResult(m: Record<string, unknown>) {
+/* what the demodulator locked: "DVB-S2 PSK/8 2/3, 29949 kS/s, TS" */
+function lockedText(m: Record<string, unknown>): string {
+  const mod = [m.delsys, m.modulation, m.fec]
+    .filter((x) => typeof x === 'string' && x && x !== 'AUTO' && x !== 'NONE')
+    .join(' ')
+  return [
+    mod,
+    `${(Number(m.sr ?? 0) / 1000).toFixed(0)} kS/s`,
+    matypeText(typeof m.matype === 'number' ? m.matype : undefined),
+  ]
+    .filter(Boolean)
+    .join(', ')
+}
+
+function onTuneResult(net: string, m: Record<string, unknown>) {
   const uuid = String(m.mux)
-  const prev = tunes.value[uuid]
+  const prev = tunesByNetwork[net]?.[uuid]
   const ok = m.result === 'ok'
   const freq = Number(m.freq ?? prev?.freq ?? 0)
   const pol = polOf(m.pol, prev?.pol ?? 'H')
   const where = `${(freq / 1000).toFixed(3)} MHz ${pol}`
+  const subs = Number(m.submuxes ?? 0)
   let text: string
   if (ok && typeof m.same_name === 'string')
     text = t('{0}: locked the transponder {1}, which the network has', where, m.same_name)
   else if (ok)
     text = t(
-      '{0}: locked, {1} kS/s - the mux is kept',
+      subs
+        ? '{0}: locked ({1}) - the mux is kept, with {2} sub-muxes'
+        : '{0}: locked ({1}) - the mux is kept',
       where,
-      (Number(m.sr ?? 0) / 1000).toFixed(0)
+      lockedText(m),
+      String(subs)
     )
-  else if (m.locked) {
+  else if (m.locked)
     /* a carrier, but no tables in it (not a TS, or a TS without SI) */
-    const found = [m.delsys, m.modulation, m.fec]
-      .filter((x) => typeof x === 'string' && x && x !== 'AUTO' && x !== 'NONE')
-      .join(' ')
     text = t(
       m.deleted
-        ? '{0}: locked ({1}, {2} kS/s), but the scan got no data - the new mux is deleted again'
-        : '{0}: locked ({1}, {2} kS/s), but the scan got no data',
+        ? '{0}: locked ({1}), but the scan got no data - the new mux is deleted again'
+        : '{0}: locked ({1}), but the scan got no data',
       where,
-      found || '?',
-      (Number(m.sr ?? 0) / 1000).toFixed(0)
+      lockedText(m)
     )
-  } else
+  else
     text = t(
       m.deleted
         ? '{0}: no lock on the carrier - the new mux is deleted again'
@@ -691,10 +721,15 @@ function onTuneResult(m: Record<string, unknown>) {
       where
     )
   const mux = !ok ? undefined : typeof m.same === 'string' ? m.same : m.deleted ? undefined : uuid
-  tunes.value = {
-    ...tunes.value,
-    [uuid]: { freq, pol, state: ok ? 'ok' : m.locked ? 'nodata' : 'fail', text, mux },
-  }
+  setTune(net, uuid, {
+    reqFreq: prev?.reqFreq ?? freq,
+    freq,
+    pol,
+    state: ok ? 'ok' : m.locked ? 'nodata' : 'fail',
+    text,
+    mux,
+  })
+  if (!props.visible || net !== props.networkUuid) return
   emit('changed')
   void loadMuxes()
 }
@@ -758,7 +793,7 @@ function subMuxName(uuid: string | undefined): string {
   return muxRows.value.find((r) => r.uuid === uuid)?.name ?? ''
 }
 
-/* delivery system, modulation, FEC, symbol rate, input stream */
+/* delivery system, modulation, FEC, symbol rate, input stream, stream type */
 function tuningText(r: MuxRow): string {
   return [
     r.delsys,
@@ -766,6 +801,7 @@ function tuningText(r: MuxRow): string {
     r.fec,
     r.symbolrate ? `${Math.round(r.symbolrate / 1000)} kS/s` : '',
     r.stream_id !== undefined && r.stream_id >= 0 && r.multistream ? `ISI ${r.stream_id}` : '',
+    r.matype ? r.matype.replace(/^0x[0-9A-Fa-f]+: /, '') : '',
   ]
     .filter((x) => x && x !== 'AUTO' && x !== 'NONE')
     .join(' · ')
@@ -951,6 +987,17 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
         >
           <title>{{ r.title }}</title>
         </rect>
+        <!-- tried already (in this page): how it went -->
+        <circle
+          v-for="r in laneRects.filter((x) => x.tried)"
+          :key="`t${r.key}`"
+          :cx="r.x + r.w / 2"
+          :cy="laneY(r.lane) + LANE_H / 2"
+          r="3.4"
+          :class="`bs-tried bs-tried--${r.tried?.state}`"
+        >
+          <title>{{ r.title }}</title>
+        </circle>
       </g>
       <line
         v-if="hoverX !== null"
@@ -990,6 +1037,9 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
           >{{ t('Mux') }} {{ pick.mux.name }} ({{ muxState(pick.mux) }})</template
         >
         <template v-else>{{ t('no mux: a new one is kept only when it locks') }}</template>
+        <div v-if="pickTried" :class="`bs-tune--${pickTried.state}`">
+          {{ t('Tried') }}: {{ pickTried.text }}
+        </div>
       </div>
       <label class="bs-field">
         <span>{{ t('Frequency (MHz)') }}</span>
@@ -1427,6 +1477,20 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
 }
 .bs-tune--ok {
   color: var(--tvh-success);
+}
+.bs-tried {
+  stroke: var(--tvh-bg-surface);
+  stroke-width: 1.2;
+  fill: var(--tvh-text-muted);
+}
+.bs-tried--ok {
+  fill: var(--tvh-success);
+}
+.bs-tried--nodata {
+  fill: var(--tvh-warning);
+}
+.bs-tried--fail {
+  fill: var(--tvh-error);
 }
 .bs-tune--nodata {
   color: var(--tvh-warning-text, var(--tvh-warning));

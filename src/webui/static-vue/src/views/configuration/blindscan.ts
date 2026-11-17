@@ -7,6 +7,7 @@
  * Frequencies in kHz, levels in 0.01 dB (as the server sends them).
  */
 
+import { reactive } from 'vue'
 import type { MuxRow } from './muxTree'
 
 export type Pol = 'H' | 'V'
@@ -230,4 +231,52 @@ export function levelRange(pols: BlindscanPol[], lo: number, hi: number): [numbe
   if (!isFinite(min)) return [-500, 2500]
   const pad = Math.max(100, (max - min) * 0.05)
   return [Math.floor((min - pad) / 100) * 100, Math.ceil((max + pad) / 100) * 100]
+}
+
+/* a tune from the dialog, or of the blindscan for a new carrier */
+export interface TuneState {
+  /* kHz: asked for, and where the demodulator locked */
+  reqFreq: number
+  freq: number
+  pol: Pol
+  /* locked with data; locked, but no data; no lock */
+  state: 'scanning' | 'ok' | 'nodata' | 'fail'
+  text: string
+  /* locked: the mux kept, or the one of the network it is */
+  mux?: string
+}
+
+/* the tunes by network and mux, for as long as the page is open (not saved:
+ * what was tried already shows in the graph) */
+export const tunesByNetwork = reactive<Record<string, Record<string, TuneState>>>({})
+
+/* the last tune at a carrier or transponder (middle freq, half its width):
+ * same polarisation, asked for or locked within it (500 kHz at least) */
+export function triedAt(
+  tunes: TuneState[],
+  pol: Pol,
+  freq: number,
+  half: number
+): TuneState | null {
+  const tol = Math.max(500, half)
+  let last: TuneState | null = null
+  for (const s of tunes)
+    if (
+      s.pol === pol &&
+      (Math.abs(s.reqFreq - freq) <= tol ||
+        (s.state !== 'scanning' && Math.abs(s.freq - freq) <= tol))
+    )
+      last = s
+  return last
+}
+
+/* the MATYPE of a DVB-S2 stream: TS or a generic stream (GSE comes as
+ * one), single or multistream, CCM or ACM/VCM - the names of the mux */
+export function matypeText(m: number | undefined): string {
+  if (m === undefined || m < 0) return ''
+  const types = ['generic packetized', 'generic continuous', 'reserved', 'TS']
+  const out = [types[(m >> 6) & 3]]
+  if (!(m & 0x20)) out.push('multistream')
+  if (!(m & 0x10)) out.push('ACM/VCM')
+  return out.join(', ')
 }
