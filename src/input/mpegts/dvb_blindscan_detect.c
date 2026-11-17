@@ -24,8 +24,10 @@
  * leaves out the carriers. The levels above that floor are smoothed twice
  * (Gauss, sigma 2 and 5 samples); a carrier is a peak at least min_snr_db
  * above the floor and as prominent, its edges where the level falls 3 dB
- * below the peak. The results of both smoothings are merged, the wider of
- * two overlapping carriers kept.
+ * below its top (the median of the levels within 3 dB of the peak), not
+ * beyond the lowest point towards the next peak. That width is about the
+ * symbol rate. The results of both smoothings are merged, the wider of two
+ * overlapping carriers kept.
  *
  * The arithmetic follows what NumPy/SciPy do for the same steps (percentile,
  * gaussian_filter1d, find_peaks, interp, minimum/maximum/uniform_filter1d),
@@ -50,6 +52,7 @@ dvb_blindscan_params_default ( dvb_blindscan_params_t *p )
   p->extract_khz = 40000;
   p->floor_block_khz = 2000;
   p->floor_window_khz = 120000;
+  p->edge_top = 1;
 }
 
 void
@@ -292,6 +295,33 @@ find_peaks ( const double *x, size_t n, double height, double prominence,
  * Detection
  * ----------------------------------------------------------------------*/
 
+/* the samples where the level falls below thr, outward from the peak at i
+ * but not beyond lo and hi; the bound when it stays above */
+static void
+edges_at ( const double *x, size_t i, size_t lo, size_t hi, double thr,
+           size_t *li, size_t *ri )
+{
+  size_t j;
+
+  for (j = i; j > lo && x[j] >= thr; j--);
+  *li = j;
+  for (j = i; j < hi && x[j] >= thr; j++);
+  *ri = j;
+}
+
+/* the frequency where the level crosses thr between the sample past the
+ * edge (e) and the one inside it (e + dir); the sample if it does not */
+static double
+edge_freq ( const dvb_blindscan_spectrum_t *s, const double *x, size_t e, int dir,
+            double thr )
+{
+  size_t in = (size_t)((long)e + dir);
+
+  if (in >= s->count || x[e] >= thr || x[in] < thr || x[in] == x[e])
+    return s->freq_khz[e];
+  return s->freq_khz[e] + (s->freq_khz[in] - s->freq_khz[e]) * (thr - x[e]) / (x[in] - x[e]);
+}
+
 /* peaks_sm, edge_sm: the smoothed levels above the noise floor (base) */
 static long
 detect1 ( const dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p,
@@ -299,9 +329,9 @@ detect1 ( const dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p,
           int sigma, dvb_blindscan_carrier_t **out )
 {
   dvb_blindscan_carrier_t *c;
-  size_t *pk = NULL, i, li, ri;
+  size_t *pk = NULL, i, li, ri, lo, hi;
   long n, k, cnt = 0;
-  double lvl, thr;
+  double lvl, thr, top;
 
   *out = NULL;
   n = find_peaks(peaks_sm, s->count, p->min_snr_db, p->min_snr_db, 10, &pk);
@@ -316,20 +346,43 @@ detect1 ( const dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p,
     thr = lvl - 3.0;
     if (thr < 3.0)
       thr = 3.0;
-    li = pk[k];
-    for (i = pk[k]; i-- > 0; ) {
-      li = i;
-      if (edge_sm[i] < thr)
-        break;
+    if (!p->edge_top) {
+      /* 3 dB below the peak, at the sample past it */
+      edges_at(edge_sm, pk[k], 0, s->count - 1, thr, &li, &ri);
+      c[cnt].left_khz  = s->freq_khz[li];
+      c[cnt].right_khz = s->freq_khz[ri];
+    } else {
+      /* the room of the carrier: up to the lowest points between its
+       * peak and the peaks beside it */
+      lo = 0;
+      hi = s->count - 1;
+      if (k > 0)
+        for (lo = i = pk[k - 1]; i < pk[k]; i++)
+          if (edge_sm[i] < edge_sm[lo])
+            lo = i;
+      if (k + 1 < n)
+        for (hi = i = pk[k + 1]; i > pk[k]; i--)
+          if (edge_sm[i] < edge_sm[hi])
+            hi = i;
+      /* its top, within 3 dB of the peak; the edges 3 dB below the
+       * middle level of the top (the peak is the highest of its ripple),
+       * between the samples */
+      edges_at(edge_sm, pk[k], lo, hi, thr, &li, &ri);
+      if (ri > li + 2) {
+        top = np_percentile(edge_sm + li + 1, ri - li - 1, 50);
+        if (isnan(top)) {
+          free(pk);
+          free(c);
+          return -1;
+        }
+        thr = top - 3.0;
+        if (thr < 3.0)
+          thr = 3.0;
+        edges_at(edge_sm, pk[k], lo, hi, thr, &li, &ri);
+      }
+      c[cnt].left_khz  = edge_freq(s, edge_sm, li, 1, thr);
+      c[cnt].right_khz = edge_freq(s, edge_sm, ri, -1, thr);
     }
-    ri = pk[k];
-    for (i = pk[k] + 1; i < s->count; i++) {
-      ri = i;
-      if (edge_sm[i] < thr)
-        break;
-    }
-    c[cnt].left_khz  = s->freq_khz[li];
-    c[cnt].right_khz = s->freq_khz[ri];
     c[cnt].bw_khz    = c[cnt].right_khz - c[cnt].left_khz;
     c[cnt].freq_khz  = (c[cnt].left_khz + c[cnt].right_khz) / 2.0;
     c[cnt].snr_db    = lvl;
