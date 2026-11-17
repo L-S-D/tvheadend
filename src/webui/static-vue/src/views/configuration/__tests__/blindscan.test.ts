@@ -71,6 +71,13 @@ describe('muxOfCarrier', () => {
     expect(muxOfCarrier(c(11091638, 15314815), 'V', wide)?.uuid).toBe('w')
     expect(muxOfCarrier(c(11120000, 5000000), 'V', wide)).toBeNull()
   })
+  it('a narrow carrier in the band of a wide transponder is not it', () => {
+    const wide = graphMuxes([
+      { uuid: 'w', frequency: 11656000, polarisation: 'V', symbolrate: 22000000 },
+    ])
+    expect(muxOfCarrier(c(11643500, 850000), 'V', wide)).toBeNull()
+    expect(muxOfCarrier(c(11655500, 21800000), 'V', wide)?.uuid).toBe('w')
+  })
   it('1 MHz at least for narrow carriers', () => {
     expect(muxOfCarrier(c(11461900, 500000), 'H', muxes)?.uuid).toBe('m1')
   })
