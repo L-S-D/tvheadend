@@ -404,6 +404,7 @@ SRCS-MPEGTS = \
 	src/input/mpegts/fastscan.c \
 	src/input/mpegts/mpegts_mux_sched.c \
         src/input/mpegts/mpegts_network_scan.c \
+        src/input/mpegts/mpegts_pidstats.c \
         src/input/mpegts/mpegts_tsdebug.c \
         src/descrambler/tsdebugcw.c
 SRCS-$(CONFIG_MPEGTS) += $(SRCS-MPEGTS)

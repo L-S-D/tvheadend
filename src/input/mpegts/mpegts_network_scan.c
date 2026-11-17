@@ -18,6 +18,7 @@
  */
 
 #include "input.h"
+#include "mpegts_pidstats.h"
 
 /******************************************************************************
  * Timer
@@ -292,6 +293,140 @@ mpegts_network_scan_parent_ok ( mpegts_mux_t *sm )
 }
 #endif
 
+/******************************************************************************
+ * The statistics of the PIDs of a scan
+ *****************************************************************************/
+
+#define PIDSTATS_TOP 16
+
+static void
+pidstats_set ( mpegts_mux_t *mm, mpegts_pidstats_t *ps )
+{
+  mpegts_mux_instance_t *mmi = mm->mm_active;
+  mpegts_input_t *mi = mmi ? mmi->mmi_input : NULL;
+
+  if (mi)
+    tvh_mutex_lock(&mi->mi_output_lock);
+  mm->mm_pidstats = ps;
+  if (mi)
+    tvh_mutex_unlock(&mi->mi_output_lock);
+}
+
+/* the scan of a tune a blindscan asked for: what the PIDs carry (all of
+ * them open while it runs) - for a carrier without tables a scan reads */
+void
+mpegts_network_scan_pidstats_start ( mpegts_mux_t *mm )
+{
+#if ENABLE_MPEGTS_DVB
+  mpegts_pidstats_t *ps;
+
+  if (mm->mm_pidstats || mm->mm_active == NULL || mm->mm_type != MM_TYPE_TS ||
+      mpegts_mux_is_submux(mm) || !idnode_is_instance(&mm->mm_id, &dvb_mux_class) ||
+      !((dvb_mux_t *)mm)->lm_blindscan_tune)
+    return;
+  if ((ps = mpegts_pidstats_create()) == NULL)
+    return;
+#if ENABLE_LINUXDVB_NEUMO
+  /* a generic stream: the driver passes its BBFrames in a PID */
+  mpegts_pidstats_bbframes(ps, DVB_BBFRAMES_PID);
+#endif
+  pidstats_set(mm, ps);
+  mm->mm_update_pids_flag = 1;
+  mpegts_mux_update_pids(mm);
+#endif
+}
+
+static void
+pidstats_ids ( htsmsg_t *m, const char *name, const uint8_t *bits )
+{
+  htsmsg_t *l = NULL;
+  int i;
+
+  for (i = 0; i < 256; i++)
+    if (bits[i >> 3] & (1 << (i & 7))) {
+      if (l == NULL)
+        l = htsmsg_create_list();
+      htsmsg_add_u32(l, NULL, i);
+    }
+  if (l)
+    htsmsg_add_msg(m, name, l);
+}
+
+/* the end of the statistics; their summary (summary set): microseconds,
+ * packets, null packets, packets with a transport error, PIDs, and the top
+ * PIDs by packets - packets, scrambled ones, continuity errors, the stream
+ * id and elementary stream of a PES, the table ids of the sections, the
+ * BBFrames of the BBFrame PID */
+htsmsg_t *
+mpegts_network_scan_pidstats_end ( mpegts_mux_t *mm, int summary )
+{
+  static const char *es[] = {
+    [MPEGTS_PIDSTATS_ES_MPEG2V]    = "mpeg2video",
+    [MPEGTS_PIDSTATS_ES_H264]      = "h264",
+    [MPEGTS_PIDSTATS_ES_HEVC]      = "hevc",
+    [MPEGTS_PIDSTATS_ES_MPA]       = "mpegaudio",
+    [MPEGTS_PIDSTATS_ES_ADTS]      = "aac-adts",
+    [MPEGTS_PIDSTATS_ES_LATM]      = "aac-latm",
+    [MPEGTS_PIDSTATS_ES_AC3]       = "ac3",
+    [MPEGTS_PIDSTATS_ES_AC4]       = "ac4",
+    [MPEGTS_PIDSTATS_ES_TELETEXT]  = "teletext",
+    [MPEGTS_PIDSTATS_ES_SUBTITLES] = "subtitles",
+    [MPEGTS_PIDSTATS_ES_OTHER]     = "other",
+  };
+  mpegts_pidstats_t *ps = mm->mm_pidstats;
+  mpegts_pidstats_total_t tot;
+  mpegts_pidstats_pid_t top[PIDSTATS_TOP];
+  htsmsg_t *m = NULL, *l, *e;
+  int i, n;
+
+  if (ps == NULL)
+    return NULL;
+  pidstats_set(mm, NULL);
+  if (mm->mm_active) {
+    mm->mm_update_pids_flag = 1;
+    mpegts_mux_update_pids(mm);
+  }
+  if (summary) {
+    n = mpegts_pidstats_get(ps, &tot, top, PIDSTATS_TOP);
+    m = htsmsg_create_map();
+    htsmsg_add_s64(m, "us", tot.duration);
+    htsmsg_add_s64(m, "packets", tot.packets);
+    htsmsg_add_s64(m, "nulls", tot.nulls);
+    htsmsg_add_s64(m, "tei", tot.tei);
+    htsmsg_add_s32(m, "pids", tot.pids);
+    l = htsmsg_create_list();
+    for (i = 0; i < n; i++) {
+      e = htsmsg_create_map();
+      htsmsg_add_u32(e, "pid", top[i].pid);
+      htsmsg_add_s64(e, "packets", top[i].packets);
+      if (top[i].scrambled)
+        htsmsg_add_s64(e, "scrambled", top[i].scrambled);
+      if (top[i].cc_errors)
+        htsmsg_add_s64(e, "cc", top[i].cc_errors);
+      if (top[i].stream_id >= 0)
+        htsmsg_add_u32(e, "stream_id", top[i].stream_id);
+      if (top[i].es != MPEGTS_PIDSTATS_ES_NONE && (size_t)top[i].es < ARRAY_SIZE(es) && es[top[i].es])
+        htsmsg_add_str(e, "es", es[top[i].es]);
+      pidstats_ids(e, "tables", top[i].tables);
+      pidstats_ids(e, "short", top[i].tables_short);
+      if (top[i].bbframes) {
+        htsmsg_t *b = htsmsg_create_map();
+        htsmsg_add_s64(b, "frames", top[i].bb.frames);
+        htsmsg_add_s64(b, "hem", top[i].bb.hem);
+        htsmsg_add_s64(b, "dfl_bits", top[i].bb.dfl_bits);
+        if (top[i].bb.matype >= 0)
+          htsmsg_add_s32(b, "matype", top[i].bb.matype);
+        pidstats_ids(b, "isis", top[i].bb.isis);
+        htsmsg_add_msg(e, "bbframes", b);
+      }
+      htsmsg_add_msg(l, NULL, e);
+    }
+    htsmsg_add_msg(m, "list", l);
+  }
+  mpegts_pidstats_destroy(ps);
+  return m;
+}
+
 /* Finished */
 static inline void
 mpegts_network_scan_mux_done0
@@ -363,8 +498,10 @@ mpegts_network_scan_mux_done0
   /* a tune asked for from a blindscan: its result goes back to it */
   if (result != MM_SCAN_NONE && idnode_is_instance(&mm->mm_id, &dvb_mux_class) &&
       ((dvb_mux_t *)mm)->lm_blindscan_tune)
-    dvb_mux_blindscan_done((dvb_mux_t *)mm, result);
+    dvb_mux_blindscan_done((dvb_mux_t *)mm, result, mpegts_network_scan_pidstats_end(mm, 1));
 #endif
+  /* the statistics of a scan that was cancelled */
+  mpegts_network_scan_pidstats_end(mm, 0);
 
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {
     mm->mm_scan_last_seen = gclk();
@@ -510,6 +647,9 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
 
   /* Start GSE probe (no-op if not MM_TYPE_GSE) */
   mpegts_gse_probe_start(mm);
+
+  /* what the PIDs of a blindscan tune carry */
+  mpegts_network_scan_pidstats_start(mm);
 }
 
 /* Mux has been reactivated */

@@ -876,6 +876,7 @@ mpegts_mux_delete ( mpegts_mux_t *mm, int delconf )
 
   /* Real stop */
   mpegts_mux_do_stop(mm, delconf);
+  mpegts_network_scan_pidstats_end(mm, 0);
 
   /* Free memory */
   idnode_save_check(&mm->mm_id, 1);

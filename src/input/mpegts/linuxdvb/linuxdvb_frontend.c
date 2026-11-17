@@ -1183,8 +1183,9 @@ linuxdvb_frontend_update_pids
         mpegts_pid_add(&lfe->lfe_pids, mp->mp_pid, mps->mps_weight);
     }
   }
-  /* The DAB probe looks for DAB content in all PIDs */
-  if (mm->mm_dab_probe_ctx)
+  /* The DAB probe looks for DAB content in all PIDs, the statistics of a
+   * blindscan tune count them */
+  if (mm->mm_dab_probe_ctx || mm->mm_pidstats)
     lfe->lfe_pids.all = 1;
 #if ENABLE_LINUXDVB_NEUMO
   /* the ISI probe reads the headers of the BBFrames */

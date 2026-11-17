@@ -23,6 +23,7 @@
 #include "notify.h"
 #include "dbus.h"
 #include "memoryinfo.h"
+#include "mpegts_pidstats.h"
 
 memoryinfo_t mpegts_input_queue_memoryinfo = { .my_name = "MPEG-TS input queue" };
 memoryinfo_t mpegts_input_table_memoryinfo = { .my_name = "MPEG-TS table queue" };
@@ -1487,6 +1488,10 @@ mpegts_input_process
     }
 
     pid &= 0x1FFF;
+
+    /* the statistics of the PIDs of a scan (null packets too) */
+    if (mm->mm_pidstats)
+      mpegts_pidstats_feed(mm->mm_pidstats, tsb, llen, mclk());
 
     /* Ignore NULL packets */
     if (pid == 0x1FFF) {

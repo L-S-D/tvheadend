@@ -1865,8 +1865,9 @@ dvb_mux_blindscan_same ( dvb_mux_t *lm )
   return NULL;
 }
 
+/* content: the statistics of the PIDs of the scan (taken) */
 void
-dvb_mux_blindscan_done ( dvb_mux_t *lm, int result )
+dvb_mux_blindscan_done ( dvb_mux_t *lm, int result, htsmsg_t *content )
 {
   mpegts_mux_t *mm = (mpegts_mux_t *)lm, *same = NULL;
   htsmsg_t *m = htsmsg_create_map();
@@ -1905,6 +1906,8 @@ dvb_mux_blindscan_done ( dvb_mux_t *lm, int result )
     htsmsg_add_str(m, "same", idnode_uuid_as_str(&same->mm_id, ubuf));
     htsmsg_add_str(m, "same_name", same->mm_nicename);
   }
+  if (content)
+    htsmsg_add_msg(m, "content", content);
   htsmsg_add_str(m, "mux", idnode_uuid_as_str(&mm->mm_id, ubuf));
   if ((result == MM_SCAN_FAIL && (lm->lm_blindscan_tune & DVB_MUX_BLINDSCAN_NEW)) || same) {
     htsmsg_add_bool(m, "deleted", 1);
