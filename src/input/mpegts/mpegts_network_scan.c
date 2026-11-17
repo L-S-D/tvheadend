@@ -302,7 +302,7 @@ mpegts_network_scan_mux_done0
   int scan_weight = mm->mm_scan_weight;   /* of the scan that ends */
 #endif
   mpegts_mux_scan_state_t state = mm->mm_scan_state;
-  int dab_found = 0, type0 = mm->mm_type;
+  int dab_found = 0, type0 = mm->mm_type, gse_content = 0;
 
   /* The DAB data come slower than the tables of a scan: a scan that ended
    * (not a cancelled one) waits for the probe, for a while at most */
@@ -317,17 +317,22 @@ mpegts_network_scan_mux_done0
   /* Complete ISI probe (a multistream transponder: its streams) */
   dab_found += mpegts_isi_probe_complete(mm, result != MM_SCAN_NONE);
 
-  /* Complete GSE-DAB probe */
-  dab_found += mpegts_gse_dab_probe_complete(mm, result != MM_SCAN_NONE);
+  /* Complete GSE probe (a GSE stream: what it carries, its DAB ensembles) */
+  dab_found += mpegts_gse_probe_complete(mm, result != MM_SCAN_NONE, &gse_content);
 
   /* a multistream transponder has no tables: its result are its input
    * streams; the services it got from the stream the demodulator chose go */
   if (!mpegts_mux_has_own_ts(mm) && result != MM_SCAN_NONE) {
     const char *what = type0 == MM_TYPE_GSE ? "DAB ensemble" : "input stream";
-    result = dab_found > 0 ? MM_SCAN_OK : MM_SCAN_FAIL;
+    /* a GSE stream that carried PDUs was read: what it carries is kept
+     * with the mux (GSE content), DAB or not */
+    result = dab_found > 0 || gse_content ? MM_SCAN_OK : MM_SCAN_FAIL;
     if (dab_found > 0)
       tvhinfo(LS_MPEGTS, "%s - scan complete, %d %s%s", mm->mm_nicename,
               dab_found, what, dab_found == 1 ? "" : "s");
+    else if (gse_content)
+      tvhinfo(LS_MPEGTS, "%s - scan complete, GSE without DAB ensembles",
+              mm->mm_nicename);
     else
       tvhwarn(LS_MPEGTS, "%s - scan found no %ss", mm->mm_nicename, what);
 #if ENABLE_MPEGTS_DVB
@@ -499,8 +504,8 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
   /* Start ISI probe (no-op if not DVB-S2 with Neumo driver) */
   mpegts_isi_probe_start(mm);
 
-  /* Start GSE-DAB probe (no-op if not MM_TYPE_GSE) */
-  mpegts_gse_dab_probe_start(mm);
+  /* Start GSE probe (no-op if not MM_TYPE_GSE) */
+  mpegts_gse_probe_start(mm);
 }
 
 /* Mux has been reactivated */

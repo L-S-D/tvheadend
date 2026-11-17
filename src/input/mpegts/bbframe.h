@@ -63,6 +63,14 @@ void bbframe_ts_init ( bbframe_ts_t *bt );
 int  bbframe_frame_ts ( bbframe_ts_t *bt, const uint8_t *frame, size_t len,
                         bbframe_ts_cb_t cb, void *opaque );
 
+/* a generic stream (TS/GS packetized or continuous, normal mode) of 188
+ * byte user packets is a TS stream: some say so in UPL only */
+static inline int bbframe_is_ts ( const uint8_t *h )
+{
+  return (h[0] >> 6) == 3 ||
+         ((h[0] >> 6) <= 1 && ((h[2] << 8) | h[3]) == 188 * 8);
+}
+
 /*
  * The Neumo driver embeds the BBFrames of all input streams of a transponder
  * in TS packets of one PID: byte 5..6 0x80 0x00, byte 7 the number of bytes
@@ -85,6 +93,7 @@ typedef struct bbframe_split {
  * MATYPE-1; -1 if no frame starts in it or the header is bad */
 int  bbframe_packet_header ( const uint8_t *pkt, uint8_t *isi, uint8_t *matype );
 
+/* isi: the input stream to take, -1 all of them */
 void bbframe_split_init ( bbframe_split_t *bs, int isi );
 
 /* 1 if the packet carries a frame of the input stream taken */
@@ -93,5 +102,11 @@ int  bbframe_split_take ( bbframe_split_t *bs, const uint8_t *pkt );
 /* the same, for a TS stream: its TS packets go to cb */
 void bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
                         bbframe_ts_cb_t cb, void *opaque );
+
+/* the frames themselves: header and data field (len bytes) and their
+ * input stream to cb */
+typedef void (*bbframe_frame_cb_t)(void *opaque, const uint8_t *frame, size_t len, int isi);
+void bbframe_split_frames ( bbframe_split_t *bs, const uint8_t *pkt,
+                            bbframe_frame_cb_t cb, void *opaque );
 
 #endif /* __TVH_BBFRAME_H__ */

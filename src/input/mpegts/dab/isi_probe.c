@@ -47,6 +47,7 @@ typedef struct isi_probe_ctx {
   int                   tap;
   uint8_t               seen[32];
   uint8_t               matype[256];
+  int                   upl[256];       /* bits; -1 not seen (GSE-HEM has none) */
 } isi_probe_ctx_t;
 
 /* the frame headers in the packets of the transponder */
@@ -61,6 +62,9 @@ isi_probe_packet_cb(void *aux, const uint8_t *pkt, int len)
         bbframe_packet_header(pkt, &isi, &matype) == 0) {
       ctx->seen[isi >> 3] |= 1 << (isi & 7);
       ctx->matype[isi] = matype;
+      /* the BBHEADER from byte 9 on: UPL in its bytes 2 and 3 */
+      if ((matype >> 6) != 2)
+        ctx->upl[isi] = (pkt[11] << 8) | pkt[12];
     }
 }
 
@@ -211,17 +215,38 @@ isi_read_driver_list(int fe_fd, uint8_t *isi_list, uint8_t *matype_list)
 }
 
 /*
- * Check if MATYPE indicates GSE mode
- * MATYPE-1 bits 7-6 (EN 302 307): 00=generic packetized, 01=GSE,
- * 10=generic continuous, 11=transport stream. A MATYPE of 0 is an ISI the
- * driver gave no MATYPE for (a real one always has other bits set): not
- * known, so a TS.
+ * Whether an input stream is a GSE one, by MATYPE-1 bits 7-6 (TS/GS, EN 302
+ * 307-1 and -2): 11 TS, 10 GSE-HEM (DVB-S2X), 00 generic packetized, 01
+ * generic continuous. A generic one of 188 byte user packets is a TS one
+ * (16E 12677.964V says generic continuous, UPL 1504, and carries PAT, PMT,
+ * SDT; bbframe_is_ts()) - when the frame headers told the UPL (upl bits,
+ * else -1); else GSE. A MATYPE of 0 is an ISI the driver gave no MATYPE for
+ * (a real one always has other bits set): not known, so a TS.
  */
 static int
-isi_is_gse_matype(uint8_t matype)
+isi_is_gse_matype(uint8_t matype, int upl)
 {
   int ts_gs = (matype >> 6) & 0x3;
-  return matype != 0 && (ts_gs == 0 || ts_gs == 1);  /* GSE if not TS mode */
+
+  if (matype == 0 || ts_gs == 3)
+    return 0;
+  if (ts_gs == 2)
+    return 1;
+  return upl != 188 * 8;
+}
+
+/* the sub-muxes of a mux */
+static int
+isi_has_submuxes(dvb_network_t *ln, dvb_mux_t *dm)
+{
+  mpegts_mux_t *mm;
+  char ubuf[UUID_HEX_SIZE];
+
+  idnode_uuid_as_str(&dm->mm_id, ubuf);
+  LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link)
+    if (((dvb_mux_t *)mm)->lm_parent && !strcmp(((dvb_mux_t *)mm)->lm_parent, ubuf))
+      return 1;
+  return 0;
 }
 
 /*
@@ -263,7 +288,7 @@ isi_find_mux_exact(dvb_network_t *ln, uint32_t freq, int pol, int stream_id, int
  */
 static int
 isi_probe_create_muxes(mpegts_mux_t *mm, const uint8_t *isi_list, int isi_count,
-                       const uint8_t *matype_list)
+                       const uint8_t *matype_list, const int *upl_list)
 {
   dvb_network_t *ln = (dvb_network_t *)mm->mm_network;
   dvb_mux_t *outer_dm = (dvb_mux_t *)mm;
@@ -275,7 +300,7 @@ isi_probe_create_muxes(mpegts_mux_t *mm, const uint8_t *isi_list, int isi_count,
   int pol = outer_dm->lm_tuning.u.dmc_fe_qpsk.polarisation;
 
   for (i = 0; i < isi_count; i++)
-    gse += isi_is_gse_matype(matype_list[isi_list[i]]);
+    gse += isi_is_gse_matype(matype_list[isi_list[i]], upl_list[isi_list[i]]);
   if (gse == 0 && isi_count < 2)
     return 0;
 
@@ -287,13 +312,27 @@ isi_probe_create_muxes(mpegts_mux_t *mm, const uint8_t *isi_list, int isi_count,
   for (i = 0; i < isi_count; i++) {
     uint8_t isi = isi_list[i];
     uint8_t matype = matype_list[isi];
-    int is_gse = isi_is_gse_matype(matype);
+    int is_gse = isi_is_gse_matype(matype, upl_list[isi]);
 
     tvhdebug(LS_MPEGTS, "ISI probe: ISI %d, MATYPE=0x%02X, %s",
              isi, matype, is_gse ? "GSE" : "TS");
 
-    /* an existing mux of the stream (from before, or the scanned one) */
+    /* an existing mux of the stream (from before, or the scanned one); one
+     * of the other type, without sub-muxes, was taken for the wrong one
+     * (a TS stream for GSE by its MATYPE) and becomes this one */
     child_mux = isi_find_mux_exact(ln, freq, pol, isi, is_gse);
+    if (child_mux == NULL &&
+        (child_mux = isi_find_mux_exact(ln, freq, pol, isi, !is_gse)) != NULL) {
+      if (isi_has_submuxes(ln, child_mux)) {
+        child_mux = NULL;
+      } else {
+        tvhinfo(LS_MPEGTS, "ISI probe: ISI %d is a %s stream (MATYPE 0x%02X, UPL %d): "
+                "%s becomes one", isi, is_gse ? "GSE" : "TS", matype, upl_list[isi],
+                ((mpegts_mux_t *)child_mux)->mm_nicename);
+        ((mpegts_mux_t *)child_mux)->mm_type = is_gse ? MM_TYPE_GSE : MM_TYPE_ISI;
+        child_mux->mm_scan_result = MM_SCAN_NONE;
+      }
+    }
     if (child_mux) {
       if (((mpegts_mux_t *)child_mux)->mm_type == MM_TYPE_TS)
         ((mpegts_mux_t *)child_mux)->mm_type = MM_TYPE_ISI;
@@ -352,6 +391,7 @@ mpegts_isi_probe_start(mpegts_mux_t *mm)
   const dvb_mux_t *dm;
   const linuxdvb_frontend_t *lfe;
   mpegts_mux_instance_t *mmi;
+  int i;
 
   /* Already probing? */
   if (mm->mm_isi_probe_ctx)
@@ -391,6 +431,8 @@ mpegts_isi_probe_start(mpegts_mux_t *mm)
   ctx = calloc(1, sizeof(*ctx));
   if (!ctx)
     return;
+  for (i = 0; i < 256; i++)
+    ctx->upl[i] = -1;
 
   ctx->mi = mmi->mmi_input;
   mm->mm_isi_probe_ctx = ctx;
@@ -417,12 +459,14 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
   const linuxdvb_frontend_t *lfe = NULL;
   uint8_t isi_list[256];
   uint8_t matype_list[256];
+  int upl_list[256];
   int isi_count = 0;
   int found = 0;
   int locked = 0;
 
   if (!ctx)
     return 0;
+  memcpy(upl_list, ctx->upl, sizeof(upl_list));
 
   mm->mm_isi_probe_ctx = NULL;
   if (ctx->tap) {
@@ -472,7 +516,7 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
 
   /* Create muxes for GSE streams */
   if (isi_count > 0) {
-    found = isi_probe_create_muxes(mm, isi_list, isi_count, matype_list);
+    found = isi_probe_create_muxes(mm, isi_list, isi_count, matype_list, upl_list);
   }
 
   free(ctx);
