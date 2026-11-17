@@ -4,6 +4,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   aboveFloor,
+  contentLines,
+  rateText,
+  tableNames,
   decimate,
   graphMuxes,
   interpolate,
@@ -205,5 +208,62 @@ describe('matypeText', () => {
     expect(matypeText(0xb3)).toBe('GSE-HEM')
     expect(matypeText(-1)).toBe('')
     expect(matypeText(undefined)).toBe('')
+  })
+})
+
+describe('the content of a tune', () => {
+  const t = (text: string, ...args: string[]) =>
+    text.replace(/\{(\d+)\}/g, (_, i: string) => args[Number(i)] ?? '')
+  it('names tables once, rates', () => {
+    expect(tableNames([0x4e, 0x50, 0x51, 0x00, 0x99])).toEqual(['EIT', 'PAT', '0x99'])
+    expect(rateText(1504 * 1000, 1e6)).toBe('1.5 Mbit/s')
+    expect(rateText(1504 * 100, 1e6)).toBe('150 kbit/s')
+    expect(rateText(1, 0)).toBe('')
+  })
+  it('a TS: the total, then the PIDs', () => {
+    const l = contentLines(
+      {
+        us: 2e6,
+        packets: 10000,
+        nulls: 1000,
+        tei: 0,
+        pids: 3,
+        list: [
+          { pid: 256, packets: 6000, stream_id: 0xe0, es: 'h264' },
+          { pid: 18, packets: 500, tables: [0x4e, 0x50] },
+          { pid: 512, packets: 2500, scrambled: 2500, cc: 2 },
+        ],
+      },
+      t
+    )
+    expect(l[0]).toBe('7.5 Mbit/s in 2.0 s, 3 PIDs, null packets 10 %')
+    expect(l[1]).toBe('PID 256 (0x0100): 4.5 Mbit/s · H.264 video')
+    expect(l[2]).toBe('PID 18 (0x0012): 376 kbit/s · sections EIT')
+    expect(l[3]).toBe('PID 512 (0x0200): 1.9 Mbit/s · scrambled 100 % · 2 continuity errors')
+  })
+  it('the BBFrames of a generic stream', () => {
+    const l = contentLines(
+      {
+        us: 1e6,
+        packets: 4000,
+        nulls: 0,
+        tei: 0,
+        pids: 1,
+        list: [
+          {
+            pid: 270,
+            packets: 4000,
+            bbframes: { frames: 800, hem: 800, dfl_bits: 8e6, matype: 0xb3 },
+          },
+        ],
+      },
+      t
+    )
+    expect(l[1]).toBe(
+      'PID 270 (0x010E): 6.0 Mbit/s · BBFrames of the demodulator: 800/s · data 8.0 Mbit/s · GSE-HEM · high efficiency mode'
+    )
+    expect(contentLines({ us: 0, packets: 0, nulls: 0, tei: 0, pids: 0 }, t)).toEqual([
+      'No TS packets',
+    ])
   })
 })

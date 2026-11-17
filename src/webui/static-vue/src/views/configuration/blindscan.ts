@@ -233,6 +233,33 @@ export function levelRange(pols: BlindscanPol[], lo: number, hi: number): [numbe
   return [Math.floor((min - pad) / 100) * 100, Math.ceil((max + pad) / 100) * 100]
 }
 
+/* what the PIDs of a tune carried while its scan ran (the server's
+ * statistics of the PIDs): the total, and the PIDs with the most packets */
+export interface PidStat {
+  pid: number
+  packets: number
+  scrambled?: number
+  /* continuity errors */
+  cc?: number
+  /* a PES: its stream id, what its elementary stream starts with */
+  stream_id?: number
+  es?: string
+  /* table ids of sections with a valid CRC, and of short form ones */
+  tables?: number[]
+  short?: number[]
+  /* the BBFrames the demodulator passes (a generic stream) */
+  bbframes?: { frames: number; hem: number; dfl_bits: number; matype?: number; isis?: number[] }
+}
+export interface TsContent {
+  /* microseconds from the first packet to the last */
+  us: number
+  packets: number
+  nulls: number
+  tei: number
+  pids: number
+  list?: PidStat[]
+}
+
 /* a tune from the dialog, or of the blindscan for a new carrier */
 export interface TuneState {
   /* kHz: asked for, and where the demodulator locked */
@@ -244,6 +271,7 @@ export interface TuneState {
   text: string
   /* locked: the mux kept, or the one of the network it is */
   mux?: string
+  content?: TsContent
 }
 
 /* the tunes by network and mux, for as long as the page is open (not saved:
@@ -280,4 +308,110 @@ export function matypeText(m: number | undefined): string {
   if (!(m & 0x20)) out.push('multistream')
   if (!(m & 0x10)) out.push('ACM/VCM')
   return out.join(', ')
+}
+
+type Translate = (text: string, ...args: string[]) => string
+
+/* EN 300 468 / ISO 13818-1 table ids */
+const TABLE_NAMES: Array<[number, number, string]> = [
+  [0x00, 0x00, 'PAT'],
+  [0x01, 0x01, 'CAT'],
+  [0x02, 0x02, 'PMT'],
+  [0x03, 0x03, 'TSDT'],
+  [0x3a, 0x3d, 'DSM-CC'],
+  [0x3e, 0x3e, 'MPE'],
+  [0x40, 0x41, 'NIT'],
+  [0x42, 0x42, 'SDT'],
+  [0x46, 0x46, 'SDT'],
+  [0x4a, 0x4a, 'BAT'],
+  [0x4e, 0x6f, 'EIT'],
+  [0x70, 0x70, 'TDT'],
+  [0x71, 0x71, 'RST'],
+  [0x72, 0x72, 'ST'],
+  [0x73, 0x73, 'TOT'],
+  [0x74, 0x74, 'AIT'],
+  [0x7e, 0x7e, 'DIT'],
+  [0x7f, 0x7f, 'SIT'],
+  [0x80, 0x81, 'ECM'],
+  [0x82, 0x8f, 'EMM'],
+]
+
+const ES_NAMES: Record<string, string> = {
+  mpeg2video: 'MPEG-2 video',
+  h264: 'H.264 video',
+  hevc: 'HEVC video',
+  mpegaudio: 'MPEG audio',
+  'aac-adts': 'AAC audio (ADTS)',
+  'aac-latm': 'AAC audio (LATM)',
+  ac3: 'AC-3 audio',
+  ac4: 'AC-4 audio',
+  teletext: 'teletext',
+  subtitles: 'DVB subtitles',
+}
+
+function hex(v: number, n: number): string {
+  return `0x${v.toString(16).toUpperCase().padStart(n, '0')}`
+}
+
+/* the names of table ids, each once */
+export function tableNames(ids: number[]): string[] {
+  const out: string[] = []
+  for (const id of ids) {
+    const n = TABLE_NAMES.find(([a, b]) => id >= a && id <= b)?.[2] ?? hex(id, 2)
+    if (!out.includes(n)) out.push(n)
+  }
+  return out
+}
+
+/* bits in a time: "4.2 Mbit/s", "192 kbit/s" */
+export function rateText(bits: number, us: number): string {
+  if (us <= 0) return ''
+  const kbps = (bits * 1000) / us
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbit/s` : `${Math.round(kbps)} kbit/s`
+}
+
+/* a PES by its stream id */
+function pesName(sid: number): string {
+  if (sid >= 0xe0 && sid <= 0xef) return 'video'
+  if (sid >= 0xc0 && sid <= 0xdf) return 'audio'
+  if (sid === 0xbd) return 'private stream 1'
+  return `PES ${hex(sid, 2)}`
+}
+
+/* the statistics of the PIDs as lines: the total, then a line per PID */
+export function contentLines(c: TsContent, t: Translate): string[] {
+  if (!c.packets) return [t('No TS packets')]
+  const lines = [
+    t(
+      '{0} in {1} s, {2} PIDs, null packets {3} %',
+      rateText(c.packets * 1504, c.us),
+      (c.us / 1e6).toFixed(1),
+      String(c.pids),
+      ((100 * c.nulls) / c.packets).toFixed(0)
+    ) + (c.tei ? `, ${t('{0} packets with errors', String(c.tei))}` : ''),
+  ]
+  for (const p of c.list ?? []) {
+    const what: string[] = []
+    if (p.bbframes) {
+      const b = p.bbframes
+      what.push(
+        t('BBFrames of the demodulator: {0}/s', ((b.frames * 1e6) / Math.max(1, c.us)).toFixed(0)),
+        t('data {0}', rateText(b.dfl_bits, c.us))
+      )
+      const mt = matypeText(b.matype)
+      if (mt) what.push(mt)
+      if (b.isis?.length) what.push(`ISI ${b.isis.join(', ')}`)
+      if (b.hem) what.push(t('high efficiency mode'))
+    } else if (p.es && ES_NAMES[p.es]) what.push(ES_NAMES[p.es])
+    else if (p.stream_id !== undefined) what.push(pesName(p.stream_id))
+    const tables = tableNames([...(p.tables ?? []), ...(p.short ?? [])])
+    if (tables.length) what.push(t('sections {0}', tables.join(', ')))
+    if (p.scrambled) what.push(t('scrambled {0} %', ((100 * p.scrambled) / p.packets).toFixed(0)))
+    if (!what.length) what.push(t('no PES, no sections'))
+    if (p.cc) what.push(t('{0} continuity errors', String(p.cc)))
+    lines.push(
+      `PID ${p.pid} (${hex(p.pid, 4)}): ${rateText(p.packets * 1504, c.us)} · ${what.join(' · ')}`
+    )
+  }
+  return lines
 }
