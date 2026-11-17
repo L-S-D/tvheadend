@@ -20,6 +20,7 @@
 #include "tvheadend.h"
 #include "input.h"
 #include "mpegts_dvb.h"
+#include "gse_stats_msg.h"
 #include "queue.h"
 #include "settings.h"
 
@@ -175,6 +176,32 @@ dvb_mux_class_dab_eti_opts(void *o, uint32_t opts)
 /*
  * DAB IP address get/set helpers (string <-> uint32)
  */
+/* what the GSE stream carried at its last scan, one line */
+static const void *
+dvb_mux_class_gse_content_get(void *o)
+{
+  static char buf[256];
+  static char *s;
+  const dvb_mux_t *lm = o;
+
+  s = buf;
+  buf[0] = '\0';
+  if (lm->lm_gse_content)
+    gse_stats_msg_text(lm->lm_gse_content, buf, sizeof(buf));
+  return &s;
+}
+
+static uint32_t
+dvb_mux_class_gse_content_opts(void *o, uint32_t opts)
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mm->mm_type == MM_TYPE_GSE || ((const dvb_mux_t *)mm)->lm_gse_content)
+    return opts;
+  return opts | PO_NOUI;
+}
+
 static const void *
 dvb_mux_class_dab_ip_get(void *o)
 {
@@ -303,6 +330,18 @@ const idclass_t dvb_mux_class =
                      "they are its sub-muxes, it has the tuning."),
       .off      = offsetof(dvb_mux_t, lm_multistream),
       .opts     = PO_RDONLY | PO_ADVANCED,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "gse_content",
+      .name     = N_("GSE content"),
+      .desc     = N_("What the GSE stream carried at its last scan: its PDUs, "
+                     "the share of IPv4, the multicast groups (MPEG-TS, RTP, "
+                     "MPEG-TS in RTP, DAB EDI, other UDP), broadcast and "
+                     "unicast traffic."),
+      .get      = dvb_mux_class_gse_content_get,
+      .opts     = PO_RDONLY | PO_NOSAVE,
+      .get_opts = dvb_mux_class_gse_content_opts,
     },
     {
       .type     = PT_STR,
@@ -1765,7 +1804,7 @@ dvb_mux_config_save ( mpegts_mux_t *mm, char *filename, size_t fsize )
 {
   char ubuf1[UUID_HEX_SIZE];
   char ubuf2[UUID_HEX_SIZE];
-  htsmsg_t *c = htsmsg_create_map();
+  htsmsg_t *c = htsmsg_create_map(), *root;
   if (filename == NULL) {
     mpegts_mux_save(mm, c, 1);
   } else {
@@ -1779,6 +1818,10 @@ dvb_mux_config_save ( mpegts_mux_t *mm, char *filename, size_t fsize )
   /* a TS mux is saved as upstream saves it: without a type (none = TS) */
   if (mm->mm_type == MM_TYPE_TS)
     htsmsg_delete_field(c, "tstype");
+  /* what its GSE stream carried: in the file only (with the fields, in
+   * "config") */
+  if (filename && ((dvb_mux_t *)mm)->lm_gse_content && (root = htsmsg_get_map(c, "config")))
+    htsmsg_add_msg(root, "gse_content", htsmsg_copy(((dvb_mux_t *)mm)->lm_gse_content));
   return c;
 }
 
@@ -1878,6 +1921,14 @@ dvb_mux_set_dab_ensemble ( mpegts_mux_t *mm, const char *label )
 }
 #endif
 
+void
+dvb_mux_set_gse_content ( dvb_mux_t *lm, htsmsg_t *m )
+{
+  htsmsg_destroy(lm->lm_gse_content);
+  lm->lm_gse_content = m;
+  idnode_changed(&lm->mm_id);
+}
+
 static void
 dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
 {
@@ -1912,6 +1963,7 @@ dvb_mux_free ( mpegts_mux_t *mm )
 
   free(lm->lm_parent);
   free(lm->lm_dab_ensemble);
+  htsmsg_destroy(lm->lm_gse_content);
   mpegts_mux_free(mm);
 }
 
@@ -2004,6 +2056,10 @@ dvb_mux_create0
 
   /* No config */
   if (!conf) return lm;
+
+  /* what its GSE stream carried */
+  if ((c = htsmsg_get_map(conf, "gse_content")) != NULL)
+    lm->lm_gse_content = htsmsg_copy(c);
 
   /* Services */
   c2 = NULL;

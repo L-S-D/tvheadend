@@ -33,6 +33,8 @@ struct gse_stats {
   gse_t             *gse[256];   /* a decoder by input stream */
   gse_stats_result_t r;
   label_slot_t       labels[LABEL_SET];
+  gse_pdu_cb_t       tap;        /* the PDUs to it as well */
+  void              *tap_opaque;
 };
 
 gse_stats_t *
@@ -56,7 +58,18 @@ gse_stats_destroy ( gse_stats_t *gs )
 static void
 gs_pdu_cb ( void *opaque, const gse_pdu_t *pdu )
 {
-  gse_stats_pdu(opaque, pdu);
+  gse_stats_t *gs = opaque;
+
+  gse_stats_pdu(gs, pdu);
+  if (gs->tap)
+    gs->tap(gs->tap_opaque, pdu);
+}
+
+void
+gse_stats_tap ( gse_stats_t *gs, gse_pdu_cb_t cb, void *opaque )
+{
+  gs->tap = cb;
+  gs->tap_opaque = opaque;
 }
 
 void

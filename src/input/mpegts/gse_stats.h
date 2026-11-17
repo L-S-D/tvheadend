@@ -63,6 +63,9 @@ void gse_stats_frame ( gse_stats_t *gs, const uint8_t *frame, size_t len, int is
 /* a PDU (the decoder of gse.c gives them) */
 void gse_stats_pdu ( gse_stats_t *gs, const gse_pdu_t *pdu );
 
+/* the PDUs that gse_stats_frame() decodes go to cb as well (NULL: not) */
+void gse_stats_tap ( gse_stats_t *gs, gse_pdu_cb_t cb, void *opaque );
+
 void gse_stats_get ( gse_stats_t *gs, gse_stats_result_t *out );
 
 #endif /* __TVH_GSE_STATS_H__ */

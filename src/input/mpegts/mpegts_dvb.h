@@ -82,6 +82,13 @@ typedef struct dvb_mux
   int lm_modcod;
 
   /*
+   * A GSE stream (MM_TYPE_GSE): what it carried at its last scan, the
+   * message of gse_stats_msg() with the microseconds it covers ("us");
+   * NULL not known
+   */
+  htsmsg_t *lm_gse_content;
+
+  /*
    * DVB-S: the present tuning parameters locked at lm_tuning_ok
    * (lm_tuning_ok_key: dvb_mux_tuning_key() of them then; lm_tuning_ok_src:
    * DVB_MUX_TUNING_LOCKED, or DVB_MUX_TUNING_READ when they were read from
@@ -158,6 +165,10 @@ uint16_t   dvb_mux_stream_pid    ( mpegts_mux_t *mm );
 
 /* sub-muxes follow the tuning of the transponder they are carried in */
 dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
+
+/* what the GSE stream of lm carried (a message of gse_stats_msg(), lm takes
+ * it; NULL: not known) - global_lock */
+void dvb_mux_set_gse_content ( dvb_mux_t *lm, htsmsg_t *m );
 
 uint32_t dvb_mux_tuning_key ( const dvb_mux_conf_t *dmc );
 void dvb_mux_tuning_confirmed ( dvb_mux_t *lm, int src );

@@ -416,6 +416,7 @@ SRCS-MPEGTS-DVB = \
 	src/input/mpegts/bbframe.c \
 	src/input/mpegts/gse.c \
 	src/input/mpegts/gse_bbframes.c \
+	src/input/mpegts/gse_probe.c \
 	src/input/mpegts/gse_stats.c \
 	src/input/mpegts/gse_stats_msg.c \
 	src/input/mpegts/ip_stats.c \

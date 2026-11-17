@@ -1,13 +1,11 @@
 /*
  *  GSE-DAB Probe - Detection of DAB within GSE streams
  *
- *  Automatically detects DAB ensembles in GSE (Generic Stream Encapsulation)
- *  streams and upgrades MM_TYPE_GSE muxes to MM_TYPE_DAB_GSE.
- *
- *  Runs for MM_TYPE_GSE muxes (created by ISI probe) and MM_TYPE_DAB_GSE
- *  muxes (to discover new/missing ensembles on rescan).
- *
- *  Uses DMX_SET_FE_STREAM to access BBFrame data directly.
+ *  The DAB ensembles of a GSE input stream (MM_TYPE_GSE): the GSE probe
+ *  (gse_probe.c) gives the PDUs of the stream (or, for a libdvbdab before
+ *  1.1.0, the packets of its BBFrames) while the scan of the mux runs; at
+ *  its end each ensemble found gets a DAB-GSE mux (MM_TYPE_DAB_GSE).
+ *  Without libdvbdab there is none.
  *
  *  Copyright (C) 2025
  *
@@ -20,39 +18,38 @@
 #ifndef __GSE_DAB_PROBE_H__
 #define __GSE_DAB_PROBE_H__
 
-/* Forward declarations */
+#include <stdint.h>
+
 struct mpegts_mux;
+struct gse_pdu;
 
-/**
- * Start GSE-DAB probe on a mux
- *
- * Returns immediately (no-op) if:
- * - Mux is not MM_TYPE_GSE or MM_TYPE_DAB_GSE
- * - GSE-DAB probe is already running
- *
- * @param mm  Mux to probe
- */
-void mpegts_gse_dab_probe_start(struct mpegts_mux *mm);
+typedef struct gse_dab_probe gse_dab_probe_t;
 
-/**
- * Complete GSE-DAB probe and process results
- *
- * On DAB detection:
- * - For MM_TYPE_GSE: Upgrades mux type to MM_TYPE_DAB_GSE
- * - Sets dmc_dab_ip, dmc_dab_port, and mm_tsid (ensemble ID)
- * - Creates child muxes for additional ensembles
- *
- * @param mm  Mux being probed
- * @return    Number of DAB ensembles found
- */
-int mpegts_gse_dab_probe_complete(struct mpegts_mux *mm, int evaluate);
+#if ENABLE_DVBDAB
 
-/**
- * Check if GSE-DAB probe is done
- *
- * @param mm  Mux being probed
- * @return    1 if done (or not running), 0 if still in progress
- */
-int mpegts_gse_dab_probe_is_done(struct mpegts_mux *mm);
+/* the probe of the GSE mux mm; NULL: none */
+gse_dab_probe_t *gse_dab_probe_create ( struct mpegts_mux *mm );
+
+/* a PDU of the stream / the packets of its BBFrames (the input thread,
+ * under mi_output_lock) */
+void gse_dab_probe_pdu ( gse_dab_probe_t *dp, const struct gse_pdu *pdu );
+void gse_dab_probe_packets ( gse_dab_probe_t *dp, const uint8_t *pkt, int len );
+
+/* the ensembles have their services (under mi_output_lock) */
+int gse_dab_probe_ready ( gse_dab_probe_t *dp );
+
+/* the end (global_lock, no more PDUs): a DAB-GSE mux for each ensemble
+ * found when evaluate; the ensembles found; dp goes */
+int gse_dab_probe_finish ( gse_dab_probe_t *dp, int evaluate );
+
+#else
+
+static inline gse_dab_probe_t *gse_dab_probe_create ( struct mpegts_mux *mm ) { return NULL; }
+static inline void gse_dab_probe_pdu ( gse_dab_probe_t *dp, const struct gse_pdu *pdu ) { }
+static inline void gse_dab_probe_packets ( gse_dab_probe_t *dp, const uint8_t *pkt, int len ) { }
+static inline int  gse_dab_probe_ready ( gse_dab_probe_t *dp ) { return 1; }
+static inline int  gse_dab_probe_finish ( gse_dab_probe_t *dp, int evaluate ) { return 0; }
+
+#endif
 
 #endif /* __GSE_DAB_PROBE_H__ */
