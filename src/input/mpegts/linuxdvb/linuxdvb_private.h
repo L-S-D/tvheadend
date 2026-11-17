@@ -413,6 +413,10 @@ struct linuxdvb_en50494
 
   /* runtime */
   uint32_t  le_tune_freq; /* the real frequency to tune to */
+  /* the LNB IF le_tune_freq is the one of (kHz): the requested one (EN
+   * 50494, le_tune_freq has the rest of its rounding), or the one of the
+   * whole MHz of the command (EN 50607, the middle of the user band) */
+  uint32_t  le_tune_if;
 
   /*
    * Unicable master/slave support
@@ -687,6 +691,7 @@ int linuxdvb_satconf_blindscan_path
 uint32_t linuxdvb_satconf_blindscan_if
   ( linuxdvb_satconf_ele_t *lse, uint32_t freq, int vertical, int *band );
 int linuxdvb_satconf_blindscan_dir ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm );
+uint32_t linuxdvb_satconf_blindscan_ref ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm );
 
 /* a frontend goes away: its blindscan ends first (global_lock) */
 void linuxdvb_blindscan_frontend_gone ( linuxdvb_frontend_t *lfe );

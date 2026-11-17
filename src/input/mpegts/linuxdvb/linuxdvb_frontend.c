@@ -1559,7 +1559,10 @@ linuxdvb_frontend_blindscan_update_freq(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
   delta = (int64_t)prop.u.data - lfe->lfe_freq;
   if (dir == 0 || delta == 0 || delta > 20000 || delta < -20000)
     return;
-  f = (int64_t)lm->lm_tuning.dmc_fe_freq + dir * delta;
+  /* delta from the frequency the demodulator's is the one of (Unicable II:
+   * not the mux's) */
+  f = (int64_t)linuxdvb_satconf_blindscan_ref(conf->lfe_satconf, (mpegts_mux_t *)lm) +
+      dir * delta;
   lfe->mi_display_name((mpegts_input_t*)lfe, buf, sizeof(buf));
   tvhinfo(LS_LINUXDVB, "%s - blindscan: carrier at %"PRId64" kHz (tuned %u)",
           buf, f, lm->lm_tuning.dmc_fe_freq);
