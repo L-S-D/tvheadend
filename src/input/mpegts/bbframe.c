@@ -69,8 +69,12 @@ bbframe_frame_ts ( bbframe_ts_t *bt, const uint8_t *frame, size_t len,
     return -1;
   }
   bt->bt_frames++;
-  if ((h[0] >> 6) != 3)
-    return 0;               /* not a TS stream */
+  /* a TS stream; a generic one of 188 byte user packets is one too (16E
+   * 12677.964V says generic continuous, UPL 1504, SYNC 0xBB, and carries
+   * PAT, PMT, SDT, NIT) */
+  if ((h[0] >> 6) != 3 &&
+      ((h[0] >> 6) > 1 || mode != 0 || ((h[2] << 8) | h[3]) != 188 * 8))
+    return 0;
   syncd = ((size_t)h[7] << 8) | h[8];
   if (mode == 1)
     upl = 187 + ((h[0] & 0x04) ? 1 : 0);
@@ -157,7 +161,7 @@ bbframe_split_take ( bbframe_split_t *bs, const uint8_t *pkt )
     return 0;
   if (pkt[8] == BB_SYNC)
     bs->bs_cur = bbframe_packet_header(pkt, &isi, &matype) == 0 ? isi : -1;
-  return bs->bs_cur >= 0 && bs->bs_cur == bs->bs_isi;
+  return bs->bs_cur >= 0 && (bs->bs_isi < 0 || bs->bs_cur == bs->bs_isi);
 }
 
 /* a frame of the stream that was not complete */
@@ -169,9 +173,10 @@ bbframe_split_lost ( bbframe_split_t *bs )
   bs->bs_len = 0;
 }
 
-void
-bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
-                   bbframe_ts_cb_t cb, void *opaque )
+/* a packet: the frame it completes (header and data field, *flen bytes),
+ * else NULL */
+static const uint8_t *
+bbframe_split_add ( bbframe_split_t *bs, const uint8_t *pkt, size_t *flen )
 {
   size_t len = pkt[7], dfl;
   const uint8_t *src;
@@ -180,7 +185,7 @@ bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
   if (!bbframe_split_take(bs, pkt)) {
     if (start && bs->bs_len)
       bbframe_split_lost(bs);
-    return;
+    return NULL;
   }
 
   if (start) {
@@ -189,22 +194,47 @@ bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
     src = pkt + 8;
   } else {
     if (bs->bs_len == 0)
-      return;                      /* the start of the frame was lost */
+      return NULL;                 /* the start of the frame was lost */
     src = pkt + 9;
     len--;
   }
   if (bs->bs_len + len > sizeof(bs->bs_frame)) {
     bbframe_split_lost(bs);
-    return;
+    return NULL;
   }
   memcpy(bs->bs_frame + bs->bs_len, src, len);
   bs->bs_len += len;
 
   if (bs->bs_len < 1 + BBFRAME_HEADER)
-    return;
+    return NULL;
   dfl = (((size_t)bs->bs_frame[5] << 8) | bs->bs_frame[6]) >> 3;
   if (bs->bs_len < 1 + BBFRAME_HEADER + dfl)
-    return;
-  bbframe_frame_ts(&bs->bs_ts, bs->bs_frame + 1, bs->bs_len - 1, cb, opaque);
+    return NULL;
   bs->bs_len = 0;
+  *flen = BBFRAME_HEADER + dfl;
+  return bs->bs_frame + 1;
+}
+
+void
+bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
+                   bbframe_ts_cb_t cb, void *opaque )
+{
+  const uint8_t *frame;
+  size_t len;
+
+  if ((frame = bbframe_split_add(bs, pkt, &len)) != NULL)
+    bbframe_frame_ts(&bs->bs_ts, frame, len, cb, opaque);
+}
+
+void
+bbframe_split_frames ( bbframe_split_t *bs, const uint8_t *pkt,
+                       bbframe_frame_cb_t cb, void *opaque )
+{
+  const uint8_t *frame;
+  size_t len;
+
+  if ((frame = bbframe_split_add(bs, pkt, &len)) != NULL) {
+    bs->bs_ts.bt_frames++;
+    cb(opaque, frame, len, bs->bs_cur);
+  }
 }

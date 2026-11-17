@@ -22,6 +22,7 @@
 #include "input/mpegts/mpegts_dvb.h"
 #include <dvbdab/dvbdab_c.h>
 #ifdef DVBDAB_HAVE_FORMAT_IPV4
+#include "input/mpegts/gse_bbframes.h"
 #include "input/mpegts/mpe.h"
 #endif
 
@@ -64,6 +65,9 @@ struct dab_stream_ctx {
   void                   *opaque;
   int                     started;
 #ifdef DVBDAB_HAVE_FORMAT_IPV4
+  /* GSE in BBFrames: tvheadend takes the PDUs out, the IPv4 ones go on */
+  gse_bbframes_t         *gb;
+  int                     bb_pid;
   /* MPE: tvheadend takes the datagrams out, the IPv4 ones go on */
   mpe_t                  *mpe;
   int                     mpe_pid;
@@ -71,6 +75,15 @@ struct dab_stream_ctx {
 };
 
 #ifdef DVBDAB_HAVE_FORMAT_IPV4
+static void
+dab_stream_pdu_cb(void *opaque, const gse_pdu_t *pdu)
+{
+  dab_stream_ctx_t *ctx = opaque;
+
+  if (pdu->protocol_type == 0x0800)
+    dvbdab_streamer_feed(ctx->streamer, pdu->data, pdu->len);
+}
+
 static void
 dab_stream_datagram_cb(void *opaque, const mpe_datagram_t *d)
 {
@@ -136,13 +149,19 @@ dab_stream_create(const dab_stream_config_t *config,
     scfg.filter_ip = config->filter_ip;
     scfg.filter_port = config->filter_port;
     break;
-  case 2: /* GSE */
-    scfg.format = DVBDAB_FORMAT_GSE;
-    scfg.filter_ip = config->filter_ip;
-    scfg.filter_port = config->filter_port;
-    break;
   case 3: /* GSE in the BBFrames of the Neumo driver */
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+    /* the PDUs of the stream are taken out here, the IPv4 ones go on */
+    scfg.format = DVBDAB_FORMAT_IPV4;
+    ctx->gb = gse_bbframes_create(config->isi, dab_stream_pdu_cb, ctx);
+    ctx->bb_pid = config->pid;
+    if (ctx->gb == NULL) {
+      free(ctx);
+      return NULL;
+    }
+#else
     scfg.format = DVBDAB_FORMAT_BBF_TS;
+#endif
     scfg.filter_ip = config->filter_ip;
     scfg.filter_port = config->filter_port;
     scfg.eid = config->eid;
@@ -160,6 +179,7 @@ dab_stream_create(const dab_stream_config_t *config,
   ctx->streamer = dvbdab_streamer_create(&scfg);
   if (!ctx->streamer) {
 #ifdef DVBDAB_HAVE_FORMAT_IPV4
+    gse_bbframes_destroy(ctx->gb);
     mpe_destroy(ctx->mpe);
 #endif
     free(ctx);
@@ -185,6 +205,7 @@ dab_stream_destroy(dab_stream_ctx_t *ctx)
   if (ctx->streamer)
     dvbdab_streamer_destroy(ctx->streamer);
 #ifdef DVBDAB_HAVE_FORMAT_IPV4
+  gse_bbframes_destroy(ctx->gb);
   mpe_destroy(ctx->mpe);
 #endif
 
@@ -197,9 +218,11 @@ dab_stream_feed(dab_stream_ctx_t *ctx, const uint8_t *data, size_t len)
   if (!ctx || !ctx->streamer || !data)
     return -1;
 
-  /* Feed to libdvbdab (MPE: the IPv4 datagrams of the PID) */
+  /* Feed to libdvbdab (GSE in BBFrames, MPE: their IPv4 packets) */
 #ifdef DVBDAB_HAVE_FORMAT_IPV4
-  if (ctx->mpe)
+  if (ctx->gb)
+    gse_bbframes_feed(ctx->gb, data, len, ctx->bb_pid);
+  else if (ctx->mpe)
     mpe_feed(ctx->mpe, data, len, ctx->mpe_pid, dab_stream_datagram_cb, ctx);
   else
 #endif
@@ -267,6 +290,7 @@ mpegts_mux_decap_start(mpegts_mux_instance_t *mmi)
     cfg.filter_port = dmc->dmc_dab_port;
     if (format == 3 && mm->mm_tsid != MPEGTS_TSID_NONE && mm->mm_tsid <= 0xffff)
       cfg.eid = mm->mm_tsid;    /* the ensemble the scan found */
+    cfg.isi = format == 3 ? dmc->dmc_fe_stream_id : -1;
   }                             /* TS NI: the PID is all it needs */
 
   mmi->mmi_decap = dab_stream_create(&cfg, dab_decap_output_cb, mmi);
