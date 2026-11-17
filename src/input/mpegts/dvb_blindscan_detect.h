@@ -63,11 +63,14 @@ typedef struct dvb_blindscan_params {
                                  0: noise_db for the whole band) */
   double floor_window_khz;    /* their lower envelope and its mean over this,
                                  wider than the widest carrier (120000) */
+  int    edge_top;            /* edges 3 dB below the top's middle level,
+                                 between the samples (1); or 3 dB below the
+                                 peak, at the sample past it (0) */
 } dvb_blindscan_params_t;
 
 typedef struct dvb_blindscan_carrier {
   double freq_khz;            /* middle between the edges */
-  double bw_khz;              /* between the edges, 3 dB below the peak */
+  double bw_khz;              /* between the edges, 3 dB down */
   double left_khz, right_khz;
   double snr_db;              /* peak above the noise floor there */
   double peak_db;
@@ -99,10 +102,12 @@ int dvb_blindscan_detect
   ( const dvb_blindscan_spectrum_t *s, const dvb_blindscan_params_t *p,
     dvb_blindscan_carrier_t **out );
 
-/* symbol rate (symbols/s) of a carrier of this width: rolloff 0.35 */
+/* symbol rate (symbols/s) of a carrier of this width: half the power of a
+ * root raised cosine carrier is at its symbol rate apart, whatever the
+ * rolloff (the occupied width is the symbol rate times 1 + rolloff) */
 static inline double dvb_blindscan_symbol_rate ( const dvb_blindscan_carrier_t *c )
 {
-  return c->bw_khz * 1000.0 / 1.35;
+  return c->bw_khz * 1000.0;
 }
 
 #endif /* __TVH_DVB_BLINDSCAN_DETECT_H__ */
