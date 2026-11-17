@@ -53,6 +53,8 @@ typedef struct ps_pid {
 
 struct mpegts_pidstats {
   int       bb_pid;              /* -1 none */
+  mpegts_pidstats_bb_cb_t bb_cb;
+  void     *bb_opaque;
   uint16_t  idx[8192];           /* PID -> slot + 1 */
   ps_pid_t  pid[PS_MAX_PIDS];
   int       count;
@@ -89,6 +91,19 @@ void
 mpegts_pidstats_bbframes ( mpegts_pidstats_t *ps, int pid )
 {
   ps->bb_pid = pid;
+}
+
+void
+mpegts_pidstats_bbsink ( mpegts_pidstats_t *ps, mpegts_pidstats_bb_cb_t cb, void *opaque )
+{
+  ps->bb_cb = cb;
+  ps->bb_opaque = opaque;
+}
+
+void *
+mpegts_pidstats_bbsink_opaque ( mpegts_pidstats_t *ps )
+{
+  return ps->bb_opaque;
 }
 
 /* the CRC-8 of a BBHEADER (EN 302 307), and the mode it says: 0 normal,
@@ -294,6 +309,8 @@ ps_packet ( mpegts_pidstats_t *ps, const uint8_t *t )
   p->pub.packets++;
   if (pid == ps->bb_pid) {
     ps_bbframe(p, t);
+    if (ps->bb_cb)
+      ps->bb_cb(ps->bb_opaque, t);
     return;
   }
   if (t[3] & 0xc0)
