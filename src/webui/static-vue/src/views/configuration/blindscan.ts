@@ -271,10 +271,11 @@ export function triedAt(
 }
 
 /* the MATYPE of a DVB-S2 stream: TS or a generic stream (GSE comes as
- * one), single or multistream, CCM or ACM/VCM - the names of the mux */
+ * one), single or multistream, CCM or ACM/VCM; TS/GS 10, reserved in
+ * DVB-S2, is GSE-HEM in DVB-S2X */
 export function matypeText(m: number | undefined): string {
   if (m === undefined || m < 0) return ''
-  const types = ['generic packetized', 'generic continuous', 'reserved', 'TS']
+  const types = ['generic packetized', 'generic continuous', 'GSE-HEM', 'TS']
   const out = [types[(m >> 6) & 3]]
   if (!(m & 0x20)) out.push('multistream')
   if (!(m & 0x10)) out.push('ACM/VCM')
