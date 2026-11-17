@@ -26,8 +26,9 @@
  * A spectrum comes in slices (frequencies of the transponders, in kHz, and
  * levels in dB): one for the whole band, two for the low and high band of a
  * universal LNB, or many narrow overlapping ones through a Unicable user band.
- * dvb_blindscan_merge() makes one spectrum of them, dvb_blindscan_detect()
- * finds the carriers in it. Plain computation: no tvheadend state, no locks.
+ * dvb_blindscan_merge() makes one spectrum of them with its noise floor,
+ * dvb_blindscan_detect() finds the carriers above that floor. Plain
+ * computation: no tvheadend state, no locks.
  */
 
 typedef struct dvb_blindscan_slice {
@@ -41,7 +42,15 @@ typedef struct dvb_blindscan_spectrum {
   size_t  count;
   double *freq_khz;
   double *level_db;
-  double  noise_db;           /* noise floor: the 10th percentile of the levels */
+  double  noise_db;           /* the 10th percentile of the levels */
+  /* the noise floor along the band, floor_count points: the levels without
+   * the carriers. The levels of the slices of a Unicable LNB, which levels
+   * each user band on its own, are matched one to the next and drift; a
+   * cable dampens the upper frequencies more; the polarisations differ:
+   * levels above the floor compare along the band and between them */
+  size_t  floor_count;
+  double *floor_freq_khz;
+  double *floor_db;
 } dvb_blindscan_spectrum_t;
 
 typedef struct dvb_blindscan_params {
@@ -50,13 +59,17 @@ typedef struct dvb_blindscan_params {
   double min_snr_db;          /* above the noise floor and as prominence (3) */
   double overlap_khz;         /* Unicable: blended overlap of slices (20000) */
   double extract_khz;         /* Unicable: used middle of a slice (40000) */
+  double floor_block_khz;     /* noise floor: the 10th percentile of blocks (2000;
+                                 0: noise_db for the whole band) */
+  double floor_window_khz;    /* their lower envelope and its mean over this,
+                                 wider than the widest carrier (120000) */
 } dvb_blindscan_params_t;
 
 typedef struct dvb_blindscan_carrier {
   double freq_khz;            /* middle between the edges */
   double bw_khz;              /* between the edges, 3 dB below the peak */
   double left_khz, right_khz;
-  double snr_db;              /* peak above the noise floor */
+  double snr_db;              /* peak above the noise floor there */
   double peak_db;
   int    sigma;               /* smoothing that found it (2 or 5) */
 } dvb_blindscan_carrier_t;
@@ -76,6 +89,9 @@ int dvb_blindscan_merge
     const dvb_blindscan_params_t *p, dvb_blindscan_spectrum_t *out );
 
 void dvb_blindscan_spectrum_free ( dvb_blindscan_spectrum_t *s );
+
+/* the noise floor at a frequency (noise_db without a floor) */
+double dvb_blindscan_floor_at ( const dvb_blindscan_spectrum_t *s, double freq_khz );
 
 /* the carriers by frequency (*out: malloc'ed, NULL if none); their number,
  * or -1 (no memory) */

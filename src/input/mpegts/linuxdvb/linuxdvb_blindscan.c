@@ -352,6 +352,17 @@ lb_result_pol ( dvb_blindscan_spectrum_t *sp, dvb_blindscan_carrier_t *c, int nc
   free(f);
   free(lv);
   htsmsg_add_s64(m, "noise", (int64_t)(sp->noise_db * 100));
+  /* the noise floor along the band (smooth: a point every 2 MHz) */
+  if (sp->floor_count) {
+    htsmsg_t *ff = htsmsg_create_list(), *fv = htsmsg_create_list();
+    for (i = 0; i < sp->floor_count; i++) {
+      v = sp->floor_db[i] * 100.0;
+      htsmsg_add_u32(ff, NULL, (uint32_t)(sp->floor_freq_khz[i] + 0.5));
+      htsmsg_add_s32(fv, NULL, (int32_t)(v < 0 ? v - 0.5 : v + 0.5));
+    }
+    htsmsg_add_msg(m, "floor_freq", ff);
+    htsmsg_add_msg(m, "floor", fv);
+  }
   for (k = 0; k < nc; k++) {
     e = htsmsg_create_map();
     htsmsg_add_u32(e, "freq", (uint32_t)(c[k].freq_khz + 0.5));
@@ -455,10 +466,16 @@ lb_thread ( void *aux )
     nc = dvb_blindscan_detect(&sp, &prm, &car);
     if (nc >= 0) {
       htsmsg_t *pm = lb_result_pol(&sp, car, nc);
+      double flo = sp.noise_db, fhi = sp.noise_db;
+      size_t q;
+      for (q = 0; q < sp.floor_count; q++) {
+        if (q == 0 || sp.floor_db[q] < flo) flo = sp.floor_db[q];
+        if (q == 0 || sp.floor_db[q] > fhi) fhi = sp.floor_db[q];
+      }
       htsmsg_add_s64(pm, "time", gclk());
       htsmsg_add_msg(pols, (char []){ pol, 0 }, pm);
-      tvhinfo(LS_LINUXDVB, "%s - blindscan %c: %d carrier(s), noise %.1f dB, %zu points",
-              lb->lb_name, pol, nc, sp.noise_db, sp.count);
+      tvhinfo(LS_LINUXDVB, "%s - blindscan %c: %d carrier(s), noise floor %.1f to %.1f dB, %zu points",
+              lb->lb_name, pol, nc, flo, fhi, sp.count);
     }
     free(car);
     car = NULL;
@@ -953,6 +970,10 @@ lb_display ( htsmsg_t *pol, int points )
     htsmsg_add_s64(m, "noise", noise);
   if (!htsmsg_get_s64(pol, "time", &noise))
     htsmsg_add_s64(m, "time", noise);
+  if ((c = htsmsg_get_list(pol, "floor_freq")) != NULL)
+    htsmsg_add_msg(m, "floor_freq", htsmsg_copy(c));
+  if ((c = htsmsg_get_list(pol, "floor")) != NULL)
+    htsmsg_add_msg(m, "floor", htsmsg_copy(c));
   if ((c = htsmsg_get_list(pol, "carriers")) != NULL)
     htsmsg_add_msg(m, "carriers", htsmsg_copy(c));
   return m;
