@@ -288,6 +288,21 @@ export interface GseContent {
   /* the TS of generic streams of 188 byte user packets */
   ts?: TsContent
 }
+/* what the datagrams of an MPE PID carried */
+export interface MpeContent {
+  pid: number
+  sections: number
+  datagrams: number
+  crc_errors: number
+  scrambled: number
+  lost: number
+  ipv4: number
+  ipv6: number
+  other: number
+  ip: Record<string, IpStat>
+  flows: GseFlow[]
+  flows_other?: number
+}
 export interface TsContent {
   /* microseconds from the first packet to the last */
   us: number
@@ -297,6 +312,7 @@ export interface TsContent {
   pids: number
   list?: PidStat[]
   gse?: GseContent
+  mpe?: MpeContent[]
 }
 
 /* a tune from the dialog, or of the blindscan for a new carrier */
@@ -505,7 +521,19 @@ export function gseLines(g: GseContent, us: number, t: Translate): string[] {
       )
     )
   }
-  const ip = g.ip ?? {}
+  lines.push(...ipLines(g.ip ?? {}, g.flows ?? [], g.flows_other, us, t))
+  return lines
+}
+
+/* what IP packets carried, as lines: the rates by kind, the multicast groups */
+export function ipLines(
+  ip: Record<string, IpStat>,
+  flows: GseFlow[],
+  flowsOther: number | undefined,
+  us: number,
+  t: Translate
+): string[] {
+  const lines: string[] = []
   const ipParts: Array<[string, string]> = [
     ['v4_multicast', 'IPv4 multicast'],
     ['v4_broadcast', 'IPv4 broadcast'],
@@ -521,7 +549,7 @@ export function gseLines(g: GseContent, us: number, t: Translate): string[] {
     .filter(([k]) => ip[k]?.packets)
     .map(([k, name]) => `${name} ${rateText(ip[k].bytes * 8, us)}`)
   if (ipText.length) lines.push(ipText.join(' · '))
-  for (const f of g.flows ?? [])
+  for (const f of flows)
     lines.push(
       `${f.addr.includes(':') ? `[${f.addr}]` : f.addr}:${f.port}: ${rateText(f.bytes * 8, us)} · ` +
         (FLOW_KINDS[f.kind] ?? f.kind) +
@@ -529,7 +557,31 @@ export function gseLines(g: GseContent, us: number, t: Translate): string[] {
           ? ` (${t('payload type {0}', String(f.rtp_pt))})`
           : '')
     )
-  if (g.flows_other) lines.push(t('{0} packets of further groups', String(g.flows_other)))
+  if (flowsOther) lines.push(t('{0} packets of further groups', String(flowsOther)))
+  return lines
+}
+
+/* what the MPE PIDs carried, as lines */
+export function mpeLines(list: MpeContent[], us: number, t: Translate): string[] {
+  const lines: string[] = []
+  for (const m of list) {
+    const errs = [
+      m.crc_errors ? t('{0} CRC errors', String(m.crc_errors)) : '',
+      m.scrambled ? t('{0} scrambled', String(m.scrambled)) : '',
+      m.lost ? t('{0} lost', String(m.lost)) : '',
+    ].filter(Boolean)
+    lines.push(
+      t(
+        'MPE on PID {0}: {1} datagrams (IPv4 {2}, IPv6 {3}, other {4})',
+        String(m.pid),
+        String(m.datagrams),
+        String(m.ipv4),
+        String(m.ipv6),
+        String(m.other)
+      ) + (errs.length ? ` · ${errs.join(', ')}` : '')
+    )
+    for (const l of ipLines(m.ip ?? {}, m.flows ?? [], m.flows_other, us, t)) lines.push(`  ${l}`)
+  }
   return lines
 }
 
@@ -568,6 +620,7 @@ export function contentLines(c: TsContent, t: Translate): string[] {
       `PID ${p.pid} (${hex(p.pid, 4)}): ${rateText(p.packets * 1504, c.us)} · ${what.join(' · ')}`
     )
   }
+  if (c.mpe?.length) lines.push(...mpeLines(c.mpe, c.us, t))
   if (c.gse) lines.push(...gseLines(c.gse, c.us, t))
   return lines
 }
