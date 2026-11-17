@@ -43,6 +43,7 @@ import {
   levelAt,
   levelRange,
   muxOfCarrier,
+  contentLines,
   matypeText,
   polSelOf,
   ticks,
@@ -54,6 +55,7 @@ import {
   type GraphMux,
   type Pol,
   type PolSel,
+  type TsContent,
   type TuneState,
 } from './blindscan'
 
@@ -728,6 +730,7 @@ function onTuneResult(net: string, m: Record<string, unknown>) {
     state: ok ? 'ok' : m.locked ? 'nodata' : 'fail',
     text,
     mux,
+    content: m.content && typeof m.content === 'object' ? (m.content as TsContent) : undefined,
   })
   if (!props.visible || net !== props.networkUuid) return
   emit('changed')
@@ -737,7 +740,11 @@ function onTuneResult(net: string, m: Record<string, unknown>) {
 /* ---- what a mux carries ---- */
 
 interface MuxDetail {
-  uuid: string
+  /* the mux, none when the tune deleted it again */
+  uuid: string | null
+  /* what the scan of the tune got: the statistics of the PIDs */
+  content: TsContent | null
+  label: string
   loading: boolean
   services: ServiceRow[]
   error: string
@@ -761,9 +768,29 @@ const detailServices = computed(() => {
   )
 })
 
-async function showMux(uuid: string) {
+/* a tune: its mux (if kept) and what its scan got */
+function showTune(s: TuneState) {
+  if (s.mux) void showMux(s.mux, s.content ?? null, s.text)
+  else
+    detail.value = {
+      uuid: null,
+      content: s.content ?? null,
+      label: s.text,
+      loading: false,
+      services: [],
+      error: '',
+    }
+}
+
+async function showMux(uuid: string, content?: TsContent | null, label?: string) {
   const ids = [uuid, ...muxRows.value.filter((r) => r.parent_mux === uuid).map((r) => r.uuid)]
-  detail.value = { uuid, loading: true, services: [], error: '' }
+  /* the content of the last tune of the mux */
+  const c =
+    content ??
+    tuneArr.value.filter((x) => x.mux === uuid && x.content).slice(-1)[0]?.content ??
+    null
+  const base = { uuid, content: c, label: label ?? '' }
+  detail.value = { ...base, loading: true, services: [], error: '' }
   try {
     const grids = await Promise.all(
       ids.map((id) =>
@@ -778,14 +805,14 @@ async function showMux(uuid: string) {
     )
     if (detail.value?.uuid !== uuid) return
     detail.value = {
-      uuid,
+      ...base,
       loading: false,
       services: grids.flatMap((g) => g.entries ?? []),
       error: '',
     }
   } catch (e) {
     if (detail.value?.uuid === uuid)
-      detail.value = { uuid, loading: false, services: [], error: apiErrorMessage(e) }
+      detail.value = { ...base, loading: false, services: [], error: apiErrorMessage(e) }
   }
 }
 
@@ -1097,7 +1124,7 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
           class="bs-spin"
           aria-hidden="true"
         />
-        <strong>{{ detailRow?.name ?? t('Mux') }}</strong>
+        <strong>{{ detailRow?.name ?? (detail.uuid ? t('Mux') : detail.label) }}</strong>
         <span v-if="detailRow" class="bs-muted">
           {{ tuningText(detailRow) }} · {{ scanResultName(detailRow.scan_result) }} ·
           {{
@@ -1108,7 +1135,9 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
             )
           }}
         </span>
-        <span v-else-if="!detail.loading" class="bs-muted">{{ t('the mux is gone') }}</span>
+        <span v-else-if="!detail.loading && detail.uuid" class="bs-muted">{{
+          t('the mux is gone')
+        }}</span>
         <Button
           size="small"
           text
@@ -1118,11 +1147,20 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
         />
       </div>
       <div v-if="detail.error" class="bs-status--err">{{ detail.error }}</div>
+      <div v-if="detail.content" class="bs-content">
+        <div class="bs-muted">{{ t('What the scan got') }}</div>
+        <div v-for="(ln, i) in contentLines(detail.content, t)" :key="i" class="bs-content-line">
+          {{ ln }}
+        </div>
+      </div>
       <div v-if="detailSubs.length" class="bs-muted">
         {{ t('Sub-muxes') }}:
         {{ detailSubs.map((r) => `${r.name} (${scanResultName(r.scan_result)})`).join(', ') }}
       </div>
-      <div v-if="!detail.loading && !detail.error && !detailServices.length" class="bs-muted">
+      <div
+        v-if="detail.uuid && !detail.loading && !detail.error && !detailServices.length"
+        class="bs-muted"
+      >
         {{ t('No services') }}
       </div>
       <div v-if="detailServices.length" class="bs-services-wrap">
@@ -1179,11 +1217,11 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
           aria-hidden="true"
         />
         <button
-          v-if="s.mux"
+          v-if="s.mux || s.content"
           type="button"
           class="bs-link"
-          :title="t('Show the services')"
-          @click="s.mux && showMux(s.mux)"
+          :title="s.mux ? t('Show the services') : t('Show what the scan got')"
+          @click="showTune(s)"
         >
           {{ s.text }}
         </button>
@@ -1413,6 +1451,15 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
 }
 .bs-detail-close {
   margin-left: auto;
+}
+.bs-content {
+  margin: var(--tvh-space-1, 4px) 0;
+  max-height: 12em;
+  overflow-y: auto;
+}
+.bs-content-line {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .bs-services-wrap {
   max-height: 16em;
