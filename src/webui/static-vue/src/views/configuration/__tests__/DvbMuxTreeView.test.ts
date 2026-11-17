@@ -385,6 +385,25 @@ describe('DvbMuxTreeView with many muxes and services', () => {
   })
 })
 
+describe('DvbMuxTreeView GSE content', () => {
+  it('shows what a GSE stream carried after its name, the whole of it in the title', async () => {
+    const s = server()
+    s.muxes[0].gse_content = 'GSE: 3571 PDUs, 100 % IPv4; unicast 2.8 Mbit/s'
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    const gse = rowOf(w, '11494H').find('.mux-tree__gse')
+    expect(gse.text()).toContain('GSE: 3571 PDUs')
+    expect(gse.attributes('title')).toContain('unicast 2.8 Mbit/s')
+    expect(String(calls('mpegts/mux/grid')[0].list).split(',')).toContain('gse_content')
+  })
+
+  it('shows nothing for a mux without it', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    expect(rowOf(w, '11494H').find('.mux-tree__gse').exists()).toBe(false)
+  })
+})
+
 describe('DvbMuxTreeView scan button', () => {
   const scanButton = (w: Wrapper, text: string) => rowOf(w, text).find('button.mux-tree__scan')
 

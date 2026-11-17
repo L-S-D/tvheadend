@@ -1585,6 +1585,14 @@ onMounted(loadNetworks)
                 <span v-if="r.node.row?.pnetwork_name" class="mux-tree__provider">
                   {{ r.node.row.pnetwork_name }}
                 </span>
+                <!-- what a GSE stream carried at its last scan (the cell cuts it, the title has it) -->
+                <span
+                  v-if="r.node.row?.gse_content"
+                  class="mux-tree__tuning mux-tree__gse"
+                  :title="t('What the GSE stream carried at its last scan: {0}', r.node.row.gse_content)"
+                >
+                  {{ r.node.row.gse_content }}
+                </span>
               </template>
             </td>
             <template v-if="r.node?.row">
