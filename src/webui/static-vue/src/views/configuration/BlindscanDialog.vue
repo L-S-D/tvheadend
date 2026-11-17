@@ -12,19 +12,30 @@
  * frequency (a carrier, a transponder, or a point of a curve) and tunes
  * there blind, with the symbol rate of the carrier or one given: the mux
  * there, or a new one that is kept only when it locks
- * (`mpegts/network/blindscan_tune`). Drag to zoom, double click for all.
+ * (`mpegts/network/blindscan_tune`). Drag to zoom, double click for all. A
+ * click on a tune that locked, or on the services of a mux picked, shows
+ * what the mux carries: its tuning, sub-muxes and services.
  */
 
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
-import { Loader2 } from 'lucide-vue-next'
+import { Loader2, Lock } from 'lucide-vue-next'
 import { apiCall } from '@/api/client'
 import { cometClient } from '@/api/comet'
 import { useI18n } from '@/composables/useI18n'
 import { useToastNotify } from '@/composables/useToastNotify'
 import { apiErrorMessage } from '@/utils/apiErrorMessage'
-import { exactMatch, MUX_FIELDS, type MuxRow } from './muxTree'
+import {
+  caidList,
+  exactMatch,
+  MUX_FIELDS,
+  scanResultName,
+  SERVICE_FIELDS,
+  serviceTypeName,
+  type MuxRow,
+  type ServiceRow,
+} from './muxTree'
 import {
   aboveFloor,
   decimate,
@@ -581,6 +592,8 @@ interface TuneState {
   pol: Pol
   state: 'scanning' | 'ok' | 'fail'
   text: string
+  /* locked: the mux kept, or the one of the network it is */
+  mux?: string
 }
 const tunes = ref<Record<string, TuneState>>({})
 
@@ -658,12 +671,85 @@ function onTuneResult(m: Record<string, unknown>) {
     )
   else if (m.deleted) text = t('{0}: nothing found - the new mux goes again', where)
   else text = t('{0}: the scan failed', where)
+  const mux = !ok ? undefined : typeof m.same === 'string' ? m.same : m.deleted ? undefined : uuid
   tunes.value = {
     ...tunes.value,
-    [uuid]: { freq, pol, state: ok ? 'ok' : 'fail', text },
+    [uuid]: { freq, pol, state: ok ? 'ok' : 'fail', text, mux },
   }
   emit('changed')
   void loadMuxes()
+}
+
+/* ---- what a mux carries ---- */
+
+interface MuxDetail {
+  uuid: string
+  loading: boolean
+  services: ServiceRow[]
+  error: string
+}
+const detail = ref<MuxDetail | null>(null)
+const detailRow = computed(() => muxRows.value.find((r) => r.uuid === detail.value?.uuid) ?? null)
+const detailSubs = computed(() => {
+  const u = detail.value?.uuid
+  return u ? muxRows.value.filter((r) => r.parent_mux === u) : []
+})
+/* the services of the mux, then those of its sub-muxes, by name */
+const detailServices = computed(() => {
+  const d = detail.value
+  if (!d) return []
+  const order = [d.uuid, ...detailSubs.value.map((r) => r.uuid)]
+  return [...d.services].sort(
+    (a, b) =>
+      order.indexOf(a.multiplex_uuid ?? '') - order.indexOf(b.multiplex_uuid ?? '') ||
+      (a.svcname ?? '').localeCompare(b.svcname ?? '') ||
+      (a.sid ?? 0) - (b.sid ?? 0)
+  )
+})
+
+async function showMux(uuid: string) {
+  const ids = [uuid, ...muxRows.value.filter((r) => r.parent_mux === uuid).map((r) => r.uuid)]
+  detail.value = { uuid, loading: true, services: [], error: '' }
+  try {
+    const grids = await Promise.all(
+      ids.map((id) =>
+        apiCall<{ entries?: ServiceRow[] }>('mpegts/service/grid', {
+          start: 0,
+          limit: 10000,
+          hidemode: 'none',
+          list: SERVICE_FIELDS,
+          filter: [{ type: 'string', field: 'multiplex_uuid', value: exactMatch(id) }],
+        })
+      )
+    )
+    if (detail.value?.uuid !== uuid) return
+    detail.value = {
+      uuid,
+      loading: false,
+      services: grids.flatMap((g) => g.entries ?? []),
+      error: '',
+    }
+  } catch (e) {
+    if (detail.value?.uuid === uuid)
+      detail.value = { uuid, loading: false, services: [], error: apiErrorMessage(e) }
+  }
+}
+
+function subMuxName(uuid: string | undefined): string {
+  return muxRows.value.find((r) => r.uuid === uuid)?.name ?? ''
+}
+
+/* delivery system, modulation, FEC, symbol rate, input stream */
+function tuningText(r: MuxRow): string {
+  return [
+    r.delsys,
+    r.modulation,
+    r.fec,
+    r.symbolrate ? `${Math.round(r.symbolrate / 1000)} kS/s` : '',
+    r.stream_id !== undefined && r.stream_id >= 0 && r.multistream ? `ISI ${r.stream_id}` : '',
+  ]
+    .filter((x) => x && x !== 'AUTO' && x !== 'NONE')
+    .join(' · ')
 }
 
 /* the tunes, newest first, and how they went */
@@ -923,7 +1009,85 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
         />
       </label>
       <Button size="small" :label="t('Tune and scan')" @click="tune" />
+      <Button
+        v-if="pick.mux"
+        size="small"
+        text
+        :label="t('Show the services')"
+        @click="pick.mux && showMux(pick.mux.uuid)"
+      />
       <Button size="small" text :label="t('Close')" @click="pick = null" />
+    </div>
+    <div v-if="detail" class="bs-detail">
+      <div class="bs-detail-head">
+        <Loader2
+          v-if="detail.loading"
+          :size="14"
+          :stroke-width="2"
+          class="bs-spin"
+          aria-hidden="true"
+        />
+        <strong>{{ detailRow?.name ?? t('Mux') }}</strong>
+        <span v-if="detailRow" class="bs-muted">
+          {{ tuningText(detailRow) }} · {{ scanResultName(detailRow.scan_result) }} ·
+          {{
+            t(
+              '{0} services, {1} channels',
+              String(detailRow.num_svc ?? 0),
+              String(detailRow.num_chn ?? 0)
+            )
+          }}
+        </span>
+        <span v-else-if="!detail.loading" class="bs-muted">{{ t('the mux is gone') }}</span>
+        <Button
+          size="small"
+          text
+          class="bs-detail-close"
+          :label="t('Close')"
+          @click="detail = null"
+        />
+      </div>
+      <div v-if="detail.error" class="bs-status--err">{{ detail.error }}</div>
+      <div v-if="detailSubs.length" class="bs-muted">
+        {{ t('Sub-muxes') }}:
+        {{ detailSubs.map((r) => `${r.name} (${scanResultName(r.scan_result)})`).join(', ') }}
+      </div>
+      <div v-if="!detail.loading && !detail.error && !detailServices.length" class="bs-muted">
+        {{ t('No services') }}
+      </div>
+      <div v-if="detailServices.length" class="bs-services-wrap">
+        <table class="bs-services">
+          <thead>
+            <tr>
+              <th>{{ t('Service') }}</th>
+              <th>{{ t('Type') }}</th>
+              <th>SID</th>
+              <th v-if="detailSubs.length">{{ t('Sub-mux') }}</th>
+              <th>{{ t('Provider') }}</th>
+              <th>{{ t('Encrypted') }}</th>
+              <th>{{ t('Channel') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="sv in detailServices" :key="sv.uuid">
+              <td>{{ sv.svcname || t('(no name)') }}</td>
+              <td>{{ serviceTypeName(sv.dvb_servicetype) }}</td>
+              <td class="bs-num">{{ sv.sid }}</td>
+              <td v-if="detailSubs.length">
+                {{ sv.multiplex_uuid === detail.uuid ? '' : subMuxName(sv.multiplex_uuid) }}
+              </td>
+              <td>{{ sv.provider }}</td>
+              <td>
+                <template v-if="sv.encrypted">
+                  <Lock :size="12" :stroke-width="2" class="bs-lock" />
+                  {{ caidList(sv.caid) }}
+                </template>
+              </td>
+              <td>{{ sv.channel?.length ? t('yes') : '' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
     <div v-if="tuneList.length" class="bs-tunes-head">
       <Loader2
@@ -944,7 +1108,16 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
           class="bs-spin"
           aria-hidden="true"
         />
-        {{ s.text }}
+        <button
+          v-if="s.mux"
+          type="button"
+          class="bs-link"
+          :title="t('Show the services')"
+          @click="s.mux && showMux(s.mux)"
+        >
+          {{ s.text }}
+        </button>
+        <template v-else>{{ s.text }}</template>
       </li>
     </ul>
   </Dialog>
@@ -1144,6 +1317,78 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
 .bs-pick-info {
   flex-basis: 100%;
   font-size: var(--tvh-text-sm, 0.85rem);
+}
+.bs-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--tvh-text-sm, 0.85rem);
+}
+.bs-muted {
+  color: var(--tvh-text-muted);
+}
+.bs-detail {
+  margin-top: var(--tvh-space-2, 8px);
+  padding: var(--tvh-space-2, 8px);
+  border: 1px solid var(--tvh-border);
+  border-radius: var(--tvh-radius-sm, 4px);
+  font-size: var(--tvh-text-sm, 0.85rem);
+}
+.bs-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: var(--tvh-space-1, 4px);
+}
+.bs-detail-close {
+  margin-left: auto;
+}
+.bs-services-wrap {
+  max-height: 16em;
+  overflow-y: auto;
+  margin-top: var(--tvh-space-1, 4px);
+}
+.bs-services {
+  width: 100%;
+  border-collapse: collapse;
+}
+.bs-services th {
+  position: sticky;
+  top: 0;
+  background: var(--tvh-bg-surface);
+  text-align: left;
+  font-weight: 600;
+  color: var(--tvh-text-muted);
+}
+.bs-services th,
+.bs-services td {
+  padding: 2px 8px 2px 0;
+  border-bottom: 1px solid var(--tvh-border);
+  white-space: nowrap;
+}
+.bs-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.bs-lock {
+  vertical-align: -1px;
+}
+/* a tune that locked: what it found, by a click */
+.bs-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.bs-link:hover,
+.bs-link:focus-visible {
+  text-decoration-style: solid;
 }
 .bs-tunes-head {
   display: flex;
