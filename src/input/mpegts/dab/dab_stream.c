@@ -125,11 +125,6 @@ dab_stream_create(const dab_stream_config_t *config,
     scfg.filter_ip = config->filter_ip;
     scfg.filter_port = config->filter_port;
     break;
-  case 2: /* GSE */
-    scfg.format = DVBDAB_FORMAT_GSE;
-    scfg.filter_ip = config->filter_ip;
-    scfg.filter_port = config->filter_port;
-    break;
   case 3: /* GSE in the BBFrames of the Neumo driver */
 #ifdef DVBDAB_HAVE_FORMAT_IPV4
     /* the PDUs of the stream are taken out here, the IPv4 ones go on */

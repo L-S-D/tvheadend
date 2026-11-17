@@ -28,7 +28,7 @@ typedef void (*dab_stream_output_cb)(void *opaque, const uint8_t *pkt, size_t le
 
 /* DAB stream configuration */
 typedef struct dab_stream_config {
-  int         format;       /* 0=ETI-NA, 1=MPE, 2=GSE, 3=GSE in BBFrames, 4=TSNI */
+  int         format;       /* 0=ETI-NA, 1=MPE, 3=GSE in BBFrames, 4=TSNI */
   uint16_t    pid;          /* PID containing DAB data */
 
   /* ETI-NA specific */
