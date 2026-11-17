@@ -32,7 +32,6 @@ import {
   levelAt,
   levelRange,
   muxOfCarrier,
-  muxWidth,
   polSelOf,
   ticks,
   type BlindscanCarrier,
@@ -432,7 +431,9 @@ const laneRects = computed<LaneRect[]>(() => {
     if (ln.kind === 'mux') {
       for (const m of muxes.value) {
         if (m.pol !== ln.pol) continue
-        const half = muxWidth(m.sr || 1000000) / 2
+        /* as wide as a carrier found: its symbol rate, where half the
+         * power is (the occupied width is more by the rolloff) */
+        const half = (m.sr || 1000000) / 1000 / 2
         const r = clipRect(m.freq - half, m.freq + half)
         if (!r) continue
         const cls =
