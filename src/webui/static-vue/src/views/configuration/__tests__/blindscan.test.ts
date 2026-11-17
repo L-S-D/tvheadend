@@ -6,6 +6,7 @@ import {
   aboveFloor,
   contentLines,
   gseLines,
+  mpeLines,
   rateText,
   tableNames,
   decimate,
@@ -338,5 +339,39 @@ describe('what generic streams carry', () => {
     expect(l[2]).toBe('The TS in them:')
     expect(l[4]).toBe('  PID 0 (0x0000): 89 kbit/s · sections PAT')
     expect(l.length).toBe(5)
+  })
+})
+
+describe('what MPE PIDs carry', () => {
+  const t = (text: string, ...args: string[]) =>
+    text.replace(/\{(\d+)\}/g, (_, i: string) => args[Number(i)] ?? '')
+  it('datagrams and their multicast groups', () => {
+    expect(
+      mpeLines(
+        [
+          {
+            pid: 4121,
+            sections: 604,
+            datagrams: 604,
+            crc_errors: 0,
+            scrambled: 0,
+            lost: 0,
+            ipv4: 604,
+            ipv6: 0,
+            other: 0,
+            ip: { v4_multicast: { packets: 604, bytes: 750000 } },
+            flows: [
+              { addr: '239.128.43.43', port: 50043, packets: 604, bytes: 720000, kind: 'edi' },
+            ],
+          },
+        ],
+        5e6,
+        t
+      )
+    ).toEqual([
+      'MPE on PID 4121: 604 datagrams (IPv4 604, IPv6 0, other 0)',
+      '  IPv4 multicast 1.2 Mbit/s',
+      '  239.128.43.43:50043: 1.2 Mbit/s · DAB EDI',
+    ])
   })
 })
