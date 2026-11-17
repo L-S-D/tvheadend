@@ -40,6 +40,7 @@ typedef struct dab_stream_config {
   uint32_t    filter_ip;    /* Multicast IP (host byte order) */
   uint16_t    filter_port;  /* UDP port */
   uint16_t    eid;          /* the ensemble, 0: any (GSE in BBFrames) */
+  int         isi;          /* GSE in BBFrames: the input stream, -1 all */
 } dab_stream_config_t;
 
 #if ENABLE_DVBDAB

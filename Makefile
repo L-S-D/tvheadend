@@ -415,6 +415,7 @@ SRCS-MPEGTS-DVB = \
 	src/input/mpegts/mpegts_submux.c \
 	src/input/mpegts/bbframe.c \
 	src/input/mpegts/gse.c \
+	src/input/mpegts/gse_bbframes.c \
 	src/input/mpegts/scanfile.c
 SRCS-${CONFIG_MPEGTS_DVB} += $(SRCS-MPEGTS-DVB)
 I18N-C += $(SRCS-MPEGTS-DVB)

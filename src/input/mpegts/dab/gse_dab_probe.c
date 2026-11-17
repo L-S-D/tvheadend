@@ -6,8 +6,12 @@
  *
  *  The GSE mux runs on the sub-mux input: its stream is the BBFrames of its
  *  input stream, as the Neumo driver embeds them (DVB_BBFRAMES_PID). The
- *  probe reads them while the scan runs (mm_secondary_cb), with a libdvbdab
- *  streamer in discovery mode (DVBDAB_FORMAT_BBF_TS, filter_ip=0).
+ *  probe reads them while the scan runs (mm_secondary_cb): tvheadend takes
+ *  the PDUs out of GSE (gse_bbframes.c), the IPv4 ones go to a libdvbdab
+ *  streamer in discovery mode (DVBDAB_FORMAT_IPV4, filter_ip=0); with a
+ *  libdvbdab before 1.1.0 the streamer gets the BBFrames (DVBDAB_FORMAT_BBF_TS).
+ *  A stream of 188 byte user packets is no GSE but a TS: the mux becomes a
+ *  TS sub-mux.
  *
  *  Copyright (C) 2025
  *
@@ -22,11 +26,18 @@
 #include "input/mpegts/mpegts_dvb.h"
 #include <dvbdab/dvbdab_c.h>
 #include "dab_stream.h"
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+#include "input/mpegts/gse_bbframes.h"
+#endif
 
 typedef struct gse_dab_probe_ctx {
   mpegts_mux_t          *mm;
   dvbdab_streamer_t     *streamer;   /* fed by the input thread, mi_output_lock */
   int64_t                start_time;
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  /* tvheadend takes the PDUs out of GSE, libdvbdab gets the IPv4 ones */
+  gse_bbframes_t        *gb;
+#endif
 } gse_dab_probe_ctx_t;
 
 /* Discovery timeout in milliseconds */
@@ -198,13 +209,55 @@ gse_dab_probe_process_results(mpegts_mux_t *mm, dvbdab_streamer_t *streamer)
   return found;
 }
 
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+/* a PDU of the GSE stream: an IPv4 one to the streamer */
+static void
+gse_dab_probe_pdu_cb(void *aux, const gse_pdu_t *pdu)
+{
+  gse_dab_probe_ctx_t *ctx = aux;
+
+  if (pdu->protocol_type == 0x0800)
+    dvbdab_streamer_feed(ctx->streamer, pdu->data, pdu->len);
+}
+
+/* the GSE mux of a stream of 188 byte user packets: a TS sub-mux, scanned
+ * again (a tasklet: the scan of it ends now) */
+static void
+gse_dab_probe_to_ts_cb(void *aux, int disarmed)
+{
+  char *uuid = aux;
+  mpegts_mux_t *mm;
+
+  if (!disarmed) {
+    tvh_mutex_lock(&global_lock);
+    mm = mpegts_mux_find(uuid);
+    if (mm && mm->mm_type == MM_TYPE_GSE) {
+      tvhinfo(LS_MPEGTS, "%s - a TS stream (188 byte user packets), not GSE: "
+              "a TS sub-mux now", mm->mm_nicename);
+      mm->mm_type = MM_TYPE_ISI;
+      mm->mm_scan_result = MM_SCAN_NONE;
+      mpegts_mux_update_nice_name(mm);
+      idnode_changed(&mm->mm_id);
+      mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                    SUBSCRIPTION_INITSCAN, 10);
+    }
+    tvh_mutex_unlock(&global_lock);
+  }
+  free(uuid);
+}
+#endif
+
 /* the packets of the GSE mux (the input thread, under mi_output_lock) */
 static void
 gse_dab_probe_packet_cb(void *aux, const uint8_t *pkt, int len)
 {
   gse_dab_probe_ctx_t *ctx = aux;
 
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  gse_bbframes_feed(ctx->gb, pkt, len, DVB_BBFRAMES_PID);
+#else
   dvbdab_streamer_feed(ctx->streamer, pkt, len);
+#endif
 }
 
 static void
@@ -237,9 +290,20 @@ mpegts_gse_dab_probe_start(mpegts_mux_t *mm)
   if (!ctx)
     return;
 
-  /* Create streamer in discovery mode (filter_ip=0) with BBF_TS format */
+  /* Create streamer in discovery mode (filter_ip=0): the IPv4 PDUs of the
+   * stream (or, with an older libdvbdab, its BBFrames) */
   memset(&config, 0, sizeof(config));
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  config.format = DVBDAB_FORMAT_IPV4;
+  ctx->gb = gse_bbframes_create(((dvb_mux_t *)mm)->lm_tuning.dmc_fe_stream_id,
+                                gse_dab_probe_pdu_cb, ctx);
+  if (ctx->gb == NULL) {
+    free(ctx);
+    return;
+  }
+#else
   config.format = DVBDAB_FORMAT_BBF_TS;  /* BBFrames in the packets of the driver */
+#endif
   config.pid = DVB_BBFRAMES_PID;
   config.filter_ip = 0;    /* Discovery mode: find all ensembles */
   config.filter_port = 0;
@@ -249,6 +313,9 @@ mpegts_gse_dab_probe_start(mpegts_mux_t *mm)
   if (!ctx->streamer) {
     tvherror(LS_MPEGTS, "mux %s: GSE-DAB probe failed to create streamer",
              mm->mm_nicename);
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+    gse_bbframes_destroy(ctx->gb);
+#endif
     free(ctx);
     return;
   }
@@ -280,9 +347,25 @@ mpegts_gse_dab_probe_complete(mpegts_mux_t *mm, int evaluate)
     gse_dab_probe_set_cb(mm, NULL);
 
   /* Process results (not of a cancelled scan) */
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  /* not GSE: a generic stream of 188 byte user packets is a TS one (16E
+   * 12677.964V: generic continuous, UPL 1504, PAT, PMT, SDT) */
+  if (evaluate && gse_bbframes_is_ts(ctx->gb)) {
+    char ubuf[UUID_HEX_SIZE];
+    tasklet_arm_alloc(gse_dab_probe_to_ts_cb, strdup(idnode_uuid_as_str(&mm->mm_id, ubuf)));
+    evaluate = 0;
+  }
+  if (evaluate)
+    tvhdebug(LS_MPEGTS, "mux %s: GSE: %" PRIu64 " frames, %" PRIu64 " PDUs, %" PRIu64
+             " CRC errors", mm->mm_nicename, gse_counts(ctx->gb->gse)->frames,
+             gse_counts(ctx->gb->gse)->pdus, gse_counts(ctx->gb->gse)->crc_errors);
+#endif
   if (evaluate)
     found = gse_dab_probe_process_results(mm, ctx->streamer);
   dvbdab_streamer_destroy(ctx->streamer);
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  gse_bbframes_destroy(ctx->gb);
+#endif
   free(ctx);
 
   tvhdebug(LS_MPEGTS, "mux %s: GSE-DAB probe complete, found %d ensemble(s)",
