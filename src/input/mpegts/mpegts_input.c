@@ -24,6 +24,7 @@
 #include "notify.h"
 #include "dbus.h"
 #include "memoryinfo.h"
+#include "mpegts_pidstats.h"
 
 memoryinfo_t mpegts_input_queue_memoryinfo = { .my_name = "MPEG-TS input queue" };
 memoryinfo_t mpegts_input_table_memoryinfo = { .my_name = "MPEG-TS table queue" };
@@ -1684,6 +1685,11 @@ mpegts_input_process
         continue;
     }
 #endif
+
+    /* the statistics of the PIDs of a scan (null packets too): live only,
+     * a ring pass would count the same packets again */
+    if (mm->mm_pidstats && backlog == NULL)
+      mpegts_pidstats_feed(mm->mm_pidstats, tsb, llen, mclk());
 
     /* Ignore NULL packets */
     if (pid == 0x1FFF) {

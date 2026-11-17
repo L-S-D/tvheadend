@@ -587,6 +587,12 @@ struct mpegts_mux
   void                       *mm_gse_probe_ctx;
 
   /*
+   * The statistics of the PIDs while a scan of a blindscan tune runs: the
+   * input thread feeds them under mi_output_lock (mpegts_pidstats.h)
+   */
+  struct mpegts_pidstats     *mm_pidstats;
+
+  /*
    * Functions
    */
 
@@ -1312,6 +1318,13 @@ int  dvb_mux_set_dab_ensemble(mpegts_mux_t *mm, const char *label);
 #define mpegts_dab_probe_waiting(mm)              (0)
 #define dvb_mux_set_dab_ensemble(mm, label)     (0)
 #endif
+
+/*
+ * The statistics of the PIDs of a scan (mpegts_network_scan.c): started
+ * for the scan of a blindscan tune, the summary at its end (NULL without)
+ */
+void mpegts_network_scan_pidstats_start ( mpegts_mux_t *mm );
+htsmsg_t *mpegts_network_scan_pidstats_end ( mpegts_mux_t *mm, int summary );
 
 /*
  * ISI probe (Neumo driver only, it reads linuxdvb frontends)

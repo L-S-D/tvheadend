@@ -145,7 +145,7 @@ typedef struct dvb_mux
 #define DVB_MUX_BLINDSCAN_LOCKED 4
 
 /* the scan of a blindscan tune ended (mpegts_network_scan_mux_done0) */
-void dvb_mux_blindscan_done ( dvb_mux_t *lm, int result );
+void dvb_mux_blindscan_done ( dvb_mux_t *lm, int result, htsmsg_t *content );
 
 #define DVB_MUX_TUNING_LOCKED 1 ///< a tune with them locked
 #define DVB_MUX_TUNING_READ   2 ///< read from the demodulator at a lock
