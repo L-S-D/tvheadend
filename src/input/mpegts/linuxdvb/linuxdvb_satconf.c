@@ -1320,6 +1320,32 @@ linuxdvb_satconf_blindscan_dir ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm )
   return i1 >= i0 ? 1 : -1;
 }
 
+/* the transponder frequency (kHz) the demodulator's tuned one is the one
+ * of, for mm: the mux's - but through Unicable II the user band has the
+ * whole MHz of the command in its middle (up to 500 kHz from the mux's;
+ * linuxdvb_en50494_t le_tune_if) */
+uint32_t
+linuxdvb_satconf_blindscan_ref ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm )
+{
+  linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mm);
+  dvb_mux_t *lm = (dvb_mux_t *)mm;
+  linuxdvb_en50494_t *le;
+  uint32_t f = lm->lm_tuning.dmc_fe_freq, req;
+  int v = lm->lm_tuning.u.dmc_fe_qpsk.polarisation == DVB_POLARISATION_VERTICAL;
+  int64_t d;
+
+  if (lse == NULL || lse->lse_en50494 == NULL || lse->lse_lnb == NULL)
+    return f;
+  le = (linuxdvb_en50494_t *)lse->lse_en50494;
+  if (le->le_tune_if == 0)
+    return f;
+  req = linuxdvb_satconf_blindscan_if(lse, f, v, NULL);
+  d = (int64_t)le->le_tune_if - req;
+  if (d < -600 || d > 600)        /* another tune since (a slave's) */
+    return f;
+  return (uint32_t)((int64_t)f + linuxdvb_satconf_blindscan_dir(ls, mm) * d);
+}
+
 /*
  * The RF path for a blindscan: as linuxdvb_satconf_ele_tune() sets it up for
  * a mux of this frequency and polarisation, but without a mux and without

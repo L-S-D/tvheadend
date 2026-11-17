@@ -512,6 +512,7 @@ linuxdvb_en50494_tune_internal
     if (linuxdvb_en50494_freq0(le, freq, &rfreq, &t))
       return -1;
     le->le_tune_freq = rfreq;
+    le->le_tune_if = freq;
     /* 2 data fields (16bit) */
     data1  = (le->le_id & 7) << 5;        /* 3bit user-band */
     data1 |= (le->le_position & 1) << 4;  /* 1bit position (satellite A(0)/B(1)) */
@@ -525,6 +526,7 @@ linuxdvb_en50494_tune_internal
     if (linuxdvb_en50607_freq0(le, freq, &rfreq, &t))
       return -1;
     le->le_tune_freq = rfreq;
+    le->le_tune_if = (t + 100) * 1000;
     /* 3 data fields (24bit) */
     data1  = (le->le_id & 0x1f) << 3;     /* 5bit user-band */
     data1 |= (t >> 8) & 7;                /* 3bit transponder value bit 1-3 */
