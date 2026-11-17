@@ -7,7 +7,7 @@
  * BlindscanDialog — the blindscan of a DVB-S network (Neumo driver).
  *
  * Starts one (polarisations, range) and follows it; shows the spectrum of
- * each polarisation with its noise floor, and below it in lanes the
+ * each polarisation above its noise floor, and below it in lanes the
  * transponders of the network and the carriers found. A click picks a
  * frequency (a carrier, a transponder, or a point of a curve) and tunes
  * there blind, with the symbol rate of the carrier or one given: the mux
@@ -25,6 +25,7 @@ import { useToastNotify } from '@/composables/useToastNotify'
 import { apiErrorMessage } from '@/utils/apiErrorMessage'
 import { exactMatch, MUX_FIELDS, type MuxRow } from './muxTree'
 import {
+  aboveFloor,
   decimate,
   graphMuxes,
   levelAt,
@@ -110,9 +111,18 @@ async function loadMuxes() {
   }
 }
 
+/* the polarisations of the result, their levels above the noise floor */
+const shown = computed(() => {
+  const out: Partial<Record<Pol, BlindscanPol>> = {}
+  for (const p of POLS) {
+    const d = result.value?.pols?.[p]
+    if (d && d.freq.length) out[p] = aboveFloor(d)
+  }
+  return out
+})
+
 function polData(p: Pol): BlindscanPol | null {
-  const d = result.value?.pols?.[p]
-  return d && d.freq.length ? d : null
+  return shown.value[p] ?? null
 }
 
 /* the frequencies of the result, or of the range asked for */
@@ -359,7 +369,6 @@ const curves = computed(() =>
     return {
       pol: p,
       points: pts.map(([f, l]) => `${x(f).toFixed(1)},${y(l).toFixed(1)}`).join(' '),
-      noise: d.noise !== undefined ? y(d.noise) : null,
     }
   })
 )
@@ -770,18 +779,11 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
           <line :x1="x(v * 1000)" :x2="x(v * 1000)" :y1="Y0" :y2="Y1" class="bs-grid" />
           <text :x="x(v * 1000)" :y="Y1 + 16" text-anchor="middle">{{ v }}</text>
         </template>
-        <text :x="X0 - 6" :y="Y0 - 2" text-anchor="end" class="bs-unit">dB</text>
+        <text :x="X0 + 4" :y="Y0 - 2" class="bs-unit">{{ t('dB above the noise floor') }}</text>
         <text :x="X1" :y="Y1 + 30" text-anchor="end" class="bs-unit">MHz</text>
       </g>
+      <line v-if="curves.length" :x1="X0" :x2="X1" :y1="y(0)" :y2="y(0)" class="bs-noise" />
       <g v-for="c in curves" :key="c.pol">
-        <line
-          v-if="c.noise !== null"
-          :x1="X0"
-          :x2="X1"
-          :y1="c.noise"
-          :y2="c.noise"
-          :class="`bs-noise bs-noise--${c.pol}`"
-        />
         <polyline :points="c.points" :class="`bs-curve bs-curve--${c.pol}`" />
       </g>
       <g>
@@ -978,15 +980,10 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
   color: var(--tvh-warning-text, var(--tvh-warning));
 }
 .bs-noise {
+  stroke: var(--tvh-text-muted, currentColor);
   stroke-width: 0.8;
   stroke-dasharray: 4 3;
   opacity: 0.6;
-}
-.bs-noise--H {
-  stroke: var(--tvh-primary);
-}
-.bs-noise--V {
-  stroke: var(--tvh-warning);
 }
 .bs-mux--ok {
   fill: var(--tvh-success);
