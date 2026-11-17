@@ -87,6 +87,11 @@ void mpegts_pidstats_destroy ( mpegts_pidstats_t *ps );
  * before the BBHEADER of a frame that starts in a packet), -1 none */
 void mpegts_pidstats_bbframes ( mpegts_pidstats_t *ps, int pid );
 
+/* each packet of the BBFrame PID also to cb (the frames, what they carry) */
+typedef void (*mpegts_pidstats_bb_cb_t)(void *opaque, const uint8_t *pkt);
+void mpegts_pidstats_bbsink ( mpegts_pidstats_t *ps, mpegts_pidstats_bb_cb_t cb, void *opaque );
+void *mpegts_pidstats_bbsink_opaque ( mpegts_pidstats_t *ps );
+
 /* len bytes of whole TS packets, at now (a clock in microseconds) */
 void mpegts_pidstats_feed ( mpegts_pidstats_t *ps, const uint8_t *tsb, int len, int64_t now );
 

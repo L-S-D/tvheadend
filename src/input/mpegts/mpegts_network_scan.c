@@ -19,6 +19,10 @@
 
 #include "input.h"
 #include "mpegts_pidstats.h"
+#if ENABLE_LINUXDVB_NEUMO
+#include "bbframe.h"
+#include "gse_stats_msg.h"
+#endif
 
 /******************************************************************************
  * Timer
@@ -299,6 +303,80 @@ mpegts_network_scan_parent_ok ( mpegts_mux_t *sm )
 
 #define PIDSTATS_TOP 16
 
+static void pidstats_ids ( htsmsg_t *m, const char *name, const uint8_t *bits );
+
+#if ENABLE_LINUXDVB_NEUMO
+/* the frames of the BBFrame PID, and what their GSE streams carry; the
+ * generic streams of 188 byte user packets are TS streams, their PIDs count
+ * apart */
+typedef struct pidstats_gs {
+  bbframe_split_t    bs;
+  gse_stats_t       *gs;
+  bbframe_ts_t      *ts[256];
+  mpegts_pidstats_t *inner;
+} pidstats_gs_t;
+
+static void
+pidstats_gs_ts ( void *opaque, const uint8_t *ts )
+{
+  mpegts_pidstats_feed(opaque, ts, 188, mclk());
+}
+
+static void
+pidstats_gs_frame ( void *opaque, const uint8_t *frame, size_t len, int isi )
+{
+  pidstats_gs_t *g = opaque;
+
+  gse_stats_frame(g->gs, frame, len, isi);
+  if (len < 10 || isi < 0 || isi > 255 || (frame[0] >> 6) > 1 || !bbframe_is_ts(frame))
+    return;
+  if (g->ts[isi] == NULL) {
+    if ((g->ts[isi] = malloc(sizeof(bbframe_ts_t))) == NULL)
+      return;
+    bbframe_ts_init(g->ts[isi]);
+  }
+  if (g->inner == NULL && (g->inner = mpegts_pidstats_create()) == NULL)
+    return;
+  bbframe_frame_ts(g->ts[isi], frame, len, pidstats_gs_ts, g->inner);
+}
+
+static void
+pidstats_gs_packet ( void *opaque, const uint8_t *pkt )
+{
+  pidstats_gs_t *g = opaque;
+  bbframe_split_frames(&g->bs, pkt, pidstats_gs_frame, g);
+}
+
+/* what the GSE streams carried; NULL without BBFrames */
+static htsmsg_t *
+pidstats_gs_summary ( pidstats_gs_t *g )
+{
+  gse_stats_result_t *r = malloc(sizeof(*r));
+  htsmsg_t *m;
+
+  if (r == NULL)
+    return NULL;
+  gse_stats_get(g->gs, r);
+  m = gse_stats_msg(r);
+  free(r);
+  return m;
+}
+
+static void
+pidstats_gs_destroy ( pidstats_gs_t *g )
+{
+  int i;
+
+  if (g == NULL)
+    return;
+  gse_stats_destroy(g->gs);
+  for (i = 0; i < 256; i++)
+    free(g->ts[i]);
+  mpegts_pidstats_destroy(g->inner);
+  free(g);
+}
+#endif
+
 static void
 pidstats_set ( mpegts_mux_t *mm, mpegts_pidstats_t *ps )
 {
@@ -327,8 +405,18 @@ mpegts_network_scan_pidstats_start ( mpegts_mux_t *mm )
   if ((ps = mpegts_pidstats_create()) == NULL)
     return;
 #if ENABLE_LINUXDVB_NEUMO
-  /* a generic stream: the driver passes its BBFrames in a PID */
+  /* a generic stream: the driver passes its BBFrames in a PID, and what
+   * their GSE streams carry counts too */
   mpegts_pidstats_bbframes(ps, DVB_BBFRAMES_PID);
+  {
+    pidstats_gs_t *g = calloc(1, sizeof(*g));
+    if (g && (g->gs = gse_stats_create()) != NULL) {
+      bbframe_split_init(&g->bs, -1);
+      mpegts_pidstats_bbsink(ps, pidstats_gs_packet, g);
+    } else {
+      free(g);
+    }
+  }
 #endif
   pidstats_set(mm, ps);
   mm->mm_update_pids_flag = 1;
@@ -352,13 +440,13 @@ pidstats_ids ( htsmsg_t *m, const char *name, const uint8_t *bits )
     htsmsg_add_msg(m, name, l);
 }
 
-/* the end of the statistics; their summary (summary set): microseconds,
- * packets, null packets, packets with a transport error, PIDs, and the top
- * PIDs by packets - packets, scrambled ones, continuity errors, the stream
- * id and elementary stream of a PES, the table ids of the sections, the
- * BBFrames of the BBFrame PID */
-htsmsg_t *
-mpegts_network_scan_pidstats_end ( mpegts_mux_t *mm, int summary )
+/* the summary of statistics of the PIDs: microseconds, packets, null
+ * packets, packets with a transport error, PIDs, and the top PIDs by
+ * packets - packets, scrambled ones, continuity errors, the stream id and
+ * elementary stream of a PES, the table ids of the sections, the BBFrames
+ * of the BBFrame PID */
+static htsmsg_t *
+pidstats_msg ( mpegts_pidstats_t *ps )
 {
   static const char *es[] = {
     [MPEGTS_PIDSTATS_ES_MPEG2V]    = "mpeg2video",
@@ -373,11 +461,56 @@ mpegts_network_scan_pidstats_end ( mpegts_mux_t *mm, int summary )
     [MPEGTS_PIDSTATS_ES_SUBTITLES] = "subtitles",
     [MPEGTS_PIDSTATS_ES_OTHER]     = "other",
   };
-  mpegts_pidstats_t *ps = mm->mm_pidstats;
   mpegts_pidstats_total_t tot;
   mpegts_pidstats_pid_t top[PIDSTATS_TOP];
-  htsmsg_t *m = NULL, *l, *e;
+  htsmsg_t *m, *l, *e;
   int i, n;
+
+  n = mpegts_pidstats_get(ps, &tot, top, PIDSTATS_TOP);
+  m = htsmsg_create_map();
+  htsmsg_add_s64(m, "us", tot.duration);
+  htsmsg_add_s64(m, "packets", tot.packets);
+  htsmsg_add_s64(m, "nulls", tot.nulls);
+  htsmsg_add_s64(m, "tei", tot.tei);
+  htsmsg_add_s32(m, "pids", tot.pids);
+  l = htsmsg_create_list();
+  for (i = 0; i < n; i++) {
+    e = htsmsg_create_map();
+    htsmsg_add_u32(e, "pid", top[i].pid);
+    htsmsg_add_s64(e, "packets", top[i].packets);
+    if (top[i].scrambled)
+      htsmsg_add_s64(e, "scrambled", top[i].scrambled);
+    if (top[i].cc_errors)
+      htsmsg_add_s64(e, "cc", top[i].cc_errors);
+    if (top[i].stream_id >= 0)
+      htsmsg_add_u32(e, "stream_id", top[i].stream_id);
+    if (top[i].es != MPEGTS_PIDSTATS_ES_NONE && (size_t)top[i].es < ARRAY_SIZE(es) && es[top[i].es])
+      htsmsg_add_str(e, "es", es[top[i].es]);
+    pidstats_ids(e, "tables", top[i].tables);
+    pidstats_ids(e, "short", top[i].tables_short);
+    if (top[i].bbframes) {
+      htsmsg_t *b = htsmsg_create_map();
+      htsmsg_add_s64(b, "frames", top[i].bb.frames);
+      htsmsg_add_s64(b, "hem", top[i].bb.hem);
+      htsmsg_add_s64(b, "dfl_bits", top[i].bb.dfl_bits);
+      if (top[i].bb.matype >= 0)
+        htsmsg_add_s32(b, "matype", top[i].bb.matype);
+      pidstats_ids(b, "isis", top[i].bb.isis);
+      htsmsg_add_msg(e, "bbframes", b);
+    }
+    htsmsg_add_msg(l, NULL, e);
+  }
+  htsmsg_add_msg(m, "list", l);
+  return m;
+}
+
+/* the end of the statistics; their summary (summary set, pidstats_msg()),
+ * with what the GSE streams of the BBFrames carried ("gse") */
+htsmsg_t *
+mpegts_network_scan_pidstats_end ( mpegts_mux_t *mm, int summary )
+{
+  mpegts_pidstats_t *ps = mm->mm_pidstats;
+  htsmsg_t *m = NULL;
 
   if (ps == NULL)
     return NULL;
@@ -386,43 +519,21 @@ mpegts_network_scan_pidstats_end ( mpegts_mux_t *mm, int summary )
     mm->mm_update_pids_flag = 1;
     mpegts_mux_update_pids(mm);
   }
-  if (summary) {
-    n = mpegts_pidstats_get(ps, &tot, top, PIDSTATS_TOP);
-    m = htsmsg_create_map();
-    htsmsg_add_s64(m, "us", tot.duration);
-    htsmsg_add_s64(m, "packets", tot.packets);
-    htsmsg_add_s64(m, "nulls", tot.nulls);
-    htsmsg_add_s64(m, "tei", tot.tei);
-    htsmsg_add_s32(m, "pids", tot.pids);
-    l = htsmsg_create_list();
-    for (i = 0; i < n; i++) {
-      e = htsmsg_create_map();
-      htsmsg_add_u32(e, "pid", top[i].pid);
-      htsmsg_add_s64(e, "packets", top[i].packets);
-      if (top[i].scrambled)
-        htsmsg_add_s64(e, "scrambled", top[i].scrambled);
-      if (top[i].cc_errors)
-        htsmsg_add_s64(e, "cc", top[i].cc_errors);
-      if (top[i].stream_id >= 0)
-        htsmsg_add_u32(e, "stream_id", top[i].stream_id);
-      if (top[i].es != MPEGTS_PIDSTATS_ES_NONE && (size_t)top[i].es < ARRAY_SIZE(es) && es[top[i].es])
-        htsmsg_add_str(e, "es", es[top[i].es]);
-      pidstats_ids(e, "tables", top[i].tables);
-      pidstats_ids(e, "short", top[i].tables_short);
-      if (top[i].bbframes) {
-        htsmsg_t *b = htsmsg_create_map();
-        htsmsg_add_s64(b, "frames", top[i].bb.frames);
-        htsmsg_add_s64(b, "hem", top[i].bb.hem);
-        htsmsg_add_s64(b, "dfl_bits", top[i].bb.dfl_bits);
-        if (top[i].bb.matype >= 0)
-          htsmsg_add_s32(b, "matype", top[i].bb.matype);
-        pidstats_ids(b, "isis", top[i].bb.isis);
-        htsmsg_add_msg(e, "bbframes", b);
-      }
-      htsmsg_add_msg(l, NULL, e);
+  if (summary)
+    m = pidstats_msg(ps);
+#if ENABLE_LINUXDVB_NEUMO
+  {
+    pidstats_gs_t *g = mpegts_pidstats_bbsink_opaque(ps);
+    htsmsg_t *gm;
+    if (g && m && (gm = pidstats_gs_summary(g)) != NULL) {
+      /* the TS of generic streams of 188 byte user packets */
+      if (g->inner)
+        htsmsg_add_msg(gm, "ts", pidstats_msg(g->inner));
+      htsmsg_add_msg(m, "gse", gm);
     }
-    htsmsg_add_msg(m, "list", l);
+    pidstats_gs_destroy(g);
   }
+#endif
   mpegts_pidstats_destroy(ps);
   return m;
 }
