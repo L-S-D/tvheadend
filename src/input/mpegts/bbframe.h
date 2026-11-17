@@ -63,6 +63,14 @@ void bbframe_ts_init ( bbframe_ts_t *bt );
 int  bbframe_frame_ts ( bbframe_ts_t *bt, const uint8_t *frame, size_t len,
                         bbframe_ts_cb_t cb, void *opaque );
 
+/* a generic stream (TS/GS packetized or continuous, normal mode) of 188
+ * byte user packets is a TS stream: some say so in UPL only */
+static inline int bbframe_is_ts ( const uint8_t *h )
+{
+  return (h[0] >> 6) == 3 ||
+         ((h[0] >> 6) <= 1 && ((h[2] << 8) | h[3]) == 188 * 8);
+}
+
 /*
  * The Neumo driver embeds the BBFrames of all input streams of a transponder
  * in TS packets of one PID: byte 5..6 0x80 0x00, byte 7 the number of bytes

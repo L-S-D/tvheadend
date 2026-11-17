@@ -69,8 +69,12 @@ bbframe_frame_ts ( bbframe_ts_t *bt, const uint8_t *frame, size_t len,
     return -1;
   }
   bt->bt_frames++;
-  if ((h[0] >> 6) != 3)
-    return 0;               /* not a TS stream */
+  /* a TS stream; a generic one of 188 byte user packets is one too (16E
+   * 12677.964V says generic continuous, UPL 1504, SYNC 0xBB, and carries
+   * PAT, PMT, SDT, NIT) */
+  if ((h[0] >> 6) != 3 &&
+      ((h[0] >> 6) > 1 || mode != 0 || ((h[2] << 8) | h[3]) != 188 * 8))
+    return 0;
   syncd = ((size_t)h[7] << 8) | h[8];
   if (mode == 1)
     upl = 187 + ((h[0] & 0x04) ? 1 : 0);
