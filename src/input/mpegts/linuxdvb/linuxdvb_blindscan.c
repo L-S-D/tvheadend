@@ -106,6 +106,7 @@ lb_notify ( linuxdvb_blindscan_t *lb )
   htsmsg_add_str(m, "state", lb_state_str[lb->lb_state]);
   htsmsg_add_s32(m, "slice", lb->lb_slice);
   htsmsg_add_s32(m, "slices", lb->lb_slices);
+  htsmsg_add_str(m, "run_pols", lb->lb_pols);
   if (lb->lb_pol)
     htsmsg_add_str(m, "pol", (char []){ lb->lb_pol, 0 });
   if (lb->lb_error[0])
@@ -996,6 +997,7 @@ linuxdvb_blindscan_result ( mpegts_network_t *mn, int points )
     htsmsg_add_str(r, "state", lb_state_str[lb->lb_state]);
     htsmsg_add_s32(r, "slice", lb->lb_slice);
     htsmsg_add_s32(r, "slices", lb->lb_slices);
+    htsmsg_add_str(r, "run_pols", lb->lb_pols);
     if (lb->lb_pol)
       htsmsg_add_str(r, "pol", (char []){ lb->lb_pol, 0 });
     if (lb->lb_error[0])
