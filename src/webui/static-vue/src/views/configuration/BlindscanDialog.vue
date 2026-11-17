@@ -590,7 +590,8 @@ const pickX = computed(() => (pick.value ? x(pick.value.freqMhz * 1000) : null))
 interface TuneState {
   freq: number
   pol: Pol
-  state: 'scanning' | 'ok' | 'fail'
+  /* locked with data; locked, but no data; no lock */
+  state: 'scanning' | 'ok' | 'nodata' | 'fail'
   text: string
   /* locked: the mux kept, or the one of the network it is */
   mux?: string
@@ -669,12 +670,30 @@ function onTuneResult(m: Record<string, unknown>) {
       where,
       (Number(m.sr ?? 0) / 1000).toFixed(0)
     )
-  else if (m.deleted) text = t('{0}: nothing found - the new mux goes again', where)
-  else text = t('{0}: the scan failed', where)
+  else if (m.locked) {
+    /* a carrier, but no tables in it (not a TS, or a TS without SI) */
+    const found = [m.delsys, m.modulation, m.fec]
+      .filter((x) => typeof x === 'string' && x && x !== 'AUTO' && x !== 'NONE')
+      .join(' ')
+    text = t(
+      m.deleted
+        ? '{0}: locked ({1}, {2} kS/s), but the scan got no data - the new mux is deleted again'
+        : '{0}: locked ({1}, {2} kS/s), but the scan got no data',
+      where,
+      found || '?',
+      (Number(m.sr ?? 0) / 1000).toFixed(0)
+    )
+  } else
+    text = t(
+      m.deleted
+        ? '{0}: no lock on the carrier - the new mux is deleted again'
+        : '{0}: no lock on the carrier',
+      where
+    )
   const mux = !ok ? undefined : typeof m.same === 'string' ? m.same : m.deleted ? undefined : uuid
   tunes.value = {
     ...tunes.value,
-    [uuid]: { freq, pol, state: ok ? 'ok' : 'fail', text, mux },
+    [uuid]: { freq, pol, state: ok ? 'ok' : m.locked ? 'nodata' : 'fail', text, mux },
   }
   emit('changed')
   void loadMuxes()
@@ -761,9 +780,10 @@ const tuneSummary = computed(() => {
   const all = Object.values(tunes.value)
   const n = (s: TuneState['state']) => all.filter((x) => x.state === s).length
   return t(
-    'Tunes: {0} running, {1} locked, {2} without a lock',
+    'Tunes: {0} running, {1} locked, {2} locked without data, {3} without a lock',
     String(n('scanning')),
     String(n('ok')),
+    String(n('nodata')),
     String(n('fail'))
   )
 })
@@ -1407,6 +1427,9 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
 }
 .bs-tune--ok {
   color: var(--tvh-success);
+}
+.bs-tune--nodata {
+  color: var(--tvh-warning-text, var(--tvh-warning));
 }
 .bs-tune--fail {
   color: var(--tvh-error);
