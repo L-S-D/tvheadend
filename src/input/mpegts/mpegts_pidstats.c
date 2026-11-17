@@ -55,6 +55,8 @@ struct mpegts_pidstats {
   int       bb_pid;              /* -1 none */
   mpegts_pidstats_bb_cb_t bb_cb;
   void     *bb_opaque;
+  mpegts_pidstats_ts_cb_t ts_cb;
+  void     *ts_opaque;
   uint16_t  idx[8192];           /* PID -> slot + 1 */
   ps_pid_t  pid[PS_MAX_PIDS];
   int       count;
@@ -104,6 +106,19 @@ void *
 mpegts_pidstats_bbsink_opaque ( mpegts_pidstats_t *ps )
 {
   return ps->bb_opaque;
+}
+
+void
+mpegts_pidstats_tssink ( mpegts_pidstats_t *ps, mpegts_pidstats_ts_cb_t cb, void *opaque )
+{
+  ps->ts_cb = cb;
+  ps->ts_opaque = opaque;
+}
+
+void *
+mpegts_pidstats_tssink_opaque ( mpegts_pidstats_t *ps )
+{
+  return ps->ts_opaque;
 }
 
 /* the CRC-8 of a BBHEADER (EN 302 307), and the mode it says: 0 normal,
@@ -313,6 +328,8 @@ ps_packet ( mpegts_pidstats_t *ps, const uint8_t *t )
       ps->bb_cb(ps->bb_opaque, t);
     return;
   }
+  if (ps->ts_cb)
+    ps->ts_cb(ps->ts_opaque, t);
   if (t[3] & 0xc0)
     p->pub.scrambled++;
   if (!(afc & 1))                        /* no payload */
