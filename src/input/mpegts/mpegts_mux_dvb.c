@@ -1877,12 +1877,24 @@ dvb_mux_blindscan_done ( dvb_mux_t *lm, int result )
   htsmsg_add_str(m, "pol", lm->lm_tuning.u.dmc_fe_qpsk.polarisation == DVB_POLARISATION_VERTICAL ? "V" : "H");
   htsmsg_add_u32(m, "sr", lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate);
   htsmsg_add_str(m, "result", result == MM_SCAN_FAIL ? "fail" : "ok");
-  /* the demodulator locked: what it found (a failed scan had no data) */
+  /* the demodulator locked: what it found (a failed scan had no data) -
+   * with the MATYPE of a DVB-S2 stream (TS or generic, single stream or
+   * multistream) and the sub-muxes the scan made (input streams, ...) */
   if (lm->lm_blindscan_tune & DVB_MUX_BLINDSCAN_LOCKED) {
+    mpegts_mux_t *mm2;
+    int subs = 0;
     htsmsg_add_bool(m, "locked", 1);
     htsmsg_add_str(m, "delsys", dvb_delsys2str(lm->lm_tuning.dmc_fe_delsys));
     htsmsg_add_str(m, "modulation", dvb_qam2str(lm->lm_tuning.dmc_fe_modulation));
     htsmsg_add_str(m, "fec", dvb_fec2str(lm->lm_tuning.u.dmc_fe_qpsk.fec_inner));
+    if (lm->lm_matype >= 0)
+      htsmsg_add_s32(m, "matype", lm->lm_matype);
+    idnode_uuid_as_str(&mm->mm_id, ubuf);
+    LIST_FOREACH(mm2, &mm->mm_network->mn_muxes, mm_network_link)
+      if (idnode_is_instance(&mm2->mm_id, &dvb_mux_class) &&
+          ((dvb_mux_t *)mm2)->lm_parent && !strcmp(((dvb_mux_t *)mm2)->lm_parent, ubuf))
+        subs++;
+    htsmsg_add_s32(m, "submuxes", subs);
   }
   /* a new mux that locked a transponder the network has: that one */
   if (result != MM_SCAN_FAIL && (lm->lm_blindscan_tune & DVB_MUX_BLINDSCAN_NEW))
