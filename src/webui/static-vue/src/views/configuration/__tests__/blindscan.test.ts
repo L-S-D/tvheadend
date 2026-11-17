@@ -9,10 +9,13 @@ import {
   interpolate,
   levelAt,
   levelRange,
+  matypeText,
   muxOfCarrier,
   muxWidth,
   polSelOf,
   ticks,
+  triedAt,
+  type TuneState,
 } from '../blindscan'
 import type { MuxRow } from '../muxTree'
 
@@ -163,5 +166,43 @@ describe('polSelOf', () => {
     expect(polSelOf('V')).toBe('V')
     expect(polSelOf('')).toBeNull()
     expect(polSelOf(undefined)).toBeNull()
+  })
+})
+
+describe('triedAt', () => {
+  const tune = (reqFreq: number, freq: number, pol: 'H' | 'V', state: TuneState['state']) => ({
+    reqFreq,
+    freq,
+    pol,
+    state,
+    text: '',
+  })
+  it('the last tune at a carrier, by the frequency asked for or locked', () => {
+    const tunes = [
+      tune(11643500, 11643500, 'V', 'fail'),
+      tune(11067163, 11067214, 'H', 'nodata'),
+      tune(11643400, 11643450, 'V', 'ok'),
+    ]
+    expect(triedAt(tunes, 'V', 11643500, 400)?.state).toBe('ok')
+    expect(triedAt(tunes, 'H', 11067200, 5700)?.state).toBe('nodata')
+    expect(triedAt(tunes, 'H', 11643500, 400)).toBeNull()
+    expect(triedAt(tunes, 'V', 11650000, 400)).toBeNull()
+  })
+  it('a running tune by the frequency asked for only', () => {
+    expect(triedAt([tune(12000000, 0, 'H', 'scanning')], 'H', 12000100, 100)?.state).toBe(
+      'scanning'
+    )
+    expect(triedAt([tune(12000000, 0, 'H', 'scanning')], 'H', 0, 100)).toBeNull()
+  })
+})
+
+describe('matypeText', () => {
+  it('stream type, multistream, ACM', () => {
+    expect(matypeText(0xf2)).toBe('TS')
+    expect(matypeText(0x72)).toBe('generic continuous')
+    expect(matypeText(0xd0)).toBe('TS, multistream')
+    expect(matypeText(0x02)).toBe('generic packetized, multistream, ACM/VCM')
+    expect(matypeText(-1)).toBe('')
+    expect(matypeText(undefined)).toBe('')
   })
 })
