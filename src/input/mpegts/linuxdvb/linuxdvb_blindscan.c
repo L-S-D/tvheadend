@@ -804,15 +804,17 @@ linuxdvb_blindscan_done ( void )
  * A tune at a frequency (global_lock)
  * ----------------------------------------------------------------------*/
 
-/* the mux of the network at freq: the transponder (not one of its
- * sub-muxes) whose band freq is in (its symbol rate, rolloff 0.35), 1 MHz
- * at least - two carriers of one satellite and polarisation do not overlap */
+/* the mux of the network a carrier (freq, sr: symbols/s, 0 if not known)
+ * is: the transponder (not one of its sub-muxes) where each one's middle is
+ * in the band of the other (symbol rate, rolloff 0.35), 1 MHz at least -
+ * two carriers of one satellite and polarisation do not overlap; a narrow
+ * carrier in the band of a wide transponder (an outdated one) is not it */
 static dvb_mux_t *
-lb_mux_at ( mpegts_network_t *mn, uint32_t freq, int pol )
+lb_mux_at ( mpegts_network_t *mn, uint32_t freq, uint32_t sr, int pol )
 {
   mpegts_mux_t *mm;
   dvb_mux_t *lm, *best = NULL;
-  uint32_t d, tol, bestd = UINT32_MAX;
+  uint32_t d, tol, msr, bestd = UINT32_MAX;
 
   LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link) {
     if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class) || mpegts_mux_is_submux(mm))
@@ -822,7 +824,10 @@ lb_mux_at ( mpegts_network_t *mn, uint32_t freq, int pol )
         lm->lm_tuning.u.dmc_fe_qpsk.polarisation != pol)
       continue;
     d = deltaU32(lm->lm_tuning.dmc_fe_freq, freq);
-    tol = MAX(1000, (uint32_t)((uint64_t)lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate * 27 / 40000));
+    msr = lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate;
+    if (sr && (msr == 0 || sr < msr))
+      msr = sr;
+    tol = MAX(1000, (uint32_t)((uint64_t)msr * 27 / 40000));
     if (d <= tol && d < bestd) {
       best = lm;
       bestd = d;
@@ -856,7 +861,7 @@ linuxdvb_blindscan_tune
   pol = pols[0] == 'V' ? DVB_POLARISATION_VERTICAL : DVB_POLARISATION_HORIZONTAL;
   if (range == 0)
     range = MIN(20000, MAX(4000, sr / 1000 * 2));
-  if ((lm = lb_mux_at(mn, freq, pol)) != NULL) {
+  if ((lm = lb_mux_at(mn, freq, sr, pol)) != NULL) {
     mm = (mpegts_mux_t *)lm;
     if (mm->mm_enabled != MM_ENABLE) {
       *err = mm->mm_enabled == MM_IGNORE ? "the mux there is ignored" : "the mux there is disabled";
@@ -924,8 +929,8 @@ lb_lock_new ( linuxdvb_blindscan_t *lb )
           htsmsg_get_u32(c, "freq", &freq) || htsmsg_get_u32(c, "sr", &sr) ||
           htsmsg_get_s64(c, "snr", &snr) || snr < lb->lb_lock_snr)
         continue;
-      if (lb_mux_at(mn, freq, pol[0] == 'V' ? DVB_POLARISATION_VERTICAL
-                                            : DVB_POLARISATION_HORIZONTAL))
+      if (lb_mux_at(mn, freq, sr, pol[0] == 'V' ? DVB_POLARISATION_VERTICAL
+                                                : DVB_POLARISATION_HORIZONTAL))
         continue;
       if (linuxdvb_blindscan_tune(mn, freq, pol, sr, 0, &err, muxuuid) == 0)
         n++;
