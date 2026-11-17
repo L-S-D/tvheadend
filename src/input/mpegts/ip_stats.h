@@ -57,6 +57,8 @@ typedef struct ip_count {
 typedef struct ip_stats {
   ip_count_t v4_multicast, v4_broadcast, v4_unicast_udp, v4_unicast_tcp, v4_unicast_other;
   ip_count_t v6_multicast, v6_unicast_udp, v6_unicast_tcp, v6_unicast_other;
+  ip_count_t unicast_protos[256];   /* the other unicast ones by IP protocol
+                                       (IPv4 protocol, IPv6 next header) */
   int        nflows;
   ip_flow_t  flows[IP_STATS_FLOWS];
   uint64_t   flows_other;     /* packets of further groups */

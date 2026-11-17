@@ -107,6 +107,7 @@ ip_stats_ipv4 ( ip_stats_t *s, const uint8_t *d, size_t n )
     ip_add(&s->v4_unicast_tcp, tot);
   } else {
     ip_add(&s->v4_unicast_other, tot);
+    ip_add(&s->unicast_protos[d[9]], tot);
   }
 }
 
@@ -130,6 +131,7 @@ ip_stats_ipv6 ( ip_stats_t *s, const uint8_t *d, size_t n )
     ip_add(&s->v6_unicast_tcp, tot);
   } else {
     ip_add(&s->v6_unicast_other, tot);
+    ip_add(&s->unicast_protos[d[6]], tot);
   }
 }
 
