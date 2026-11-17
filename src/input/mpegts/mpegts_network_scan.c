@@ -19,9 +19,12 @@
 
 #include "input.h"
 #include "mpegts_pidstats.h"
+#if ENABLE_MPEGTS_DVB
+#include "gse_stats_msg.h"
+#include "mpe.h"
+#endif
 #if ENABLE_LINUXDVB_NEUMO
 #include "bbframe.h"
-#include "gse_stats_msg.h"
 #endif
 
 /******************************************************************************
@@ -305,6 +308,88 @@ mpegts_network_scan_parent_ok ( mpegts_mux_t *sm )
 
 static void pidstats_ids ( htsmsg_t *m, const char *name, const uint8_t *bits );
 
+#if ENABLE_MPEGTS_DVB
+/* what the datagrams of an MPE PID carry */
+typedef struct pidstats_mpe_pid {
+  ip_stats_t ip;
+  uint64_t   v4, v6, other;
+} pidstats_mpe_pid_t;
+
+/* the MPE PIDs of the TS (user: their pidstats_mpe_pid_t) */
+typedef struct pidstats_mpe {
+  mpe_pids_t pids;
+} pidstats_mpe_t;
+
+static void
+pidstats_mpe_datagram ( void *opaque, mpe_pid_t *p, const mpe_datagram_t *d )
+{
+  pidstats_mpe_pid_t *s = p->user;
+
+  (void)opaque;
+  if (s == NULL && (s = p->user = calloc(1, sizeof(*s))) == NULL)
+    return;
+  if (d->ethertype == 0x0800) {
+    s->v4++;
+    ip_stats_ipv4(&s->ip, d->data, d->len);
+  } else if (d->ethertype == 0x86dd) {
+    s->v6++;
+    ip_stats_ipv6(&s->ip, d->data, d->len);
+  } else {
+    s->other++;
+  }
+}
+
+static void
+pidstats_mpe_packet ( void *opaque, const uint8_t *pkt )
+{
+  pidstats_mpe_t *pm = opaque;
+  mpe_pids_feed(&pm->pids, pkt, 188, pidstats_mpe_datagram, pm);
+}
+
+/* what the MPE PIDs carried: a list; NULL without */
+static htsmsg_t *
+pidstats_mpe_summary ( pidstats_mpe_t *pm )
+{
+  static const pidstats_mpe_pid_t none;
+  const pidstats_mpe_pid_t *s;
+  htsmsg_t *l, *e;
+  const mpe_counts_t *c;
+  int i;
+
+  if (pm == NULL || pm->pids.n == 0)
+    return NULL;
+  l = htsmsg_create_list();
+  for (i = 0; i < pm->pids.n; i++) {
+    c = mpe_counts(pm->pids.p[i].mpe);
+    if (pm->pids.p[i].user)
+      ip_stats_sort(&((pidstats_mpe_pid_t *)pm->pids.p[i].user)->ip);
+    s = pm->pids.p[i].user ? pm->pids.p[i].user : &none;
+    e = htsmsg_create_map();
+    htsmsg_add_u32(e, "pid", pm->pids.p[i].pid);
+    htsmsg_add_s64(e, "sections", c->sections);
+    htsmsg_add_s64(e, "datagrams", c->datagrams);
+    htsmsg_add_s64(e, "crc_errors", c->crc_errors);
+    htsmsg_add_s64(e, "scrambled", c->scrambled);
+    htsmsg_add_s64(e, "lost", c->lost);
+    htsmsg_add_s64(e, "ipv4", s->v4);
+    htsmsg_add_s64(e, "ipv6", s->v6);
+    htsmsg_add_s64(e, "other", s->other);
+    ip_stats_msg(e, &s->ip);
+    htsmsg_add_msg(l, NULL, e);
+  }
+  return l;
+}
+
+static void
+pidstats_mpe_destroy ( pidstats_mpe_t *pm )
+{
+  if (pm == NULL)
+    return;
+  mpe_pids_clear(&pm->pids, free);
+  free(pm);
+}
+#endif
+
 #if ENABLE_LINUXDVB_NEUMO
 /* the frames of the BBFrame PID, and what their GSE streams carry; the
  * generic streams of 188 byte user packets are TS streams, their PIDs count
@@ -314,6 +399,7 @@ typedef struct pidstats_gs {
   gse_stats_t       *gs;
   bbframe_ts_t      *ts[256];
   mpegts_pidstats_t *inner;
+  pidstats_mpe_t    *inner_mpe;
 } pidstats_gs_t;
 
 static void
@@ -335,8 +421,13 @@ pidstats_gs_frame ( void *opaque, const uint8_t *frame, size_t len, int isi )
       return;
     bbframe_ts_init(g->ts[isi]);
   }
-  if (g->inner == NULL && (g->inner = mpegts_pidstats_create()) == NULL)
-    return;
+  if (g->inner == NULL) {
+    if ((g->inner = mpegts_pidstats_create()) == NULL)
+      return;
+    /* the MPE PIDs of this TS too */
+    if ((g->inner_mpe = calloc(1, sizeof(*g->inner_mpe))) != NULL)
+      mpegts_pidstats_tssink(g->inner, pidstats_mpe_packet, g->inner_mpe);
+  }
   bbframe_frame_ts(g->ts[isi], frame, len, pidstats_gs_ts, g->inner);
 }
 
@@ -373,6 +464,7 @@ pidstats_gs_destroy ( pidstats_gs_t *g )
   for (i = 0; i < 256; i++)
     free(g->ts[i]);
   mpegts_pidstats_destroy(g->inner);
+  pidstats_mpe_destroy(g->inner_mpe);
   free(g);
 }
 #endif
@@ -404,6 +496,12 @@ mpegts_network_scan_pidstats_start ( mpegts_mux_t *mm )
     return;
   if ((ps = mpegts_pidstats_create()) == NULL)
     return;
+  /* MPE: what the datagrams carry */
+  {
+    pidstats_mpe_t *pm = calloc(1, sizeof(*pm));
+    if (pm)
+      mpegts_pidstats_tssink(ps, pidstats_mpe_packet, pm);
+  }
 #if ENABLE_LINUXDVB_NEUMO
   /* a generic stream: the driver passes its BBFrames in a PID, and what
    * their GSE streams carry counts too */
@@ -521,14 +619,27 @@ mpegts_network_scan_pidstats_end ( mpegts_mux_t *mm, int summary )
   }
   if (summary)
     m = pidstats_msg(ps);
+#if ENABLE_MPEGTS_DVB
+  {
+    pidstats_mpe_t *pm = mpegts_pidstats_tssink_opaque(ps);
+    htsmsg_t *ml;
+    if (m && (ml = pidstats_mpe_summary(pm)) != NULL)
+      htsmsg_add_msg(m, "mpe", ml);
+    pidstats_mpe_destroy(pm);
+  }
+#endif
 #if ENABLE_LINUXDVB_NEUMO
   {
     pidstats_gs_t *g = mpegts_pidstats_bbsink_opaque(ps);
     htsmsg_t *gm;
     if (g && m && (gm = pidstats_gs_summary(g)) != NULL) {
       /* the TS of generic streams of 188 byte user packets */
-      if (g->inner)
-        htsmsg_add_msg(gm, "ts", pidstats_msg(g->inner));
+      if (g->inner) {
+        htsmsg_t *tm = pidstats_msg(g->inner), *ml;
+        if ((ml = pidstats_mpe_summary(g->inner_mpe)) != NULL)
+          htsmsg_add_msg(tm, "mpe", ml);
+        htsmsg_add_msg(gm, "ts", tm);
+      }
       htsmsg_add_msg(m, "gse", gm);
     }
     pidstats_gs_destroy(g);
