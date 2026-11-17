@@ -21,6 +21,9 @@
 #include "input.h"
 #include "input/mpegts/mpegts_dvb.h"
 #include <dvbdab/dvbdab_c.h>
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+#include "input/mpegts/mpe.h"
+#endif
 
 /*
  * libdvbdab logs through tvhlog (by default it writes everything, with names
@@ -60,7 +63,23 @@ struct dab_stream_ctx {
   dab_stream_output_cb    callback;
   void                   *opaque;
   int                     started;
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  /* MPE: tvheadend takes the datagrams out, the IPv4 ones go on */
+  mpe_t                  *mpe;
+  int                     mpe_pid;
+#endif
 };
+
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+static void
+dab_stream_datagram_cb(void *opaque, const mpe_datagram_t *d)
+{
+  dab_stream_ctx_t *ctx = opaque;
+
+  if (d->ethertype == 0x0800)
+    dvbdab_streamer_feed(ctx->streamer, d->data, d->len);
+}
+#endif
 
 /*
  * libdvbdab output callback - receives TS packets
@@ -102,7 +121,18 @@ dab_stream_create(const dab_stream_config_t *config,
     scfg.eti_inverted = config->eti_inverted;
     break;
   case 1: /* MPE */
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+    /* the datagrams of the PID are taken out here, the IPv4 ones go on */
+    scfg.format = DVBDAB_FORMAT_IPV4;
+    ctx->mpe = mpe_create();
+    ctx->mpe_pid = config->pid;
+    if (ctx->mpe == NULL) {
+      free(ctx);
+      return NULL;
+    }
+#else
     scfg.format = DVBDAB_FORMAT_MPE;
+#endif
     scfg.filter_ip = config->filter_ip;
     scfg.filter_port = config->filter_port;
     break;
@@ -118,6 +148,9 @@ dab_stream_create(const dab_stream_config_t *config,
   /* Create libdvbdab streamer */
   ctx->streamer = dvbdab_streamer_create(&scfg);
   if (!ctx->streamer) {
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+    mpe_destroy(ctx->mpe);
+#endif
     free(ctx);
     return NULL;
   }
@@ -140,6 +173,9 @@ dab_stream_destroy(dab_stream_ctx_t *ctx)
 
   if (ctx->streamer)
     dvbdab_streamer_destroy(ctx->streamer);
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  mpe_destroy(ctx->mpe);
+#endif
 
   free(ctx);
 }
@@ -150,7 +186,12 @@ dab_stream_feed(dab_stream_ctx_t *ctx, const uint8_t *data, size_t len)
   if (!ctx || !ctx->streamer || !data)
     return -1;
 
-  /* Feed to libdvbdab */
+  /* Feed to libdvbdab (MPE: the IPv4 datagrams of the PID) */
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  if (ctx->mpe)
+    mpe_feed(ctx->mpe, data, len, ctx->mpe_pid, dab_stream_datagram_cb, ctx);
+  else
+#endif
   dvbdab_streamer_feed(ctx->streamer, data, len);
 
   /* Auto-start all services once ready */
