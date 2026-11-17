@@ -13,9 +13,10 @@ export type Pol = 'H' | 'V'
 
 export interface BlindscanCarrier {
   freq: number
-  /* width between the edges, kHz */
+  /* width between the edges 3 dB down, kHz */
   bw: number
-  /* symbols/s, from the width */
+  /* symbols/s: the width (half the power of a root raised cosine carrier
+   * is at its symbol rate apart) */
   sr: number
   /* 0.01 dB above the noise floor */
   snr: number
