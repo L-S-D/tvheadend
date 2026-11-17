@@ -3,8 +3,10 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  aboveFloor,
   decimate,
   graphMuxes,
+  interpolate,
   levelAt,
   levelRange,
   muxOfCarrier,
@@ -111,9 +113,36 @@ describe('ticks and ranges', () => {
     expect(levelRange([{ freq: [1, 2, 3], level: [-6500, -5000, -4600] }], 0, 10)).toEqual([
       -6600, -4500,
     ])
-    expect(levelRange([], 0, 10)).toEqual([-7000, -4000])
+    expect(levelRange([], 0, 10)).toEqual([-500, 2500])
   })
   it('the width of a carrier', () => {
     expect(muxWidth(27500000)).toBeCloseTo(37125)
+  })
+})
+
+describe('the noise floor', () => {
+  it('interpolates, the ends beyond', () => {
+    expect(interpolate([0, 10, 20], [0, 100, 300], 5)).toBe(50)
+    expect(interpolate([0, 10, 20], [0, 100, 300], 15)).toBe(200)
+    expect(interpolate([0, 10, 20], [0, 100, 300], -5)).toBe(0)
+    expect(interpolate([0, 10, 20], [0, 100, 300], 25)).toBe(300)
+    expect(interpolate([7], [42], 3)).toBe(42)
+  })
+  it('levels above the floor along the band', () => {
+    const p = aboveFloor({
+      freq: [0, 10, 20],
+      level: [-6000, -6500, -7000],
+      noise: -9000,
+      floor_freq: [0, 20],
+      floor: [-8000, -9000],
+    })
+    expect(p.level).toEqual([2000, 2000, 2000])
+    expect(p.freq).toEqual([0, 10, 20])
+  })
+  it('above the one noise level of an older result', () => {
+    expect(aboveFloor({ freq: [0, 1], level: [-6000, -7000], noise: -8000 }).level).toEqual([
+      2000, 1000,
+    ])
+    expect(aboveFloor({ freq: [0], level: [-6000] }).level).toEqual([-6000])
   })
 })

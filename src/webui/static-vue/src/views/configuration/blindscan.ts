@@ -25,7 +25,11 @@ export interface BlindscanCarrier {
 export interface BlindscanPol {
   freq: number[]
   level: number[]
+  /* the 10th percentile of the levels */
   noise?: number
+  /* the noise floor along the band: its levels at these frequencies */
+  floor_freq?: number[]
+  floor?: number[]
   /* seconds since 1970: when this polarisation was taken (a run replaces
    * only the polarisations it takes) */
   time?: number
@@ -108,6 +112,34 @@ export function muxOfCarrier(c: BlindscanCarrier, pol: Pol, muxes: GraphMux[]): 
   return best
 }
 
+/* linear between the points (xp ascending), the values at the ends beyond */
+export function interpolate(xp: number[], fp: number[], x: number): number {
+  const n = xp.length
+  if (x <= xp[0]) return fp[0]
+  if (x >= xp[n - 1]) return fp[n - 1]
+  let lo = 0
+  let hi = n - 1
+  while (hi - lo > 1) {
+    const m = (lo + hi) >> 1
+    if (xp[m] <= x) lo = m
+    else hi = m
+  }
+  return fp[lo] + ((fp[hi] - fp[lo]) * (x - xp[lo])) / (xp[hi] - xp[lo])
+}
+
+/* the levels above the noise floor along the band (above the one noise
+ * level of an older result): a Unicable LNB levels each user band on its
+ * own, a cable dampens the upper frequencies more, the polarisations differ
+ * - above the floor the levels compare along the band and between them */
+export function aboveFloor(p: BlindscanPol): BlindscanPol {
+  const ff = p.floor_freq
+  const fl = p.floor
+  if (ff && fl && ff.length > 0 && ff.length === fl.length)
+    return { ...p, level: p.level.map((l, i) => l - interpolate(ff, fl, p.freq[i])) }
+  const n = p.noise ?? 0
+  return { ...p, level: p.level.map((l) => l - n) }
+}
+
 /* the curve within [lo, hi] reduced to at most `buckets` points: the highest
  * level of each (a narrow carrier stays visible) */
 export function decimate(
@@ -180,7 +212,7 @@ export function levelRange(pols: BlindscanPol[], lo: number, hi: number): [numbe
       if (p.level[i] > max) max = p.level[i]
     }
   }
-  if (!isFinite(min)) return [-7000, -4000]
+  if (!isFinite(min)) return [-500, 2500]
   const pad = Math.max(100, (max - min) * 0.05)
   return [Math.floor((min - pad) / 100) * 100, Math.ceil((max + pad) / 100) * 100]
 }
