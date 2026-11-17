@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import {
   aboveFloor,
   contentLines,
+  gseLines,
   rateText,
   tableNames,
   decimate,
@@ -265,5 +266,77 @@ describe('the content of a tune', () => {
     expect(contentLines({ us: 0, packets: 0, nulls: 0, tei: 0, pids: 0 }, t)).toEqual([
       'No TS packets',
     ])
+  })
+})
+
+describe('what generic streams carry', () => {
+  const t = (text: string, ...args: string[]) =>
+    text.replace(/\{(\d+)\}/g, (_, i: string) => args[Number(i)] ?? '')
+  const base = {
+    packets: 0,
+    pdus: 0,
+    fragmented: 0,
+    crc_errors: 0,
+    length_errors: 0,
+    corrupt: 0,
+    hem_errors: 0,
+    protocols: [],
+    labels: { six: 0, three: 0, broadcast: 0, distinct: 0 },
+    ip: {},
+    flows: [],
+  }
+  it('GSE: protocols, labels, multicast groups', () => {
+    const l = gseLines(
+      {
+        ...base,
+        frames: [0, 100, 0, 0],
+        packets: 50,
+        pdus: 40,
+        fragmented: 5,
+        crc_errors: 1,
+        protocols: [{ type: 0x0800, pdus: 40, bytes: 125000 }],
+        labels: { six: 0, three: 0, broadcast: 40, distinct: 0 },
+        ip: { v4_multicast: { packets: 40, bytes: 125000 } },
+        flows: [
+          { addr: '239.1.2.3', port: 5000, packets: 40, bytes: 120000, kind: 'rtp-ts', rtp_pt: 33 },
+        ],
+      },
+      1e6,
+      t
+    )
+    expect(l).toEqual([
+      'Generic stream frames: 100 generic continuous',
+      'GSE: 50 packets, 40 PDUs (5 put together from fragments) · 1 CRC errors',
+      'Protocols: IPv4 100 % (1.0 Mbit/s)',
+      'Labels: 0 of 6 bytes, 0 of 3 bytes, 40 broadcast; 0 different',
+      'IPv4 multicast 1.0 Mbit/s',
+      '239.1.2.3:5000: 960 kbit/s · MPEG-TS in RTP',
+    ])
+  })
+  it('a generic stream of 188 byte packets: its TS', () => {
+    const l = gseLines(
+      {
+        ...base,
+        frames: [0, 57, 0, 0],
+        frames_upl: 57,
+        upl: 1504,
+        isis: [0],
+        ts: {
+          us: 1e6,
+          packets: 59,
+          nulls: 0,
+          tei: 0,
+          pids: 1,
+          list: [{ pid: 0, packets: 59, tables: [0] }],
+        },
+      },
+      1e6,
+      t
+    )
+    expect(l[0]).toBe('Generic stream frames: 57 generic continuous · ISI 0')
+    expect(l[1]).toBe('57 frames with user packets of 188 bytes: no GSE')
+    expect(l[2]).toBe('The TS in them:')
+    expect(l[4]).toBe('  PID 0 (0x0000): 89 kbit/s · sections PAT')
+    expect(l.length).toBe(5)
   })
 })
