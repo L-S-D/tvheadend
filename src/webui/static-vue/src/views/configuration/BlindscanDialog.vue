@@ -755,6 +755,11 @@ const detailSubs = computed(() => {
   const u = detail.value?.uuid
   return u ? muxRows.value.filter((r) => r.parent_mux === u) : []
 })
+/* the GSE streams of the detail (the mux, its sub-muxes): what they carried
+ * at their last scan */
+const detailGse = computed(() =>
+  [detailRow.value, ...detailSubs.value].filter((r): r is MuxRow => !!r?.gse_content)
+)
 /* the services of the mux, then those of its sub-muxes, by name */
 const detailServices = computed(() => {
   const d = detail.value
@@ -1156,6 +1161,12 @@ const header = computed(() => t('Blindscan: {0}', props.networkName))
       <div v-if="detailSubs.length" class="bs-muted">
         {{ t('Sub-muxes') }}:
         {{ detailSubs.map((r) => `${r.name} (${scanResultName(r.scan_result)})`).join(', ') }}
+      </div>
+      <div v-if="detailGse.length" class="bs-content">
+        <div class="bs-muted">{{ t('What the GSE streams carried at their last scan') }}</div>
+        <div v-for="r in detailGse" :key="r.uuid" class="bs-content-line">
+          {{ r.name }}: {{ r.gse_content }}
+        </div>
       </div>
       <div
         v-if="detail.uuid && !detail.loading && !detail.error && !detailServices.length"
