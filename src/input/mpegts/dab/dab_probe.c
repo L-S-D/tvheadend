@@ -16,6 +16,12 @@
 #include "input/mpegts/mpegts_dvb.h"
 #include <dvbdab/dvbdab_c.h>
 #include "dab_stream.h"
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+/* MPE: tvheadend takes the datagrams out of the datagram sections of a PID
+ * (mpe_pids_t), the IPv4 ones go to a libdvbdab streamer of the PID in
+ * discovery mode */
+#include "input/mpegts/mpe.h"
+#endif
 
 /*
  * DAB probe context - simple callback-based scanner
@@ -28,11 +34,21 @@ typedef struct dab_probe_ctx {
   int                result;      /* the result the scan ended with */
   int                weight;
   int                waiting;
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  mpe_pids_t         mpe;         /* the input thread, mi_output_lock; user:
+                                     the streamer of the PID */
+#endif
 } dab_probe_ctx_t;
 
 /* Scanner timeout in milliseconds */
 #ifndef DAB_PROBE_TIMEOUT_MS
 #define DAB_PROBE_TIMEOUT_MS  5000
+#endif
+
+/* MPE PIDs without an ensemble after this long carry no DAB (MPE carries
+ * other IP services as well) */
+#ifndef DAB_PROBE_MPE_NODAB_MS
+#define DAB_PROBE_MPE_NODAB_MS 2000
 #endif
 
 /* The longest a scan that ended waits for the scanner */
@@ -44,6 +60,58 @@ typedef struct dab_probe_ctx {
  * Secondary scan callback - receives all TS packets
  * Called from mi-table thread context during scan
  */
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+static void
+dab_probe_mpe_datagram(void *opaque, mpe_pid_t *p, const mpe_datagram_t *d)
+{
+  dvbdab_streamer_config_t cfg;
+
+  (void)opaque;
+  if (d->ethertype != 0x0800)
+    return;
+  if (p->user == NULL) {
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.format = DVBDAB_FORMAT_IPV4;
+    cfg.pid = p->pid;
+    if ((p->user = dvbdab_streamer_create(&cfg)) == NULL)
+      return;
+  }
+  dvbdab_streamer_feed(p->user, d->data, d->len);
+}
+
+static void
+dab_probe_mpe_streamer_free(void *streamer)
+{
+  dvbdab_streamer_destroy(streamer);
+}
+
+/* the ensembles of the MPE PIDs have their labels and services; an MPE
+ * PID without any ensemble after DAB_PROBE_MPE_NODAB_MS carries no DAB, the
+ * time of the scanner ends the rest */
+static int
+dab_probe_mpe_done(dab_probe_ctx_t *dctx)
+{
+  dvbdab_ensemble_t *e;
+  int64_t elapsed = mclk() - dctx->started;
+  int i, j, n, done = 1;
+
+  if (elapsed >= ms2mono(DAB_PROBE_TIMEOUT_MS))
+    return 1;
+  for (i = 0; i < dctx->mpe.n && done; i++) {
+    n = 0;
+    e = dctx->mpe.p[i].user ? dvbdab_streamer_get_all_ensembles(dctx->mpe.p[i].user, &n) : NULL;
+    if (n == 0 && elapsed < ms2mono(DAB_PROBE_MPE_NODAB_MS))
+      done = 0;
+    for (j = 0; j < n; j++)
+      if (!e[j].label[0] || e[j].service_count == 0)
+        done = 0;
+    if (e)
+      dvbdab_streamer_free_all_ensembles(e, n);
+  }
+  return done;
+}
+#endif
+
 static void
 dab_probe_packet_cb(void *ctx, const uint8_t *pkt, int len)
 {
@@ -54,6 +122,9 @@ dab_probe_packet_cb(void *ctx, const uint8_t *pkt, int len)
 
   /* Feed data to libdvbdab scanner */
   dvbdab_scanner_feed(dctx->scanner, pkt, len);
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  mpe_pids_feed(&dctx->mpe, pkt, len, dab_probe_mpe_datagram, dctx);
+#endif
 }
 
 /*
@@ -275,8 +346,13 @@ dab_probe_process_results(mpegts_mux_t *mm, dvbdab_results_t *results)
   tvhdebug(LS_MPEGTS, "mux %s: DAB probe found %d ensemble(s), %d ETI-NA stream(s)",
            mm->mm_nicename, results->ensemble_count, results->etina_count);
 
-  /* Process DAB ensembles (MPE, ETI-NA, or TSNI) */
+  /* Process DAB ensembles (MPE, ETI-NA, or TSNI); MPE ones come from the
+   * datagrams tvheadend takes out (mpegts_dab_probe_complete()) */
   for (i = 0; i < results->ensemble_count; i++) {
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+    if (!results->ensembles[i].is_etina && !results->ensembles[i].is_tsni)
+      continue;
+#endif
     if (process_ensemble(mm, ln, outer_dm, &results->ensembles[i]))
       found_dab = 1;
   }
@@ -376,6 +452,10 @@ dab_probe_scanner_done(dab_probe_ctx_t *ctx)
   if (mi)
     tvh_mutex_lock(&mi->mi_output_lock);
   done = dvbdab_scanner_is_done(ctx->scanner);
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  if (done)
+    done = dab_probe_mpe_done(ctx);
+#endif
   if (mi)
     tvh_mutex_unlock(&mi->mi_output_lock);
   return done;
@@ -457,6 +537,29 @@ mpegts_dab_probe_complete(mpegts_mux_t *mm, int evaluate)
     }
     dvbdab_scanner_destroy(ctx->scanner);
   }
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+  {
+    dvbdab_ensemble_t *e;
+    int i, j, n;
+    for (i = 0; i < ctx->mpe.n; i++) {
+      if (evaluate && ctx->mpe.p[i].user) {
+        e = dvbdab_streamer_get_all_ensembles(ctx->mpe.p[i].user, &n);
+        tvhdebug(LS_MPEGTS, "mux %s: MPE on PID %d: %" PRIu64 " datagrams, %" PRIu64
+                 " CRC errors, %d ensemble(s)", mm->mm_nicename, ctx->mpe.p[i].pid,
+                 mpe_counts(ctx->mpe.p[i].mpe)->datagrams,
+                 mpe_counts(ctx->mpe.p[i].mpe)->crc_errors, n);
+        for (j = 0; j < n; j++) {
+          e[j].source_pid = ctx->mpe.p[i].pid;
+          e[j].is_etina = e[j].is_tsni = e[j].is_gse = 0;
+          if (process_ensemble(mm, (dvb_network_t *)mm->mm_network, (dvb_mux_t *)mm, &e[j]))
+            found = 1;
+        }
+        dvbdab_streamer_free_all_ensembles(e, n);
+      }
+    }
+    mpe_pids_clear(&ctx->mpe, dab_probe_mpe_streamer_free);
+  }
+#endif
 
   free(ctx);
 
