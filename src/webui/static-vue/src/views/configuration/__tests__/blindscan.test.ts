@@ -202,6 +202,7 @@ describe('matypeText', () => {
     expect(matypeText(0x72)).toBe('generic continuous')
     expect(matypeText(0xd0)).toBe('TS, multistream')
     expect(matypeText(0x02)).toBe('generic packetized, multistream, ACM/VCM')
+    expect(matypeText(0xb3)).toBe('GSE-HEM')
     expect(matypeText(-1)).toBe('')
     expect(matypeText(undefined)).toBe('')
   })
