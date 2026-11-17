@@ -1862,6 +1862,7 @@ linuxdvb_frontend_monitor ( void *aux )
       /* Update mux parameters from blindscan results if enabled */
       if (lfe->lfe_type == DVB_TYPE_S && ((dvb_mux_t *)mm)->lm_blindscan_tune) {
         /* a tune asked for from a blindscan: the carrier found makes the mux */
+        ((dvb_mux_t *)mm)->lm_blindscan_tune |= DVB_MUX_BLINDSCAN_LOCKED;
         params_read = linuxdvb_frontend_blindscan_update_mux(lfe, (dvb_mux_t *)mm);
         linuxdvb_frontend_blindscan_update_freq(lfe, (dvb_mux_t *)mm);
       } else if (config.blindscan_update_mux &&

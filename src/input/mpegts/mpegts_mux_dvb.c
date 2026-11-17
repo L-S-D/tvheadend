@@ -1877,6 +1877,13 @@ dvb_mux_blindscan_done ( dvb_mux_t *lm, int result )
   htsmsg_add_str(m, "pol", lm->lm_tuning.u.dmc_fe_qpsk.polarisation == DVB_POLARISATION_VERTICAL ? "V" : "H");
   htsmsg_add_u32(m, "sr", lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate);
   htsmsg_add_str(m, "result", result == MM_SCAN_FAIL ? "fail" : "ok");
+  /* the demodulator locked: what it found (a failed scan had no data) */
+  if (lm->lm_blindscan_tune & DVB_MUX_BLINDSCAN_LOCKED) {
+    htsmsg_add_bool(m, "locked", 1);
+    htsmsg_add_str(m, "delsys", dvb_delsys2str(lm->lm_tuning.dmc_fe_delsys));
+    htsmsg_add_str(m, "modulation", dvb_qam2str(lm->lm_tuning.dmc_fe_modulation));
+    htsmsg_add_str(m, "fec", dvb_fec2str(lm->lm_tuning.u.dmc_fe_qpsk.fec_inner));
+  }
   /* a new mux that locked a transponder the network has: that one */
   if (result != MM_SCAN_FAIL && (lm->lm_blindscan_tune & DVB_MUX_BLINDSCAN_NEW))
     same = (mpegts_mux_t *)dvb_mux_blindscan_same(lm);

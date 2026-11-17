@@ -133,6 +133,8 @@ typedef struct dvb_mux
    * takes frequency and parameters from the demodulator.
    * DVB_MUX_BLINDSCAN_NEW: the blindscan created it, a failed scan deletes
    * it again
+   * DVB_MUX_BLINDSCAN_LOCKED: the demodulator locked a carrier for it (a
+   * failed scan then had no data, else no lock)
    */
   int      lm_blindscan_tune;
   uint32_t lm_blindscan_range;
@@ -140,6 +142,7 @@ typedef struct dvb_mux
 
 #define DVB_MUX_BLINDSCAN_TUNE 1
 #define DVB_MUX_BLINDSCAN_NEW  2
+#define DVB_MUX_BLINDSCAN_LOCKED 4
 
 /* the scan of a blindscan tune ended (mpegts_network_scan_mux_done0) */
 void dvb_mux_blindscan_done ( dvb_mux_t *lm, int result );
