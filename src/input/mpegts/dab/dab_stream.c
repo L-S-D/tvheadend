@@ -60,6 +60,12 @@ struct dab_stream_ctx {
   dab_stream_output_cb    callback;
   void                   *opaque;
   int                     started;
+  /* the PIDs the clients of the sub-mux take (mpegts_mux_decap_pids), for
+   * the thread that feeds the streamer: count -1 = all */
+  tvh_mutex_t             pids_lock;
+  uint16_t               *pids;
+  int                     pids_count;
+  int                     pids_changed;
 };
 
 /*
@@ -93,6 +99,13 @@ dab_stream_create(const dab_stream_config_t *config,
   /* Set up libdvbdab streamer config */
   memset(&scfg, 0, sizeof(scfg));
   scfg.pid = config->pid;
+#ifdef DVBDAB_HAVE_AAC_OUTPUT
+  /* DAB+ AUs have 960 samples; in ADTS decoders take 1024: the audio plays
+   * 6.7 % slow and about a semitone low. Decoded and encoded again as AAC-LC
+   * (libdvbdab with faad2 and libavcodec) it plays right everywhere. */
+  if (dvbdab_aac_transcode())
+    scfg.aac_output = DVBDAB_AAC_TRANSCODE;
+#endif
 
   switch (config->format) {
   case 0: /* ETI-NA */
@@ -128,6 +141,8 @@ dab_stream_create(const dab_stream_config_t *config,
   ctx->callback = cb;
   ctx->opaque = opaque;
   ctx->started = 0;
+  tvh_mutex_init(&ctx->pids_lock, NULL);
+  ctx->pids_count = -1;
 
   return ctx;
 }
@@ -141,7 +156,25 @@ dab_stream_destroy(dab_stream_ctx_t *ctx)
   if (ctx->streamer)
     dvbdab_streamer_destroy(ctx->streamer);
 
+  tvh_mutex_destroy(&ctx->pids_lock);
+  free(ctx->pids);
   free(ctx);
+}
+
+/* the PIDs the clients take, to the streamer (it is fed from one thread) */
+static void
+dab_stream_apply_pids(dab_stream_ctx_t *ctx)
+{
+#ifdef DVBDAB_HAVE_WANTED_PIDS
+  if (!atomic_get(&ctx->pids_changed))
+    return;
+  tvh_mutex_lock(&ctx->pids_lock);
+  atomic_set(&ctx->pids_changed, 0);
+  dvbdab_streamer_set_wanted_pids(ctx->streamer, ctx->pids, ctx->pids_count);
+  tvh_mutex_unlock(&ctx->pids_lock);
+#else
+  (void)ctx;
+#endif
 }
 
 int
@@ -151,6 +184,7 @@ dab_stream_feed(dab_stream_ctx_t *ctx, const uint8_t *data, size_t len)
     return -1;
 
   /* Feed to libdvbdab */
+  dab_stream_apply_pids(ctx);
   dvbdab_streamer_feed(ctx->streamer, data, len);
 
   /* Auto-start all services once ready */
@@ -221,9 +255,66 @@ mpegts_mux_decap_start(mpegts_mux_instance_t *mmi)
     return -1;
   }
   sbuf_init(&mmi->mmi_decap_out);
+  tvh_mutex_lock(&mmi->mmi_input->mi_output_lock);
+  mpegts_mux_decap_pids(mmi);
+  tvh_mutex_unlock(&mmi->mmi_input->mi_output_lock);
   tvhdebug(LS_MPEGTS, "%s: DAB streaming initialized for PID 0x%04X (format %d)",
            mm->mm_nicename, cfg.pid, format);
   return 0;
+}
+
+/* the PIDs clients of the sub-mux take the packets of (not only its
+ * tables): their number, and into pids unless it is NULL */
+static int
+dab_pids_taken(mpegts_mux_t *mm, uint16_t *pids)
+{
+  mpegts_pid_t *mp;
+  int n = 0;
+
+  RB_FOREACH(mp, &mm->mm_pids, mp_link)
+    if (mp->mp_pid < MPEGTS_FULLMUX_PID &&
+        (mp->mp_type & (MPS_SERVICE | MPS_RAW | MPS_STREAM)) != 0) {
+      if (pids)
+        pids[n] = mp->mp_pid;
+      n++;
+    }
+  return n;
+}
+
+/* the PIDs of the sub-mux its clients take (with the output lock of its
+ * input; a full mux takes all): libdvbdab transcodes the DAB+ audio of
+ * their services only */
+void
+mpegts_mux_decap_pids(mpegts_mux_instance_t *mmi)
+{
+  dab_stream_ctx_t *ctx = mmi->mmi_decap;
+  mpegts_mux_t *mm = mmi->mmi_mux;
+  mpegts_pid_sub_t *mps;
+  uint16_t *pids;
+  int all = 0;
+  int n = 0;
+
+  lock_assert(&mmi->mmi_input->mi_output_lock);
+  if (ctx == NULL)
+    return;
+  LIST_FOREACH(mps, &mm->mm_all_subs, mps_svcraw_link)
+    if (mps->mps_type & MPS_ALL)
+      all = 1;
+  if (!all)
+    n = dab_pids_taken(mm, NULL);
+  tvh_mutex_lock(&ctx->pids_lock);
+  if (n > 0) {
+    pids = realloc(ctx->pids, n * sizeof(*pids));
+    if (pids != NULL) {
+      ctx->pids = pids;
+      n = dab_pids_taken(mm, pids);
+    } else {
+      all = 1;          /* without the memory for the list: all */
+    }
+  }
+  ctx->pids_count = all ? -1 : n;
+  atomic_set(&ctx->pids_changed, 1);
+  tvh_mutex_unlock(&ctx->pids_lock);
 }
 
 void
