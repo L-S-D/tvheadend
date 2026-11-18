@@ -514,6 +514,9 @@ http_stream_run(http_connection_t *hc, profile_chain_t *prch,
       } else if(muxer_reconfigure(mux, sm->sm_data) < 0) {
         tvhwarn(LS_WEBUI,  "Unable to reconfigure stream %s", hc->hc_url_orig);
       }
+      /* the packet timeout runs from the start of the stream: the tuning
+       * before it may take longer (another tuner after one with no input) */
+      lastpkt = mclk();
       break;
 
     case SMT_STOP:
