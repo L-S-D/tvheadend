@@ -48,7 +48,40 @@ typedef struct isi_probe_ctx {
   uint8_t               seen[32];
   uint8_t               matype[256];
   int                   upl[256];       /* bits; -1 not seen (GSE-HEM has none) */
+  /* MATYPE-2 from frame to frame: the frames after the first, those whose
+   * MATYPE-2 is 1..127 above the one before (mod 256), the last one (-1 none
+   * yet) */
+  uint32_t              pairs;
+  uint32_t              forward;
+  int                   last;
 } isi_probe_ctx_t;
+
+/*
+ * A frame counter in MATYPE-2, no input streams: some generic continuous ACM
+ * carriers signal multistream, but their MATYPE-2 goes up by one with every
+ * BBFrame. The demodulator delivers the frames it can decode: 9.5E 11407H
+ * + 1 with a gap now and then, 23.5E 11797.9H + 6 (only the frames of its
+ * most robust MODCOD, 128 values). Nearly all frames forward and many values;
+ * a real multistream repeats its few input streams (the same one again, or
+ * back to a lower one).
+ */
+#define ISI_COUNTER_MIN_PAIRS   256
+#define ISI_COUNTER_MIN_VALUES  64
+#define ISI_COUNTER_PERCENT     95
+
+/* MATYPE-2 of a frame after the one before */
+static void
+isi_probe_follow(isi_probe_ctx_t *ctx, uint8_t isi)
+{
+  uint8_t step = (uint8_t)(isi - ctx->last);
+
+  if (ctx->last >= 0) {
+    ctx->pairs++;
+    if (step >= 1 && step <= 127)
+      ctx->forward++;
+  }
+  ctx->last = isi;
+}
 
 /* the frame headers in the packets of the transponder */
 static void
@@ -60,6 +93,7 @@ isi_probe_packet_cb(void *aux, const uint8_t *pkt, int len)
   for ( ; len >= 188; pkt += 188, len -= 188)
     if ((((pkt[1] & 0x1f) << 8) | pkt[2]) == DVB_BBFRAMES_PID &&
         bbframe_packet_header(pkt, &isi, &matype) == 0) {
+      isi_probe_follow(ctx, isi);
       ctx->seen[isi >> 3] |= 1 << (isi & 7);
       ctx->matype[isi] = matype;
       /* the BBHEADER from byte 9 on: UPL in its bytes 2 and 3 */
@@ -249,6 +283,53 @@ isi_has_submuxes(dvb_network_t *ln, dvb_mux_t *dm)
   return 0;
 }
 
+/* how many MATYPE-2 values the frame headers had */
+static int
+isi_probe_values(const isi_probe_ctx_t *ctx)
+{
+  int i;
+  int n = 0;
+
+  for (i = 0; i < 256; i++)
+    n += (ctx->seen[i >> 3] >> (i & 7)) & 1;
+  return n;
+}
+
+/* whether MATYPE-2 of the frame headers counted the frames */
+static int
+isi_probe_counts_frames(const isi_probe_ctx_t *ctx)
+{
+  return ctx->tap && ctx->pairs >= ISI_COUNTER_MIN_PAIRS &&
+         isi_probe_values(ctx) >= ISI_COUNTER_MIN_VALUES &&
+         (uint64_t)ctx->forward * 100 >= (uint64_t)ctx->pairs * ISI_COUNTER_PERCENT;
+}
+
+/*
+ * A transponder whose MATYPE-2 counts the frames has no input streams: without
+ * sub-muxes it is no multistream transponder any more; sub-muxes it has (from an
+ * earlier scan, or a driver that listed the counter as ISIs) are named, for the
+ * user to delete.
+ */
+static void
+isi_probe_counter(mpegts_mux_t *mm, const isi_probe_ctx_t *ctx)
+{
+  dvb_mux_t *dm = (dvb_mux_t *)mm;
+
+  tvhwarn(LS_MPEGTS, "mux %s: MATYPE-2 counts the frames (%u of %u frames forward, "
+          "%d values), no input streams", mm->mm_nicename, ctx->forward,
+          ctx->pairs, isi_probe_values(ctx));
+  if (!dm->lm_multistream)
+    return;
+  if (isi_has_submuxes((dvb_network_t *)mm->mm_network, dm)) {
+    tvhwarn(LS_MPEGTS, "mux %s: its sub-muxes are no input streams",
+            mm->mm_nicename);
+    return;
+  }
+  dm->lm_multistream = 0;
+  idnode_changed(&mm->mm_id);
+  tvhinfo(LS_MPEGTS, "mux %s: no multistream transponder any more", mm->mm_nicename);
+}
+
 /*
  * The mux of an input stream: frequency, polarisation and stream_id; of a GSE
  * stream its GSE mux (its DAB-GSE muxes are the ensembles in it). An enabled
@@ -433,6 +514,7 @@ mpegts_isi_probe_start(mpegts_mux_t *mm)
     return;
   for (i = 0; i < 256; i++)
     ctx->upl[i] = -1;
+  ctx->last = -1;
 
   ctx->mi = mmi->mmi_input;
   mm->mm_isi_probe_ctx = ctx;
@@ -499,8 +581,14 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
     }
   }
 
+  /* a frame counter: neither the frame headers nor the driver (one that
+   * listed the counter) tell input streams */
+  if (evaluate && isi_probe_counts_frames(ctx)) {
+    isi_probe_counter(mm, ctx);
+    isi_count = 0;
+  }
   /* the streams of the frame headers the driver did not list */
-  if (evaluate && ctx->tap) {
+  else if (evaluate && ctx->tap) {
     int i, j;
     for (i = 0; i < 256; i++) {
       if (!(ctx->seen[i >> 3] & (1 << (i & 7))))
