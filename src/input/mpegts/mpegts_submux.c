@@ -688,6 +688,16 @@ submux_input_open_service
     submux_reweight(s->s_dvb_mux->mm_active, weight, flags);
 }
 
+/* the PIDs its clients take changed (with the output lock): the
+ * decapsulation makes the streams of their services only */
+static void
+submux_input_update_pids ( mpegts_input_t *mi, mpegts_mux_t *mm )
+{
+  lock_assert(&mi->mi_output_lock);
+  if (mm->mm_active && mm->mm_active->mmi_decap)
+    mpegts_mux_decap_pids(mm->mm_active);
+}
+
 static void
 submux_input_close_service ( mpegts_input_t *mi, mpegts_service_t *s )
 {
@@ -753,6 +763,7 @@ mpegts_submux_init ( void )
   mi->mi_stop_mux      = submux_input_stop_mux;
   mi->mi_open_service  = submux_input_open_service;
   mi->mi_close_service = submux_input_close_service;
+  mi->mi_update_pids   = submux_input_update_pids;
   submux_input = mi;
 }
 
