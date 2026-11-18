@@ -755,10 +755,12 @@ struct mpegts_mux_instance
 int  mpegts_mux_decap_start ( mpegts_mux_instance_t *mmi );
 void mpegts_mux_decap_stop  ( mpegts_mux_instance_t *mmi );
 void mpegts_mux_decap_feed  ( mpegts_mux_instance_t *mmi, sbuf_t *sb );
+void mpegts_mux_decap_pids  ( mpegts_mux_instance_t *mmi );
 #else
 #define mpegts_mux_decap_start(mmi)    (0)
 #define mpegts_mux_decap_stop(mmi)     ((void)0)
 #define mpegts_mux_decap_feed(mmi, sb) ((void)0)
+#define mpegts_mux_decap_pids(mmi)     ((void)0)
 #endif
 
 struct mpegts_mux_sub
