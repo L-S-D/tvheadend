@@ -111,6 +111,11 @@ extern int tvheadend_htsp_port;
 #define PICON_STANDARD   0
 #define PICON_ISVCTYPE   1
 
+/* DAB station logos as channel icons (config.dab_logo) */
+#define DAB_LOGO_OFF     0
+#define DAB_LOGO_UNSET   1   /* for channels that have no icon */
+#define DAB_LOGO_ALWAYS  2
+
 /*
  * timer support functions
  */
