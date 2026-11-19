@@ -1,0 +1,137 @@
+name: Build pull requests to main
+
+# This fork collects its work in the branch main, one pull request after
+# the other on top of upstream's master. A pull request to main is built
+# on a few systems that stand for the matrix of build-ci.yml (64 and 32
+# bit x86, ARM, Debian, Ubuntu, Fedora); the whole matrix is run by hand
+# (workflow_dispatch of build-ci.yml) when a stage of the work is complete.
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SECCOMP: ''
+
+jobs:
+  vue:
+    uses: ./.github/workflows/webui-vue-build.yml
+
+  build-deb:
+    runs-on: ${{ startsWith(matrix.container[0], 'arm') && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
+    needs: vue
+    name: Build on ${{ matrix.container[1] }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # the second element is the name, the one build-ci.yml uses for its
+        # cache of the static libraries too
+        container:
+          - ["debian:trixie", "debian-trixie"]
+          - ["ubuntu:noble", "ubuntu-noble"]
+          - ["i386/debian:bookworm", "i386-debian-bookworm"]
+          - ["arm64v8/debian:bookworm", "arm64-debian-bookworm"]
+    steps:
+      - name: Workaround for for Docker CVE-2026-31431 mitigation breaking i386
+        if: startsWith(matrix.container[0], 'i386')
+        run: |  # https://docs.docker.com/engine/release-notes/29/#known-issues
+          sudo curl -sSfo /etc/docker/seccomp-profile-v0.2.1.json 'https://raw.githubusercontent.com/moby/profiles/seccomp/v0.2.1/seccomp/default.json'
+          echo 'SECCOMP=--security-opt seccomp=/etc/docker/seccomp-profile-v0.2.1.json' >> $GITHUB_ENV
+      - name: Setup container
+        run: |
+          docker pull ${{ matrix.container[0] }}
+          docker run $SECCOMP --name build-container -d -e GITHUB_ACTIONS=true -v ${{ github.workspace }}:/workspace ${{ matrix.container[0] }} tail -f /dev/null
+      - name: dependencies
+        env:
+          SCRIPT: |
+            apt-get update -y
+            DEBIAN_FRONTEND=noninteractive apt-get install --force-yes -y cmake git build-essential pkg-config gettext libavahi-client-dev libssl-dev zlib1g-dev wget bzip2 git-core liburiparser-dev libdvbcsa-dev python3 python3-requests debhelper ccache lsb-release libpcre2-dev
+        run: docker exec build-container bash -c "$SCRIPT"
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Download Vue UI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.vue.outputs.artifact_name }}
+          path: ${{ github.workspace }}/.vuecache
+      - name: Workaround safe directory
+        env:
+          SCRIPT: |
+            git config --global --add safe.directory /workspace
+        run: docker exec build-container bash -c "$SCRIPT"
+      - name: Cache static dependencies
+        uses: actions/cache@v4
+        with:
+          path: .staticlib
+          key: staticlib-${{ matrix.container[1] }}-${{ github.sha }}
+          restore-keys: |
+            staticlib-${{ matrix.container[1] }}-
+      - name: build
+        env:
+          SCRIPT: |
+            cd /workspace
+            mkdir -p .staticlib
+            export STATICLIB_CACHE=/workspace/.staticlib
+            export VUE_FILE_CACHE=/workspace/.vuecache
+            AUTOBUILD_CONFIGURE_EXTRA="--enable-ccache --enable-ffmpeg_static --enable-hdhomerun_static --python=python3 --enable-vue_cache --disable-vue_build" ./Autobuild.sh ${{ (startsWith(matrix.container[0], 'i386') && '-a i386') || '' }}
+        run: docker exec build-container bash -c "$SCRIPT"
+      - name: copy-result
+        env:
+          SCRIPT: |
+            cp tvheadend*.deb workspace/
+        run: docker exec build-container bash -c "$SCRIPT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tvheadend-${{ matrix.container[1] }}
+          path: tvheadend*.deb
+          if-no-files-found: error
+
+  build-rpm:
+    needs: vue
+    runs-on: ubuntu-26.04
+    name: Build on fedora-${{ matrix.releasever }}
+
+    strategy:
+      matrix:
+        releasever: ["44"]
+    container:
+      image: "fedora:${{ matrix.releasever }}"
+    steps:
+      - name: rpmfusion-free
+        run: |
+          dnf install -y "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-${{ matrix.releasever }}.noarch.rpm"
+      - name: dependencies
+        run: |
+          dnf install -y gcc-c++ gcc-c++ which rpm-build rpmdevtools git make cmake gettext-devel dbus-devel avahi-devel openssl-devel zlib-devel libdvbcsa-devel wget bzip2 uriparser-devel pcre2-devel python python-requests ccache systemd-units systemd-devel
+          dnf install -y openssl-devel-engine || true
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          tags: true
+      - name: Download Vue UI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.vue.outputs.artifact_name }}
+          path: .vuecache
+      - name: Workaround safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+      - name: build
+        run: |
+          export VUE_FILE_CACHE="$PWD/.vuecache"
+          export TVH_EXTRA_CONFIGURE="--enable-vue_cache --disable-vue_build"
+          ./configure --disable-dvbscan --disable-libfdkaac_static --disable-ffmpeg_static --disable-hdhomerun_static --disable-libfdkaac_static --disable-libopus_static --disable-libtheora_static --disable-libvorbis_static --disable-libvpx_static --disable-libx264_static --disable-libx265_static --enable-libfdkaac --enable-hdhomerun_client --enable-libsystemd_daemon --python=/usr/bin/python3 $TVH_EXTRA_CONFIGURE && make -C rpm build -j$(nproc) || (echo "PARALLEL BUILD FAILED, DOING SINGLE THREADED BUILD" && make -C rpm build)
+      - name: copy-result
+        run: cp rpm/RPMS/*/tvheadend*.rpm .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tvheadend-Fedora-${{ matrix.releasever }}
+          path: tvheadend*.rpm
+          if-no-files-found: error
