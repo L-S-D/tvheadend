@@ -60,6 +60,7 @@ struct dab_stream_ctx {
   dab_stream_output_cb    callback;
   void                   *opaque;
   int                     started;
+  tvh_uuid_t              logo_mux;     /* the sub-mux its logos are for */
   /* the PIDs the clients of the sub-mux take (mpegts_mux_decap_pids), for
    * the thread that feeds the streamer: count -1 = all */
   tvh_mutex_t             pids_lock;
@@ -262,6 +263,10 @@ mpegts_mux_decap_start(mpegts_mux_instance_t *mmi)
              mm->mm_nicename);
     return -1;
   }
+  /* the logos of its stations, as the icons of their channels */
+  ((dab_stream_ctx_t *)mmi->mmi_decap)->logo_mux = mm->mm_id.in_uuid;
+  dab_logo_attach(((dab_stream_ctx_t *)mmi->mmi_decap)->streamer,
+                  &((dab_stream_ctx_t *)mmi->mmi_decap)->logo_mux);
   sbuf_init(&mmi->mmi_decap_out);
   tvh_mutex_lock(&mmi->mmi_input->mi_output_lock);
   mpegts_mux_decap_pids(mmi);
