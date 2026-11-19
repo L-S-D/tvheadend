@@ -1824,6 +1824,7 @@ config_boot
   config.local_ip = strdup("");
   config.local_port = 0;
   config.page_size_ui = 50;
+  config.dab_logo = DAB_LOGO_UNSET;
 
   /* Generate default */
   if (!path)
@@ -2164,6 +2165,19 @@ config_class_piconscheme_list ( void *o, const char *lang )
   };
   return strtab2htsmsg(tab, 1, lang);
 }
+
+#if ENABLE_DVBDAB
+static htsmsg_t *
+config_class_dab_logo_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("Don't update"),        DAB_LOGO_OFF },
+    { N_("Update when not set"), DAB_LOGO_UNSET },
+    { N_("Always update"),       DAB_LOGO_ALWAYS },
+  };
+  return strtab2htsmsg(tab, 1, lang);
+}
+#endif
 
 static htsmsg_t *
 config_class_http_auth_list ( void *o, const char *lang )
@@ -2573,6 +2587,21 @@ const idclass_t config_class = {
       .opts   = PO_ADVANCED | PO_DOC_NLIST,
       .group  = 4,
     },
+#if ENABLE_DVBDAB
+    {
+      .type   = PT_INT,
+      .id     = "dab_logo",
+      .name   = N_("DAB station logos"),
+      .desc   = N_("DAB ensembles can send the logos of their stations. "
+                   "Use them as channel icons: never, for channels "
+                   "that have no icon, or always (a logo replaces the "
+                   "icon a channel has)."),
+      .list   = config_class_dab_logo_list,
+      .off    = offsetof(config_t, dab_logo),
+      .opts   = PO_ADVANCED,
+      .group  = 4,
+    },
+#endif
     {
       .type   = PT_STR,
       .id     = "http_server_name",

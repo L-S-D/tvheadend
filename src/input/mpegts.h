@@ -641,6 +641,7 @@ struct mpegts_service
   time_t   s_dvb_created;
   time_t   s_dvb_last_seen;
   time_t   s_dvb_check_seen;
+  char    *s_dab_logo;                      // DAB: the file of its station logo (dab_logo.c)
 
   /*
    * EIT/EPG control

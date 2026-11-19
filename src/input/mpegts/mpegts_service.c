@@ -24,6 +24,9 @@
 #include "channels.h"
 #include "input.h"
 #include "settings.h"
+#if ENABLE_DVBDAB
+#include "input/mpegts/dab/dab_stream.h"
+#endif
 #include "dvb_charset.h"
 #include "config.h"
 #include "epggrab.h"
@@ -548,6 +551,17 @@ const idclass_t mpegts_service_class =
       .opts     = PO_EXPERT | PO_DOC_NLIST,
       .list     = mpegts_service_pref_capid_lock_list,
     },
+#if ENABLE_DVBDAB
+    {
+      .type     = PT_STR,
+      .id       = "dab_logo",
+      .name     = N_("DAB station logo"),
+      .desc     = N_("The file of the station logo the DAB ensemble sent "
+                     "for this service."),
+      .off      = offsetof(mpegts_service_t, s_dab_logo),
+      .opts     = PO_RDONLY | PO_HIDDEN | PO_EXPERT,
+    },
+#endif
     {
       .type     = PT_U16,
       .id       = "force_caid",
@@ -951,6 +965,12 @@ mpegts_picon_mux_isvalid(dvb_mux_t *mux, int orbital_position)
 static const char *
 mpegts_service_channel_icon ( service_t *s )
 {
+#if ENABLE_DVBDAB
+  /* DAB: the logo its ensemble sent */
+  const char *logo = dab_logo_service_icon((mpegts_service_t *)s);
+  if (logo)
+    return logo;
+#endif
   /* DVB? */
 #if ENABLE_MPEGTS_DVB
   mpegts_service_t *ms = (mpegts_service_t*)s;
@@ -1083,6 +1103,7 @@ mpegts_service_unref ( service_t *t )
   free(ms->s_dvb_provider);
   free(ms->s_dvb_cridauth);
   free(ms->s_dvb_charset);
+  free(ms->s_dab_logo);
 }
 
 void
@@ -1093,6 +1114,11 @@ mpegts_service_delete ( service_t *t, int delconf )
 
   if (mm)
     idnode_changed(&mm->mm_id);
+
+#if ENABLE_DVBDAB
+  if (delconf)
+    dab_logo_service_delete(ms);
+#endif
 
   /* Free memory */
   if (t->s_type == STYPE_STD)

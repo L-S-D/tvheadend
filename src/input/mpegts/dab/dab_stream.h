@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "build.h"
+#include "uuid.h"
 
 /* TS packet size */
 #define DAB_TS_PACKET_SIZE  188
@@ -74,6 +75,16 @@ void dab_stream_destroy(dab_stream_ctx_t *ctx);
  * @return          0 on success, -1 on error
  */
 int dab_stream_feed(dab_stream_ctx_t *ctx, const uint8_t *data, size_t len);
+
+/*
+ * Station logos (dab_logo.c): the logos the ensemble of a sub-mux sends, as
+ * the icons of the channels of its services
+ */
+struct dvbdab_streamer;
+struct mpegts_service;
+void dab_logo_attach(struct dvbdab_streamer *streamer, const tvh_uuid_t *mux);
+const char *dab_logo_service_icon(struct mpegts_service *ms);
+void dab_logo_service_delete(struct mpegts_service *ms);
 
 #endif /* ENABLE_DVBDAB */
 
