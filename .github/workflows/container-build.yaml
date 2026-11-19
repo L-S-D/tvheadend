@@ -4,10 +4,8 @@ on:
   push:
     branches:
       - master
-      - main
     tags:
       - 'v*'
-      - 'stage-*'
   pull_request:
     branches:
       - master
@@ -34,7 +32,7 @@ jobs:
             autotag: false
             suffix: -debian
           - container: Containerfile.alpine
-            autotag: ${{ (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') && 'true' || 'auto' }}
+            autotag: ${{ github.ref == 'refs/heads/master' && 'true' || 'auto' }}
 
     steps:
       - name: Checkout repository
@@ -69,7 +67,6 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
-            type=ref,event=tag
             type=ref,event=pr
             type=edge
             type=semver,pattern={{version}}
