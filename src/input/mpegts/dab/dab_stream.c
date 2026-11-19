@@ -115,10 +115,18 @@ dab_stream_create(const dab_stream_config_t *config,
     scfg.eti_inverted = config->eti_inverted;
     break;
   case 1: /* MPE */
+#ifdef DVBDAB_HAVE_FORMAT_IPV4
+    /* libdvbdab 2.0 takes no datagrams out of MPE: that needs tvheadend's
+     * own MPE section reader */
+    tvherror(LS_MPEGTS, "DAB over MPE needs libdvbdab 1.x");
+    free(ctx);
+    return NULL;
+#else
     scfg.format = DVBDAB_FORMAT_MPE;
     scfg.filter_ip = config->filter_ip;
     scfg.filter_port = config->filter_port;
     break;
+#endif
   case 4: /* TSNI - TS NI V.11 */
     scfg.format = DVBDAB_FORMAT_TSNI;
     /* TSNI only needs PID, no IP/port filtering */
