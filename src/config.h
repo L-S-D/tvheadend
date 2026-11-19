@@ -56,6 +56,7 @@ typedef struct config {
   int chicon_scheme;
   char *picon_path;
   int picon_scheme;
+  int dab_logo;
   int tvhtime_update_enabled;
   int tvhtime_ntp_enabled;
   uint32_t tvhtime_tolerance;
