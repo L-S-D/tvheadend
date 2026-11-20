@@ -97,13 +97,14 @@ linuxdvb_unicable_find_master ( linuxdvb_unicable_group_t *group )
         if (le->le_group_id == group->lug_group_id && le->le_is_master) {
           master = master ?: lse;     /* the first one */
           n++;
+          break;                      /* a tuner counts once, not per element */
         }
       }
     }
   }
   if (n > 1)
     tvhlog(tvhlog_limit(&group->lug_masters_log, 3600) ? LOG_WARNING : LOG_DEBUG,
-           LS_EN50494, "group %d has %d masters, the one of %s sends the commands",
+           LS_EN50494, "group %d has %d master tuners, the one of %s sends the commands",
            group->lug_group_id, n, master->lse_parent->ls_frontend->mi_name ?: "");
   return master;
 }
